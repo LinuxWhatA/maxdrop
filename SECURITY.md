@@ -52,8 +52,17 @@ unless you prefer otherwise.
 
 ## Known limits of this version
 
-A `.max` file is a complex binary format and version 0.0.2 uses the parser inherited from io_scene_max as it is.
-It has not been hardened against malformed or hostile files yet: such a file can make Blender use a lot of
-memory, take very long or stop with a Python error. Memory safety is Python's, so the realistic risk is a hang
-or a crash of that Blender session, not code execution, but treat files from unknown sources with the usual
-care and save your work before importing. Bounded reads, depth and size limits are part of the reader rework.
+A `.max` file is a complex binary format. In version 0.0.3 MaxDrop's own reader reads the nodes, meshes and
+transforms with bounded reads, depth and entry limits and a size cap on compressed streams. The materials still
+go through the parser inherited from io_scene_max as it is, which reads the whole file a second time and has not
+been hardened against malformed or hostile files: such a file can make Blender use a lot of memory, take very
+long or stop with a Python error. Memory safety is Python's, so the realistic risk is a hang or a crash of that
+Blender session, not code execution, but treat files from unknown sources with the usual care and save your work
+before importing. The inherited parser goes away as the material conversion moves to MaxDrop's reader.
+
+MaxDrop's reader maps the `.max` file into memory read-only instead of copying it. If the file is truncated or
+rewritten in place while an import reads it (another program writing it, a network share that drops), the
+operating system can end the Blender process (SIGBUS on Linux and macOS, an in-page error on Windows) instead of
+raising an error MaxDrop could report. This is an accepted risk: the mapping lives only while one import reads the
+file and builds its objects. Copy a scene to a local disk before importing it if something else may change it
+meanwhile.
