@@ -8,6 +8,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
 
 ## [Unreleased]
 
+### Fixed
+
+- **Multi/Sub-Object material IDs past the list**: a face whose material ID has no entry gets the sub-material
+  3ds Max renders it with instead of no material: the list repeats every *highest ID* IDs (with IDs 3 and 7,
+  face ID 10 takes 3 and 14 takes 7), in nested Multi/Sub-Objects too.
+
 ## [0.0.4] - 2026-11-17
 
 ### Added
@@ -15,6 +21,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
 - **Materials by MaxDrop's own rules**: VRayMtl, VRayLightMtl, VRayFastSSS2, the V-Ray car paints, Standard (every
   shader) and Physical Material become a Principled BSDF with their colors converted to Blender's linear colors,
   roughness, metalness, IOR, transmission, emission with its strength, coat, subsurface, bump and normal maps.
+  Every IOR is kept between 1 and 100, the coat IOR of VRayCarPaintMtl too (a full coat_strength gives 100).
   Wrappers (VRay2SidedMtl, VRayBlendMtl, VRayOverrideMtl, VRayMtlWrapper, Double Sided, Shellac, Shell Material)
   give their sub-material; Multi/Sub-Object gives one slot per material ID. Each 3ds Max material is one Blender
   material, also when instances carry different materials.
