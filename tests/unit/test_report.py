@@ -16,7 +16,7 @@ import unittest
 
 try:
     import numpy
-except ImportError:  # the plain CI job has no numpy; Blender ships it
+except ImportError:  # optional here: CI installs it, Blender ships it
     numpy = None
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -241,6 +241,17 @@ class TestMaterials(unittest.TestCase):
         rep = report.gather(box())
         report.add_materials(rep, 0)
         self.assertIn("Materials built: 0", rep.text().split("\n"))
+
+    def test_found_counts_per_rule(self):
+        found = lookup(found=["s.png"])
+        for rule, names in ((textures.SIBLING, ["a.png", "b.png"]), (textures.USER, ["c.png", "d.png", "e.png"]),
+                            (textures.ORIGINAL, ["f.png", "g.png", "h.png", "i.png"])):
+            for name in names:
+                found.add(name, textures.Found("C:/x/" + name, rule))
+        rep = report.gather(box())
+        report.add_materials(rep, 0, lookup=found)
+        self.assertIn("Textures found: 10 (the scene's folder 1, maps or textures folders 2, texture search folders 3, "
+                      "the stored path 4)", rep.text().split("\n"))
 
     def test_search_stopped(self):
         found = lookup()

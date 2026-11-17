@@ -70,6 +70,8 @@ the same extension enabled from two repositories clashes.
 | `maxdrop/intake/` | Scene packs: `archive.py` lists a `.zip`, `.rar` or `.7z` and unpacks the chosen `.max` with its maps into a flat folder; `external.py` runs the unpacker found on the computer for `.rar` and `.7z`. Plain Python, no `bpy`. |
 | `site/index.html`, `tools/make_site.py` | The landing page and the script that fills it from `dist/index.json`. |
 | `tools/baseline.py`, `tools/baseline_import.py` | Measure one import: time, peak memory, counts ([docs/BASELINE.md](docs/BASELINE.md)). |
+| `tools/census.py` | Class census of one `.max`, no Blender: the objects per class, the nodes per base-object class and the modifier classes (`--json` for a machine-readable form). It names classes only, never a node, material, layer or the file, so its output from a scene that is not ours can be kept in notes ([docs/FORMAT.md](docs/FORMAT.md)). |
+| `tools/maxdiff.py` | Where two `.max` files differ, no Blender: stream by stream, and chunk path by chunk path in a chunked stream. Given three (A, A2, B: two saves of one scene, then the same scene with one setting changed), it prints only what differs between A and B but not between A and A2, so time stamps and other per-save noise drop out. Each difference shows payload bytes, which can hold names and paths: never paste its output from a scene that is not ours ([docs/FORMAT.md](docs/FORMAT.md)). |
 | `LICENSE`, `maxdrop/LICENSE` | The GPL v3 text, and the same file again so that it is in every zip. `tools/check_zip.py` checks a built zip for it. |
 | `tools/fixtures/*.ms`, `tools/sanitize_fixture.py`, `tools/check_fixture.py`, `tools/cfb.py` | The test files: the MAXScript that authors each one, the tool that blanks the user and computer name 3ds Max writes into a file, the check that refuses names and paths, and the compound-file reader both use. |
 | `tools/oracle/dump_scene.ms` | Writes what 3ds Max itself says about a scene as JSON: the `tests/fixtures/*.oracle.json` files the reader is checked against ([docs/ORACLE.md](docs/ORACLE.md)). |
@@ -121,9 +123,8 @@ tools know how 3ds Max 2020 stores the two names; a file from another version th
 
 Keep them small and say what you tested and on which Blender version. The `test` workflow runs the plain tests
 and the fixture scan on Linux and Windows, ruff on Linux, then, on Blender 4.2 LTS, 4.5 LTS and 5.2 LTS, the
-build, the register smoke test, the import smoke test, and the fixture tests once `tests/blender/run.py`
-exists. Dependabot proposes updates of the actions it
-uses once a week.
+build, the register smoke test, the import smoke test, and the fixture tests (`tests/blender/run.py`).
+Dependabot proposes updates of the actions it uses once a week.
 
 By contributing you agree that your work is released under the [GNU General Public License](LICENSE), either
 version 3 of the License, or (at your option) any later version (GPL-3.0-or-later).

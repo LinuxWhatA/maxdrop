@@ -59,7 +59,7 @@ PowerShell 7 is the primary shell. Shell state (variables) does not carry betwee
   `$ErrorActionPreference = "Stop"` turns a redirected native stderr line into a terminating error. Redirect in
   PowerShell 7 (as below) or through `cmd /c "<command> > <log> 2>&1"`, never `2>&1` inside a PS 5 script with
   `Stop`. `build.ps1` does not redirect, so it is safe as written.
-- Logs as UTF-8 (`Out-File -Encoding utf8`). The import engine prints object and texture names: logs of a corpus
+- Logs as UTF-8 (`Out-File -Encoding utf8`). The importer prints object and texture names: logs of a corpus
   scene stay in `S` and are never quoted in a commit, a bead or a PR.
 
 ## Changed paths -> checks
@@ -76,10 +76,10 @@ git diff --name-only "$base...HEAD"; git status --short
 | Changed | Run |
 |---|---|
 | Docs only (`*.md`, `docs/`, `.claude/`, `.beads` metadata) | 1 (the site and license tests read some of these files) |
-| `maxdrop/*.py` (operator, prefs, compat, engine) | 1, 2, 5 (= 3 and 4 on all three versions), 6 for a fix |
+| `maxdrop/*.py` (operator, prefs, compat) | 1, 2, 5 (= 3 and 4 on all three versions), 6 for a fix |
 | `maxdrop/__init__.py` (`_NAMES`, `_purge`, reload), `maxdrop/update.py` | the row above, plus 7 on 5.2 and 4.2 |
 | `maxdrop/intake/` | 1 (its tests load it by path), 2, 5, 6 for a fix |
-| `maxdrop/import_max.py` or the new `reader/`, `convert/`, `build/` | the `maxdrop/*.py` row, plus 8 when the plan measures (fixture, then the corpus scenes it names) |
+| `maxdrop/reader/`, `maxdrop/convert/`, `maxdrop/build/` | the `maxdrop/*.py` row, plus 8 when the plan measures (fixture, then the corpus scenes it names) |
 | `maxdrop/blender_manifest.toml` `version` | 1, 2, 3 on all three versions, and the CHANGELOG check below; `docs/SUPPORT.md` says what that version imports |
 | `maxdrop/blender_manifest.toml` other fields (permissions, `blender_version_min`, ...) | 1, 2, 5, and 7 on 5.2 and 4.2 |
 | `tests/smoke_*.py` | that script green on all three versions + 6 (a red run on a broken scratch package) |
@@ -94,7 +94,7 @@ machine name or user path; 3ds Max writes the first two into every file it saves
 blanks them):
 
 ```powershell
-python -I tools/check_fixture.py "tests/fixtures/*.max"
+python -I tools/check_fixture.py "tests/fixtures/**/*"
 ```
 
 Pass: exit 0, one `clean` line per file. Otherwise the file is not committed; the tool prints the kind of string
@@ -141,9 +141,9 @@ $env:BLENDER_USER_RESOURCES = "$S\profile-$tag"
 
 Pass: `exit 0`, `SMOKE PASSED`, no `FAIL` line. It imports the dev package from `ROOT` (or `-- <root>` after the
 script), checks it came from there, registers, checks every class of each module's `_classes`, the operators,
-the file handler, the File > Import entry, that the engine and the intake are not loaded yet, reloads like
-Reload Scripts, registers again and unregisters. A new module must keep its classes in a module-level `_classes`
-tuple and appear in `_NAMES` after the modules it imports.
+the file handler, the File > Import entry, that the build package and the intake are not loaded yet and no
+io_scene_max engine is left, reloads like Reload Scripts, registers again and unregisters. A new module must keep
+its classes in a module-level `_classes` tuple and appear in `_NAMES` after the modules it imports.
 
 ## 4. Import smoke
 
@@ -316,7 +316,6 @@ the real `REPO_URL`: Check for Updates must say `Up to date`.
 
 ```powershell
 $S = "<scratch>"; $B = "<blender.exe>"; $fixture = "<local fixture .max>"
-New-Item -ItemType Directory -Force "$S\baseline" | Out-Null   # the tool does not create the --out folder
 python tools\baseline.py --blender $B --profile "$S\profile-baseline" --label fixture --out "$S\baseline\fixture.json" $fixture
 "exit $LASTEXITCODE"
 ```
@@ -325,8 +324,11 @@ Pass: exit 0, and the printed JSON has `"outcome": "finished"`, `"traceback": fa
 stops Blender (by its own process id) at `--limit-minutes` (30), `--max-memory-gb` (40) or below
 `--min-free-gb` (6) free. For a corpus scene: `--label "scene A"` (or `"scene B"`), the result and its `.log`
 stay in `S`, and only counts and measurements are compared with `docs/BASELINE.md` (wall time, peak memory,
-objects, meshes, materials, failed and skipped nodes). `tools/baseline_import.py` counts nodes through internals
-of `import_max.py`: when the engine changes, `counts.nodes` may read `null` until it is updated.
+objects, meshes, materials, placeholders). `counts.nodes` is the number of nodes MaxDrop's reader walks in the
+file (`tools/baseline_import.py`; the importer builds one object per node), `null` only when the reader cannot
+index the file. `import_report` holds the counts of the operator's `Imported ...` line (objects, meshes,
+materials, placeholders, modifiers not applied, textures missing, approximated, issues), `null` when the log
+has no such line.
 
 ## Evidence and report
 

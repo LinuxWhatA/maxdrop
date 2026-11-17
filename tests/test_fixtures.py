@@ -14,6 +14,7 @@ import io
 import os
 import shutil
 import struct
+import sys
 import tempfile
 import unittest
 
@@ -312,6 +313,32 @@ class Check(unittest.TestCase):
             self.assertIn("clean.max: clean", out.getvalue())
             self.assertIn("dirty.max: drive path (ASCII)", err.getvalue())
             self.assertNotIn("private", err.getvalue().replace(dirty_path, ""))
+
+    def test_cli_expands_a_recursive_pattern(self):
+        # CI scans "tests/fixtures/**/*": files in subfolders and without an extension are scanned, the folders
+        # the pattern also matches are not opened.
+        with tempfile.TemporaryDirectory() as tmp:
+            os.mkdir(os.path.join(tmp, "sub"))
+            shutil.copy(BOX, os.path.join(tmp, "a.max"))
+            shutil.copy(BOX, os.path.join(tmp, "sub", "b.max"))
+            with open(os.path.join(tmp, "sub", "notes"), "wb") as f:
+                f.write(b"plain text")
+            with open(os.path.join(tmp, "sub", "dirty"), "wb") as f:
+                f.write(b"see Q:\\private\\scene.max")
+            os.mkdir(os.path.join(tmp, ".hid"))
+            for hidden in (".marker.json", os.path.join(".hid", "inner")):
+                with open(os.path.join(tmp, hidden), "wb") as f:
+                    f.write(b"see Q:\\private\\scene.max")
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                self.assertEqual(check_fixture.main(["check_fixture", os.path.join(glob.escape(tmp), "**", "*")]), 1)
+            for name in ("a.max", "b.max", "notes"):
+                self.assertIn(name + ": clean", out.getvalue())
+            self.assertIn("dirty: drive path (ASCII)", err.getvalue())
+            self.assertNotIn("cannot read", err.getvalue())
+            if sys.version_info >= (3, 11):  # CI's Python; glob cannot match hidden names before 3.11
+                self.assertIn(".marker.json: drive path (ASCII)", err.getvalue())
+                self.assertIn("inner: drive path (ASCII)", err.getvalue())
 
 
 if __name__ == "__main__":
