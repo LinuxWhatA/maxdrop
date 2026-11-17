@@ -27,8 +27,11 @@ line of a fixture names its 3ds Max version, its object count and its unit. Obje
 no UV layer, without Material no material slot. A file that is not a .max beside a fixture: the fixture is imported
 and the other named in a warning; that file alone: cancelled with its name in the message.
 After every import the text "MaxDrop Report" exists and its first line names the .max (and the archive of a pack);
-for the fixtures the operator reported INFO with the report's summary, nothing left out. Two scenes in one run: the
-text holds both reports; a file that was not imported is named after them.
+for the fixtures the operator reported INFO with the report's summary, nothing left out, or WARNING when the
+only things listed are on the material side: wrappers and maps approximated, map classes without a map below
+(vray_texmaps' Noise), texture files not found (the fixtures carry no images), material issues or, on
+Blender 4, Principled inputs that Blender lacks. Two scenes in one run: the text holds both reports; a file that
+was not imported is named after them.
 Prints `IMPORT PASSED` (exit 0) or `IMPORT FAILED` (exit 1).
 """
 import glob
@@ -101,9 +104,38 @@ def check_report(name, max_name, pack_name=None):
         check("%s: the report names the scene pack" % name, ("\nScene pack: %s\n" % pack_name) in body)
     if not argv:
         summaries = [(kind, m) for kind, m in REPORTS if m.startswith("Imported ")]
-        check("%s: the operator reported INFO, nothing left out" % name,
-              summaries and all(kind == 'INFO' and m.endswith("nothing left out.") for kind, m in summaries)
-              and "\nNothing was left out." in body, str(summaries))
+        clean = summaries and all(kind == 'INFO' and m.endswith("nothing left out.") for kind, m in summaries) \
+            and "\nNothing was left out." in body
+        missing = summaries and all(kind == 'WARNING' for kind, _m in summaries) and only_known_gaps(body)
+        check("%s: the operator reported INFO, nothing left out (or only the known gaps of the fixtures)" % name,
+              clean or missing, str(summaries))
+
+
+def _block_heads(lines, title):
+    """The entries ("  ..." lines, without their "    ..." items) of the report block that starts with title."""
+    if title not in lines:
+        return []
+    heads = []
+    for line in lines[lines.index(title) + 1:]:
+        if not line.startswith("  "):
+            break
+        if not line.startswith("    "):
+            heads.append(line)
+    return heads
+
+
+def only_known_gaps(body):
+    """True when the report's only gaps are on the material side, which the fixtures have on purpose: wrappers and
+    maps approximated, map classes without a map below (vray_texmaps has Noise), texture files not found (the
+    fixtures carry no images), material issues and, on Blender 4, the Principled inputs it lacks
+    (vray_basic is thin-walled: Thin Wall exists from Blender 5). Placeholders, modifiers, geometry errors and other
+    issues are no known gap."""
+    lines = body.split("\n")
+    approximated, left_out = _block_heads(lines, "Approximated:"), _block_heads(lines, "Not converted:")
+    known = ("  Map classes without a map below ", "  Textures not found: ", "  Material issues: ")
+    if bpy.app.version < (5, 0, 0):
+        known += ("  Principled inputs not on Blender ",)
+    return bool(approximated or left_out) and all(head.startswith(known) for head in left_out)
 
 
 def import_one(path, label=None, max_name=None, pack_name=None, **options):

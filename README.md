@@ -5,8 +5,9 @@ file onto Blender, or use *File › Import › MaxDrop*. It also takes the `.zip
 scene was downloaded as. Blender 4.2 or newer; tested on 4.2 LTS, 4.5 LTS and 5.2 LTS.
 
 > **Early release.** MaxDrop is a new fork of [io_scene_max](https://github.com/nrgsille76/io_scene_max). It
-> imports editable meshes with their UVs, smoothing, instances, hierarchy, layers and scene units, and simple
-> materials. Lights, cameras, splines and modifiers are not read yet, so a whole interior scene arrives incomplete.
+> imports editable meshes with their UVs, smoothing, instances, hierarchy, layers and scene units, and V-Ray,
+> Corona, Standard and Physical materials with their texture maps. Lights, cameras, splines and modifiers are not
+> read yet, so a whole interior scene arrives incomplete.
 > [docs/SUPPORT.md](docs/SUPPORT.md) is the honest list.
 
 > **Independent.** Not affiliated with, endorsed by or supported by Autodesk or Chaos. Autodesk and 3ds Max are
@@ -21,13 +22,14 @@ scene was downloaded as. Blender 4.2 or newer; tested on 4.2 LTS, 4.5 LTS and 5.
 - **Scene units**: a scene saved in millimeters, centimeters, inches or feet arrives at its real size in meters.
 - **Layers** as collections, nested like the layers; hidden, frozen and non-rendering layers and objects keep
   those flags.
-- **Materials** as a Principled BSDF with color, roughness, metallic, opacity and one image per channel: Standard,
-  Physical, Multi/Sub-Object, VRayMtl, VRay2SidedMtl, CoronaMtl, CoronaPhysicalMtl, CoronaLayeredMtl, Arnold
-  Standard Surface and a few more.
-- **Textures** that are plain image files stored next to the `.max` file.
+- **Materials** as a Principled BSDF with their maps as nodes (tiling, offset, rotation, cropping, Mix, Color
+  Correction, normal and bump maps): VRayMtl and the other V-Ray materials and wrappers, Standard, Physical,
+  Multi/Sub-Object, CoronaPhysicalMtl, CoronaMtl, CoronaLightMtl and CoronaLayeredMtl.
+- **Textures** that are plain image files, next to the `.max` file, in a `maps` or `textures` folder beside it, or
+  in folders you add in the preferences.
 
 Not yet: lights and cameras, modifiers (the object arrives as it was before them), splines and shapes,
-primitives (Box, Sphere… arrive as empties), animation, procedural and nested maps. See
+primitives (Box, Sphere… arrive as empties), animation, procedural maps (simplified to the image below them). See
 [docs/SUPPORT.md](docs/SUPPORT.md).
 
 ## Install
@@ -69,21 +71,26 @@ above.
    - Every import makes a collection named after the file, with one collection per 3ds Max layer below it.
 3. Click **Import**. A large scene takes a while and Blender does not respond until it is done
    ([docs/BASELINE.md](docs/BASELINE.md) has measured times).
-4. The text **MaxDrop Report** in the Text Editor (and the system console) lists what arrived and what did
-   not, such as lights kept as empties. Material problems, such as a texture that is not found, are printed
-   to the system console only.
+4. The status bar sums up the import in one line. The text **MaxDrop Report** in the Text Editor (and the
+   system console) lists what arrived and what did not, such as lights kept as empties, and what became of the
+   materials: converted by class, wrappers and maps approximated, textures found and the ones not found by
+   file name. The report names your scene's objects and files: it stays on your computer. A bug report asks
+   for it.
 
-A `.max` file names its texture files but does not contain them: keep the maps in the folder of the scene or in a
-subfolder. A texture that is not found is skipped and the material keeps its color.
+A `.max` file names its texture files but does not contain them. MaxDrop looks for each file name in the scene's
+folder, then in `maps` or `textures` folders beside it, then in the **Texture Search Folders** of the add-on
+preferences, and last at the path stored in the scene, only when that is on a local drive (never a network path).
+A texture that is not found is skipped and the material keeps its color. See
+[docs/SUPPORT.md](docs/SUPPORT.md#textures).
 
 ### Scene packs
 
-From a `.zip`, `.rar` or `.7z`, MaxDrop writes the chosen `.max` and the pack's image and `.ies` files, side by side,
-into a folder named after the archive next to it, then imports the scene from there. Nothing else in the pack is
-written, and nothing in it is run. Importing the same pack again uses that folder again; a folder you extracted
-yourself next to the archive, named after it, is used as it is. To unpack somewhere else, set **Unpack Scene
-Packs Into** in *Preferences › Add-ons › MaxDrop*; that folder is also used when the archive's own folder cannot
-be written.
+From a `.zip`, `.rar` or `.7z`, MaxDrop writes the chosen `.max` and the pack's image and `.ies` files it uses,
+side by side, into a folder named after the archive next to it, then imports the scene from there. Nothing else in
+the pack is written, and nothing in it is run. Importing the same pack again uses that folder again; a folder you
+extracted yourself next to the archive, named after it, is used as it is. To unpack somewhere else, set **Unpack
+Scene Packs Into** in *Preferences › Add-ons › MaxDrop*; that folder is also used when the archive's own folder
+cannot be written.
 
 A `.zip` is read by MaxDrop itself. A `.rar` or `.7z` is unpacked by a program already on your computer: UnRAR
 (installed with WinRAR), 7-Zip, or a recent bsdtar (the `tar` of an up-to-date Windows 11, and of macOS).
@@ -113,7 +120,7 @@ modelled in another unit than it was saved with, pick that unit in **Units**; **
 
 **Objects are missing.** Lights, cameras, splines and everything a modifier builds are not imported yet; an
 object MaxDrop cannot convert arrives as an empty with its 3ds Max class in the custom property `maxdrop_class`.
-The system console lists material problems (on Windows: *Window › Toggle System Console*).
+The text **MaxDrop Report** (Text Editor) lists them, and what became of the materials.
 
 **Which 3ds Max versions?** MaxDrop's own test files are saved by 3ds Max 2020, and scenes of 3ds Max 2015 and
 2020 have been imported. Tell us in an issue when a file does not open.

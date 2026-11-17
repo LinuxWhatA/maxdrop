@@ -8,6 +8,62 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-11-17
+
+### Added
+
+- **Materials by MaxDrop's own rules**: VRayMtl, VRayLightMtl, VRayFastSSS2, the V-Ray car paints, Standard (every
+  shader) and Physical Material become a Principled BSDF with their colors converted to Blender's linear colors,
+  roughness, metalness, IOR, transmission, emission with its strength, coat, subsurface, bump and normal maps.
+  Wrappers (VRay2SidedMtl, VRayBlendMtl, VRayOverrideMtl, VRayMtlWrapper, Double Sided, Shellac, Shell Material)
+  give their sub-material; Multi/Sub-Object gives one slot per material ID. Each 3ds Max material is one Blender
+  material, also when instances carry different materials.
+- **Texture maps as nodes**: a Bitmap keeps its tiling, offset, rotation, tile and mirror, cropping and map
+  channel; Mix, RGB Multiply, Color Correction and Composite become nodes; Falloff, VRayDirt and other wrappers
+  give the map below them. Color maps load as sRGB, data maps as Non-Color. A map MaxDrop cannot convert is named
+  in the report and never replaced by the color its wrapper holds for that slot: below a Color Correction the
+  material keeps its own color (not the Color Correction's black); a Mix, RGB Multiply or CoronaMix uses its other
+  map, or the material keeps its own color.
+- **Corona materials by MaxDrop's own rules**: CoronaPhysicalMtl, CoronaMtl (CoronaLegacyMtl) and CoronaLightMtl
+  become a Principled BSDF (roughness or glossiness mode, metalness, refraction, opacity, self-illumination,
+  clearcoat, bump); CoronaLayeredMtl gives its base material. CoronaBitmap is imported like a Bitmap, CoronaColor as a
+  color, CoronaMix (mix and multiply) as nodes, CoronaNormal as a Normal Map node.
+- **VRayBitmap (VRayHDRI) as an image texture**, like a Bitmap: its coordinates, cropping, transfer function (None,
+  Inverse gamma, sRGB, Auto) and multipliers; a Composite, Color Correction or Mix above it keeps its image.
+- **Color swatches follow the scene's gamma**: a scene saved with 3ds Max's gamma on (2.2, the default) takes
+  every swatch as linear, as V-Ray renders it, instead of decoding it from sRGB, which made flat colors one display
+  gamma too dark (a 128 grey swatch 0.216 instead of 0.502); a scene saved with the gamma off keeps the sRGB decode.
+  This covers material colors and the colors of Mix, Falloff, Color Correction, VRayDirt, RGB Multiply, CoronaMix,
+  VRayColor and CoronaColor's color and hex value. The import report names the rule; a file without the setting is
+  taken as gamma on.
+- **VRayColor as a color**: RGB or temperature, times its RGB multiplier, with its color gamma; a Falloff, Color
+  Correction or Mix mask above it now gives its color instead of a wrong one.
+- In a scene saved in the 3ds Max 2012 format, a map whose stored reference is stale (a Falloff's map, a Normal
+  Bump's normal map) now gets the map 3ds Max shows.
+- **The import report covers the materials**: materials built and converted by class, wrappers and maps that
+  were simplified, material and map classes without a rule, textures found per lookup step and the ones not found
+  by file name (for a scene pack: whether the archive held the file), the material inputs this Blender version
+  lacks (Thin Wall on 4.2 and 4.5) and what a rule could not convert. The status bar line counts the materials and
+  warns when anything was simplified or left out. The bug report form asks for the report.
+
+### Removed
+
+- io_scene_max's engine (`import_max.py`), which still made the materials: Arnold Standard Surface, Raytrace and
+  Architectural materials now arrive as a grey material with their name until MaxDrop converts them.
+
+### Changed
+
+- **Faster, with far less memory**: the file is read once, by MaxDrop's reader. Two large interior scenes that
+  needed 3.7 GB and 14.4 GB of memory in 0.0.3 now need about 1.3 and 1.4 GB, and import up to four times faster (see
+  `docs/BASELINE.md`).
+- **Textures are found in more places**: the scene's folder, then `maps` or `textures` folders beside the scene,
+  then the **Texture Search Folders** of the preferences (now searched, with their subfolders), and last the path
+  stored in the scene, only when it is on a local drive. Network and device paths stored in a scene are never
+  opened. Texture paths are read from the scene's asset list, where 3ds Max keeps them.
+- **Scene packs unpack only the maps the scene uses**: of a pack's image and `.ies` files, only those the chosen
+  scene's asset list names are written (every one when that list cannot be read); the import report counts the
+  files left out. A map the scene does not use no longer stops the unpack for being encrypted or unreadable.
+
 ## [0.0.3] - 2026-11-15
 
 ### Added

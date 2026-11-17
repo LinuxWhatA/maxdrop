@@ -4,6 +4,15 @@
 
 """The differences between the Blender versions MaxDrop supports (4.2 LTS to 5.2 LTS), in one place."""
 
+
+def material_node_tree(material):
+    """The node tree of a material: 4.x makes a new material with use_nodes off, 5.x always uses nodes (and
+    deprecates the property, so a later version may drop it)."""
+    if not getattr(material, "use_nodes", True):
+        material.use_nodes = True
+    return material.node_tree
+
+
 try:
     from bpy_extras.io_utils import poll_file_object_drop
 except ImportError:

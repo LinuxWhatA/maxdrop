@@ -16,24 +16,26 @@ unless you prefer otherwise.
 
 ## What MaxDrop does with a file
 
-- It **reads** the `.max` file you choose and the image files beside it. It never runs anything from a file: no
-  MAXScript, no embedded code.
+- It **reads** the `.max` file you choose and the texture files it names, found as below. It never runs anything
+  from a file: no MAXScript, no embedded code.
 - It sends nothing anywhere. The only network request of the add-on is the **Check for Updates** button, which
   reads `https://jsiovn.github.io/maxdrop/index.json`.
-- Texture paths stored in a scene are reduced to their file name before the lookup, which starts in the scene's
-  own folder: the importer does not follow a path stored in the file to another place on your disk or on the
-  network.
+- Texture paths stored in a scene are untrusted. Only their file name is looked up: in the scene's folder, in
+  `maps` or `textures` folders beside it, and in the texture search folders you set in the preferences. The stored
+  path itself is opened only when it is a full path on a local drive and names a plain file; a network path
+  (`\\server\share`), a device path, a relative path or one that climbs with `..` is never opened, and the search
+  does not follow links or junctions.
 - Importing a `.max` writes nothing. Importing a scene pack writes the unpacked scene, as below.
 
 ### Scene packs (`.zip`, `.rar`, `.7z`)
 
-- **What is written, and where.** Only the `.max` you import and the pack's image and `.ies` files, into one new
-  folder named after the archive: next to the archive, or inside the folder set under *Unpack Scene Packs Into* in
-  the preferences. The folder is flat: a path stored in the archive never decides where a file goes, only its file
-  name is used, and names that Windows cannot store, reserved device names and over-long names are refused. Files
-  are written into a temporary folder beside the destination and renamed when complete; on any error that folder
-  is removed. A folder without MaxDrop's marker file (`.maxdrop-pack.json`) is never written into, and MaxDrop
-  removes only folders it created itself.
+- **What is written, and where.** Only the `.max` you import and the pack's image and `.ies` files it names (all of
+  them when its asset list cannot be read), into one new folder named after the archive: next to the archive, or
+  inside the folder set under *Unpack Scene Packs Into* in the preferences. The folder is flat: a path stored in
+  the archive never decides where a file goes, only its file name is used, and names that Windows cannot store,
+  reserved device names and over-long names are refused. Files are written into a temporary folder beside the
+  destination and renamed when complete; on any error that folder is removed. A folder without MaxDrop's marker
+  file (`.maxdrop-pack.json`) is never written into, and MaxDrop removes only folders it created itself.
 - **What is never unpacked or run.** Everything else in a pack: scripts, programs, documents, other files. Links
   and other special files are refused. Nothing from a pack is executed or loaded as code. Limits on the number of
   files, the bytes really written, the time and the free disk space stop an archive that unpacks to far more than
@@ -52,13 +54,18 @@ unless you prefer otherwise.
 
 ## Known limits of this version
 
-A `.max` file is a complex binary format. In version 0.0.3 MaxDrop's own reader reads the nodes, meshes and
-transforms with bounded reads, depth and entry limits and a size cap on compressed streams. The materials still
-go through the parser inherited from io_scene_max as it is, which reads the whole file a second time and has not
-been hardened against malformed or hostile files: such a file can make Blender use a lot of memory, take very
-long or stop with a Python error. Memory safety is Python's, so the realistic risk is a hang or a crash of that
-Blender session, not code execution, but treat files from unknown sources with the usual care and save your work
-before importing. The inherited parser goes away as the material conversion moves to MaxDrop's reader.
+A `.max` file is a complex binary format. From version 0.0.4 MaxDrop's own reader reads everything it imports,
+nodes, meshes, transforms and materials, with bounded reads, depth, cycle and entry limits and a size cap on
+compressed streams; the parser inherited from io_scene_max is gone. A malformed or hostile file is meant to end in
+"Not imported" with a message, but it can still make Blender use a lot of memory or take long, and a defect can
+still stop the import with a Python error. Memory safety is Python's, so the realistic risk is a hang or a crash
+of that Blender session, not code execution: treat files from unknown sources with the usual care and save your
+work before importing.
+
+A texture file found by its stored path is checked (a local drive, a plain file, no link or junction in the path)
+when the scene is imported, and Blender opens it a moment later. Something that can already write into that
+folder could swap the file for a link in between. This is an accepted risk: it needs a program already running on
+your computer with access to that folder, and the window ends when the image is loaded.
 
 MaxDrop's reader maps the `.max` file into memory read-only instead of copying it. If the file is truncated or
 rewritten in place while an import reads it (another program writing it, a network share that drops), the
