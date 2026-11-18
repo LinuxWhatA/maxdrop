@@ -84,7 +84,7 @@ the gamma on (2.2, 3ds Max's default since 2014) a swatch's value is taken as li
 (a 128 grey swatch is 0.502 in Blender); with the gamma off it is decoded from sRGB, so it shows as in 3ds Max (128
 grey is 0.216). A file that does not store the setting is taken as gamma on, and the report says so. The report
 names the rule it used. A scene saved in LUT mode is read as gamma on (the file stores it so). Image files are
-sRGB either way (or what their own gamma says). Turn materials off with
+sRGB either way, EXR and HDR files linear (or what their own gamma says). Turn materials off with
 **Object Filter**.
 
 | Material | This version |
@@ -105,8 +105,8 @@ sRGB either way (or what their own gamma says). Turn materials off with
 | Channel | This version |
 |---|---|
 | Base color, metallic, roughness, IOR, opacity (alpha), specular, transmission, emission color and strength, coat, subsurface | **Imported**, by input name. **Thin Wall** exists from Blender 5.0: on 4.2 and 4.5 a thin-walled material is listed in the report instead |
-| Bitmap | **Imported** as an Image Texture: tiling, offset, the U, V and W angles (about the map's center, as 3ds Max turns it), tile and mirror (one setting for both directions in Blender), cropping and placing, the map channel (a UV Map node), the Output's invert, level, offset and amount, its alpha. Color maps in sRGB, data maps (roughness, metallic, opacity, normal, bump) Non-Color; a gamma override on a color map is applied |
-| CoronaBitmap | **Imported** like a Bitmap: UVW scale and offset, W angle, tiling or mirror per direction, cropping and placing, the map channel, gamma, alpha output |
+| Bitmap | **Imported** as an Image Texture: tiling, offset, the U, V and W angles (about the map's center, as 3ds Max turns it), tile and mirror (one setting for both directions in Blender; a cropped or placed image tiles, mirrors or clips per direction), cropping and placing, the map channel (a UV Map node; channel 0, the vertex colors, is drawn on channel 1 and named in the report), the Output's invert, level, offset and amount, its alpha. Color maps in sRGB, data maps (roughness, metallic, opacity, normal, bump) Non-Color; a gamma override on a color map is applied; automatic gamma reads an EXR or HDR file as linear, as 3ds Max does |
+| CoronaBitmap | **Imported** like a Bitmap: UVW scale and offset, W angle, tiling or mirror per direction, cropping and placing, the map channel, gamma (automatic reads an EXR or HDR file as linear, as Corona does), alpha output |
 | VRayBitmap (VRayHDRI) | **Imported** like a Bitmap: its coordinates, cropping and placing, alpha output; its transfer function on color maps (None as linear, Inverse gamma applied, sRGB; Auto and From 3ds Max as sRGB, as linear for an EXR or HDR file; data maps are read as they are, as for a Bitmap); its overall and render multipliers scale it. The environment mapping types (spherical, angular, cubic, mirrored ball) are drawn with the UVs |
 | CoronaColor | **Imported** as a color: RGB, HDR, temperature (an approximate curve) or hex, times its multiplier |
 | VRayColor | **Imported** as a color: RGB or temperature, times its RGB multiplier, with its color gamma. Its alpha and RGB primaries are not converted |
@@ -132,10 +132,16 @@ images. MaxDrop takes the **file name** of each path and looks for it, without r
 
 The first place that has the file wins. A path stored as a network share (`\\server\share\...`), a device path,
 a relative path or one that climbs with `..` is never opened; its file name is still looked for in places 1 to 3.
-Each place is searched once per import, at most 8 folders deep and 200,000 files and folders; links and
-junctions are not followed. A file that is not found keeps its Image Texture node, without an image and not
-connected, so the channel keeps its plain value (no black or magenta surface, in EEVEE or Cycles), and is named in
-the import report. Each file is loaded once per color space.
+Each place is searched once per import, at most 8 folders deep and 200,000 files and folders read, however
+large the folders are (for place 2, the listing of the `.max` file's folder and its parent counts too; the report
+says where a search stopped); links and junctions are not followed. A file that is not found keeps its Image
+Texture node, without an image and not connected, so the channel keeps its plain value (no black or magenta
+surface, in EEVEE or Cycles), and is named in the import report. A file that is found but holds no image (empty,
+or not starting as its format does) is left out the same way and named in the report. Each file is loaded once per
+color space; an image of the same file and color space already in the `.blend` (an earlier import's) is used
+again, unless it was painted on, packed, linked from a library or given another alpha mode. A material that fails
+to convert or build is named in the report and the scene comes in without it (its faces without a material) instead
+of failing.
 
 From a scene pack, the image and `.ies` files the scene names are unpacked flat into the folder of the `.max`, so
 the lookup above finds them wherever they were in the archive; the pack's other images are left out (all of them

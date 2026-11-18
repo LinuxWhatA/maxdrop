@@ -431,6 +431,24 @@ class Synthetic(Checks):
         self.assertIsNone(g.root.output)
         self.assertIsNone(g.root.gamma)
 
+    def test_float_files_under_automatic_gamma_are_linear(self):
+        for path in ("maps\\sky.EXR", "maps\\sky.hdr"):
+            table = assets.AssetTable([assets.AssetEntry(G1, "Bitmap", path, "")])
+            g = _tex(_bitmap(1), table=table).convert(mat.MapRef(1), tx.COLOR)
+            self.assertEqual((g.root.gamma, g.root.colorspace), (1.0, tx.NON_COLOR), path)
+        table = assets.AssetTable([assets.AssetEntry(G1, "Bitmap", "maps\\sky.exr", "")])
+        for info, gamma, space in ((_info(2.2, 5), 2.2, tx.SRGB), (_info(1.8, 5), 1.8, tx.NON_COLOR),
+                                   (_info(2.2, 4), 1.0, tx.NON_COLOR),  # an override is kept; no flag: automatic
+                                   (_info(50.0, 5), 1.0, tx.NON_COLOR)):  # out of range: automatic
+            b, chunk_map = _placed(info=info)
+            g = tx.TexmapConverter(FakeGraph(b, chunk_map=chunk_map), table).convert(mat.MapRef(1), tx.COLOR)
+            self.close(g.root.gamma, gamma)
+            self.assertEqual(g.root.colorspace, space, info.hex())
+        g = _tex(_bitmap(1), table=table).convert(mat.MapRef(1), tx.DATA)
+        self.assertEqual(g.root.colorspace, tx.NON_COLOR)
+        g = _tex(_bitmap(1)).convert(mat.MapRef(1), tx.COLOR)
+        self.assertEqual((g.root.gamma, g.root.colorspace), (None, tx.SRGB), "an 8-bit file: still automatic")
+
     def test_bitmap_without_a_file(self):
         tex = _tex(_bitmap(1, guid=b"\xff" * 16))
         self.assertIsNone(tex.convert(mat.MapRef(1), tx.COLOR))
@@ -746,6 +764,19 @@ class CoronaSynthetic(Checks):
         self.assertTrue(g.root.mapping.real_world)
         self.assertEqual((g.root.mapping.tile, g.root.mapping.channel), ((True, True), 1), "bad values: defaults")
         self.assertIn("real-world", g.issues[0])
+
+    def test_float_files_under_automatic_gamma_are_linear(self):
+        table = assets.AssetTable([assets.AssetEntry(G1, "Bitmap", "maps\\sky.HDR", "")])
+        for params in ({}, {"p125": -1.0}, {"p125": 50.0}):  # automatic: -1 or outside 0.1 to 10
+            g = _tex(_cbitmap(1, **params), table=table).convert(mat.MapRef(1), tx.COLOR)
+            self.assertEqual((g.root.gamma, g.root.colorspace), (1.0, tx.NON_COLOR), params)
+        g = _tex(_cbitmap(1, p125=2.2), table=table).convert(mat.MapRef(1), tx.COLOR)
+        self.close(g.root.gamma, 2.2)
+        self.assertEqual(g.root.colorspace, tx.SRGB, "an override is kept")
+        g = _tex(_cbitmap(1), table=table).convert(mat.MapRef(1), tx.DATA)
+        self.assertEqual(g.root.colorspace, tx.NON_COLOR)
+        g = _tex(_cbitmap(1)).convert(mat.MapRef(1), tx.COLOR)
+        self.assertEqual((g.root.gamma, g.root.colorspace), (None, tx.SRGB), "an 8-bit file: still automatic")
 
     def test_corona_bitmap_without_a_file(self):
         tex = _tex(_cbitmap(1, guid=G2))
@@ -1280,15 +1311,31 @@ class LostMaps(Checks):
                              (FakeMap(1, tx.VRAY_DIRT, {13: (1.0, 0.0, 0.0), 17: Ref(2)}, [2], cls="VRayDirt"),
                               "VRayDirt"),
                              (FakeMap(1, tx.OUTPUT, {0: Ref(2)}, [2], cls="Output"), "Output"),
-                             (FakeMap(1, tx.RGB_TINT, {3: Ref(2)}, [2], cls="RGB Tint"), "RGB Tint")):
+                             (FakeMap(1, tx.RGB_TINT, {3: Ref(2)}, [2], cls="RGB Tint"), "RGB Tint"),
+                             (FakeMap(1, tx.VRAY_COLOR2BUMP, {0: Ref(2)}, [2], cls="VRayColor2Bump"),
+                              "VRayColor2Bump")):
             tex = _tex(wrapper, _noise(2))
             self.assertIsNone(tex.convert(mat.MapRef(1), tx.COLOR), cls)
             self.lost_issue(tex, cls)
+            self.assertEqual(tex.stats.peeled, collections.Counter(), "%s drew nothing: not a peel" % cls)
+            self.assertEqual(tex.stats.unsupported, collections.Counter({"Noise": 1}), "the lost map only")
         tex = _tex(_falloff(1, color1=(1.0, 0.0, 0.0)))
         self.close(tex.convert(mat.MapRef(1), tx.COLOR).root.value, (1.0, 0.0, 0.0), "no map: color 1")
+        self.assertEqual(tex.stats.peeled, collections.Counter({"Falloff": 1}))
         tex = _tex(FakeMap(1, tx.VRAY_DIRT, {13: (1.0, 0.0, 0.0), 17: Ref(2), 18: 0}, [2], cls="VRayDirt"),
                    _noise(2))
         self.close(tex.convert(mat.MapRef(1), tx.COLOR).root.value, (1.0, 0.0, 0.0), "map off: its color")
+        self.assertEqual(tex.stats.peeled, collections.Counter({"VRayDirt": 1}))
+
+    def test_hidden_peeled_wrapper_is_exact(self):
+        # mix amount 1: map 1 (a Falloff over a lost map) does not show and is drawn as color 1
+        tex = _tex(FakeMap(1, tx.MIX, {0: 1.0, 6: Ref(2), 7: Ref(3)}, [2, 3], cls="Mix", name="mx"),
+                   _falloff(2, 4), _bitmap(3), _noise(4))
+        g = tex.convert(mat.MapRef(1), tx.COLOR)
+        self.assertIsInstance(g.root, tx.Mix)
+        self.assertFalse(g.approximated)
+        self.assertEqual(tex.stats.peeled, collections.Counter())
+        self.assertEqual(tex.stats.unsupported, collections.Counter({"Noise": 1}))
 
     def test_lost_map_that_is_not_a_map(self):
         tex = _tex(FakeMap(1, tx.COLOR_CORRECTION, {1: Ref(7)}, [7], cls="Color Correction", name="cc"))

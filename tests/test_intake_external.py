@@ -12,7 +12,7 @@ portable copy) for the 7-Zip cases.
 
     python -I -m unittest discover tests
 """
-import importlib.util
+import importlib
 import os
 import shutil
 import struct
@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 import zipfile
 
@@ -28,18 +29,15 @@ INTAKE = os.path.join(ROOT, "maxdrop", "intake")
 PACKS = os.path.join(ROOT, "tests", "fixtures", "packs")
 
 
-def _load(name, file):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(INTAKE, file))
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-# By path: `import maxdrop` would pull bpy. A name of its own, so tests/test_intake.py keeps a zip-only archive.py.
-archive = _load("maxdrop_intake_archive_ext", "archive.py")
-external = _load("maxdrop_intake_external", "external.py")
-external.install(archive)
+# Under a package whose path is maxdrop/ (`import maxdrop` would pull bpy), not tests/test_intake.py's: that one
+# keeps a zip-only archive.py. archive.py installs the external backends of this package itself.
+_PKG = "maxdrop_intake_ext_test"
+if _PKG not in sys.modules:
+    _pkg = types.ModuleType(_PKG)
+    _pkg.__path__ = [os.path.join(ROOT, "maxdrop")]
+    sys.modules[_PKG] = _pkg
+archive = importlib.import_module(_PKG + ".intake.archive")
+external = importlib.import_module(_PKG + ".intake.external")
 
 PackError = archive.PackError
 Tool = external.Tool
@@ -420,8 +418,9 @@ class HeaderTests(unittest.TestCase):
             external.ExternalBackend("rar", tools=[]).names(path)
         with open(path, "wb") as f:
             f.write(rar5_header(4))
-        with self.assertRaisesRegex(PackError, "password-protected"):
+        with self.assertRaises(PackError) as caught:
             external.ExternalBackend("rar", tools=[]).names(path)
+        self.assertEqual(str(caught.exception), archive.password_message(path))
 
 
 class MessageTests(unittest.TestCase):
@@ -432,7 +431,7 @@ class MessageTests(unittest.TestCase):
         with open(path, "wb") as f:
             f.write(rar5_header(1))
         with self.assertRaisesRegex(PackError, "No program to unpack .rar archives was found.*extract the archive "
-                                               "yourself"):
+                                               "by hand and import the .max from that folder"):
             external.ExternalBackend("rar", tools=[]).names(path)
 
     def test_too_old(self):
@@ -459,11 +458,22 @@ class MessageTests(unittest.TestCase):
     def test_password_and_tool_error(self):
         backend = external.ExternalBackend("rar")
         failures = [external.ToolFailed("UnRAR 7.23", "exit code 11", "Incorrect password for x.jpg")]
-        self.assertIn("password-protected", backend._failure("/p/scene.rar", failures))
+        self.assertEqual(backend._failure("/p/scene.rar", failures), archive.password_message("/p/scene.rar"))
         failures = [external.ToolFailed("bsdtar 3.8.9", "exit code 1", "line\n" * 50 + "x" * 1000)]
         message = backend._failure("/p/scene.rar", failures)
         self.assertIn("bsdtar 3.8.9: exit code 1", message)
         self.assertLess(len(message), 600)
+
+    def test_no_message_says_drop(self):
+        """Since File > Import: every message says to import the .max, none to drop it."""
+        backend = external.ExternalBackend("rar")
+        messages = [backend._none_message("/p/scene.rar", "rar", []),
+                    backend._none_message("/p/scene.rar", "rar", [Tool(UNRAR, "/opt/UnRAR.exe", (7, 1))]),
+                    backend._failure("/p/scene.rar", [external.ToolFailed("UnRAR 7.23", "exit code 1")]),
+                    external._volume_message("/p/scene.part1.rar")]
+        for message in messages:
+            self.assertNotIn("drop", message)
+            self.assertIn("import the .max", message)
 
 
 
@@ -600,6 +610,7 @@ class StandInTests(TempCase):
         self.first = Tool(UNRAR, PY, (7, 23))
         self.second = Tool(SEVENZIP, PY, (26, 6))
         self.scripts = {}
+        self.unlistable = set()     # flavors whose listing fails
         saved = (external.list_entries, external.extract_args, archive._BACKENDS.get("rar"))
         self.addCleanup(self._restore, saved)
         external.list_entries = self._list
@@ -610,6 +621,8 @@ class StandInTests(TempCase):
         archive._BACKENDS["rar"] = backend
 
     def _list(self, tool, path):
+        if tool.flavor in self.unlistable:
+            raise external.ToolFailed(tool.label, "exit code 2")
         return [archive.Entry(name=n, size=3, key=(tool, n)) for n in PLAN]
 
     def _extract_args(self, tool, path, list_file, out):
@@ -641,17 +654,73 @@ class StandInTests(TempCase):
 
     def test_password_message(self):
         self.scripts[UNRAR] = "import sys\nprint('Incorrect password for pack/scene.max')\nsys.exit(11)\n"
-        with self.assertRaisesRegex(PackError, "password-protected"):
+        with self.assertRaises(PackError) as caught:
             self.use(self.first)()
+        self.assertEqual(str(caught.exception), archive.password_message(self.pack))
         self.assertEqual(self.left(), ["scene.rar"])
+
+    def test_an_entry_listed_as_encrypted_gives_the_password_message(self):
+        listed = self._list
+
+        def encrypted(tool, path):
+            entries = listed(tool, path)
+            entries[1].encrypted = True
+            return entries
+        external.list_entries = encrypted
+        self.scripts[UNRAR] = self.WRITE
+        with self.assertRaises(PackError) as caught:
+            self.use(self.first)()
+        self.assertEqual(str(caught.exception), archive.password_message(self.pack))
+        self.assertEqual(self.left(), ["scene.rar"])
+
+    def test_names_are_listed_with_slashes(self):
+        """UnRAR on Windows lists pack\\scene.max: shown and chosen as pack/scene.max, asked for as listed."""
+        self.use(self.first)
+        self.assertEqual(archive.list_pack(self.pack).scenes, ["pack/scene.max"])
+        self.scripts[UNRAR] = self.WRITE + ("names = open(sys.argv[2], 'rb').read().decode('utf-8').split('\\n')\n"
+                                            "sys.exit(0 if names[0] == %r else 5)\n" % PLAN[0])
+        result = archive.unpack(self.pack, "pack/scene.max")
+        self.assertEqual(folder_files(result.folder), {"scene.max": b"MAX", "wood.jpg": b"WOOD"})
+        self.assertEqual(archive._read_marker(result.folder)["scene"], "pack/scene.max")
 
     def test_next_program_on_a_fresh_folder(self):
         self.scripts[UNRAR] = self.WRITE + "open(os.path.join(out, 'junk.jpg'), 'wb').write(b'x')\nsys.exit(2)\n"
         self.scripts[SEVENZIP] = self.WRITE
         result = self.use(self.first, self.second)()
         self.assertEqual(folder_files(result.folder), {"scene.max": b"MAX", "wood.jpg": b"WOOD"})
-        # The result names the program that listed the pack; the backend names the one that unpacked it.
-        self.assertEqual(archive._BACKENDS["rar"].name, "7-Zip 26.06")
+        self.assertEqual(result.backend, "7-Zip 26.06")
+        # No per-pack state: the backend's own name stays the program chain.
+        self.assertEqual(archive._BACKENDS["rar"].name, external.ExternalBackend("rar").name)
+
+    def test_listing_names_the_lister(self):
+        self.use(self.first, self.second)
+        self.assertEqual(archive.list_pack(self.pack).backend, "UnRAR 7.23")
+        self.unlistable.add(UNRAR)
+        self.assertEqual(archive.list_pack(self.pack).backend, "7-Zip 26.06")
+        self.assertEqual(archive._BACKENDS["rar"].name, external.ExternalBackend("rar").name)
+
+    def test_reused_folder_names_the_lister(self):
+        self.scripts[UNRAR] = self.WRITE
+        unpack = self.use(self.first, self.second)
+        self.assertEqual(unpack().mode, "unpacked")
+        self.unlistable.add(UNRAR)
+        again = unpack()
+        self.assertEqual((again.mode, again.backend), ("reused", "7-Zip 26.06"))
+
+    # Writes each name of its list file into out, under its base name.
+    WRITE_LISTED = ("import os, sys\nout, names = sys.argv[1], sys.argv[2]\n"
+                    "for n in open(names, encoding='utf-8').read().split('\\n'):\n"
+                    "    if n:\n"
+                    "        open(os.path.join(out, n.replace('\\\\', '/').rsplit('/', 1)[-1]), 'wb').write(b'X')\n")
+
+    def test_scene_and_maps_by_different_programs(self):
+        self.scripts[UNRAR] = ("import sys\nif 'scene.max' in open(sys.argv[2], encoding='utf-8').read():\n"
+                               "    sys.exit(2)\n" + self.WRITE_LISTED)
+        self.scripts[SEVENZIP] = self.WRITE_LISTED
+        archive._BACKENDS["rar"] = external.ExternalBackend("rar", tools=[self.first, self.second])
+        result = archive.unpack(self.pack, references=lambda p: ["wood.jpg"])
+        self.assertEqual(folder_files(result.folder), {"scene.max": b"X", "wood.jpg": b"X"})
+        self.assertEqual(result.backend, "7-Zip 26.06 and UnRAR 7.23")
 
     def test_other_files_than_asked(self):
         self.scripts[UNRAR] = self.WRITE + "open(os.path.join(out, 'evil.jpg'), 'wb').write(b'x')\n"
@@ -679,6 +748,30 @@ class StandInTests(TempCase):
         with self.assertRaisesRegex(PackError, "unpacks to more than"):
             self.use(self.first, limits=limits)()
         self.assertLess(time.monotonic() - start, 5)
+        self.assertEqual(self.left(), ["scene.rar"])
+
+    def test_watcher_counts_the_scene_phase(self):
+        """The maps' watcher starts from what the scene phase wrote: each phase is under the byte limit, both are
+        over it, and only that watcher ends the second program before its sleep does."""
+        self.scripts[UNRAR] = (
+            "import os, sys, time\nout, names = sys.argv[1], open(sys.argv[2], encoding='utf-8').read()\n"
+            "if 'scene.max' in names:\n"
+            "    open(os.path.join(out, 'scene.max'), 'wb').write(b'S' * (700 << 10))\n"
+            "else:\n"
+            "    f = open(os.path.join(out, 'wood.jpg'), 'wb'); f.write(b'W' * (700 << 10)); f.flush()\n"
+            "    time.sleep(60)\n")
+        asked = []
+
+        def refs(max_path):
+            asked.append(os.path.getsize(max_path))
+            return ["wood.jpg"]
+        archive._BACKENDS["rar"] = external.ExternalBackend("rar", tools=[self.first])
+        limits = archive.Limits(total_bytes=1 << 20, free_margin=0)  # declared sizes are 3 bytes: no early refusal
+        start = time.monotonic()
+        with self.assertRaisesRegex(PackError, "unpacks to more than"):
+            archive.unpack(self.pack, limits=limits, references=refs)
+        self.assertLess(time.monotonic() - start, 10)
+        self.assertEqual(asked, [700 << 10], "the scene phase passed on its own")
         self.assertEqual(self.left(), ["scene.rar"])
 
     def test_pack_time_limit(self):
@@ -779,6 +872,42 @@ class RealToolTests(TempCase):
                     self.assertEqual(result.backend, tool.label)
                     # Two wood.jpg: the one beside the scene is kept, the other reported.
                     self.assertEqual([c.replace("\\", "/") for c in result.collided], ["pack/other/wood.jpg"])
+                    self.assertEqual(sorted(os.listdir(case_dir)), sorted([name, name.rsplit(".", 1)[0]]))
+                    say(label, True)
+
+    def test_references_unpack_only_the_named_maps(self):
+        """Two phases through one program: the scene alone, then only the maps its asset list names."""
+        for name in ("normal.rar", "solid.rar", "plain.7z"):
+            flavors = [f for f in (UNRAR, SEVENZIP, BSDTAR) if name in self.CASES[f]]
+            for tool, label in self.tools_for("references, %s" % name, flavors):
+                with self.subTest(tool=tool.label, pack=name):
+                    self.only(tool)
+                    case_dir = tempfile.mkdtemp(dir=self.tmp)
+                    pack = os.path.join(case_dir, name)
+                    shutil.copyfile(os.path.join(PACKS, name), pack)
+                    asked = []
+
+                    def refs(max_path):
+                        # The scene is on disk, alone, before any map is asked for.
+                        with open(max_path, "rb") as f:
+                            asked.append((max_path, f.read(), sorted(os.listdir(os.path.dirname(max_path)))))
+                        return ["wood.jpg"]
+
+                    result = archive.unpack(pack, references=refs)
+                    self.assertEqual(len(asked), 1)
+                    staged, data, beside = asked[0]
+                    self.assertEqual(data, TREE["pack/scene/scene.max"])
+                    self.assertEqual(beside, ["scene.max"])
+                    # Asked about the staged scene: in a staging folder beside the pack, not the final folder.
+                    self.assertEqual(os.path.normcase(os.path.dirname(os.path.dirname(staged))),
+                                     os.path.normcase(case_dir))
+                    self.assertTrue(os.path.basename(os.path.dirname(staged)).startswith(archive.STAGING_PREFIX))
+                    self.assertEqual(folder_files(result.folder),
+                                     {"scene.max": TREE["pack/scene/scene.max"], "wood.jpg": b"near wood"})
+                    self.assertEqual((result.mode, result.written, result.unwanted), ("unpacked", 2, 2))
+                    self.assertEqual([c.replace("\\", "/") for c in result.collided], ["pack/other/wood.jpg"])
+                    self.assertEqual(result.backend, tool.label)
+                    self.assertEqual(archive._read_marker(result.folder)["wanted"], ["wood.jpg"])
                     self.assertEqual(sorted(os.listdir(case_dir)), sorted([name, name.rsplit(".", 1)[0]]))
                     say(label, True)
 
@@ -892,8 +1021,9 @@ class RegistrationTests(unittest.TestCase):
         the external backends itself."""
         code = ("import importlib.util, sys, types\n"
                 "pkg = types.ModuleType('mdpkg'); pkg.__path__ = [%r]; sys.modules['mdpkg'] = pkg\n"
-                "import mdpkg.archive as a\n"
-                "print(type(a._BACKENDS['rar']).__name__, type(a._BACKENDS['7z']).__name__)\n" % INTAKE)
+                "import mdpkg.intake.archive as a\n"
+                "print(type(a._BACKENDS['rar']).__name__, type(a._BACKENDS['7z']).__name__)\n"
+                % os.path.join(ROOT, "maxdrop"))
         out = subprocess.run([PY, "-I", "-c", code], capture_output=True, text=True, timeout=60)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(out.stdout.split(), ["ExternalBackend", "ExternalBackend"])

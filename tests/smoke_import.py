@@ -13,8 +13,11 @@ Each file is imported into an emptied scene with the default options and must br
 one material; the counts are printed so that runs on different Blender versions can be compared.
 
 Every .max is then packed into a .zip in a scratch folder (the scene with the image and .ies files of its folder
-tree) and imported from it: same checks, no fewer images, unpacked beside the zip. A zip holding it twice under two
-names must be refused in EXEC mode with both names in the message, then import once the scene is named. The same
+tree, plus one image no scene names) and imported from it: same checks, no fewer images, unpacked beside the zip;
+when the scene's asset list is read, that image stays in the zip and the report counts it (`Files the scene does
+not use, left out: N`, N computed: 1 while the fixtures carry no images). A zip holding it twice under two
+names must be refused in EXEC mode with both names in the message, then import once the scene is named; its Scene
+Pack panel names the exact folder of the scene the Scene field names, and the reused one after the import. The same
 files are also chosen through directory + files, as the file browser and a drop pass them: a .max with a
 one-scene zip, a two-scene zip with another pack (refused), a good zip then one with a damaged scene (refused,
 nothing imported, the message names the good one, which stays unpacked), a file named .zip that is not one
@@ -52,6 +55,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 ARCHIVES = (".zip", ".rar", ".7z")
 SECOND = "second.max"
+UNUSED = "maxdrop_smoke_unused.png"  # an image in every generated zip that no scene names
 TEXT_NAME = "MaxDrop Report"
 failures = []
 REPORTS = []  # (level, message) of each scene the operator imported, while record_reports() wraps it
@@ -250,14 +254,20 @@ def damage(zip_path):
         f.write(bytes([byte ^ 0xFF]))
 
 
-def as_pack(max_path, scratch, images_of_max, archive):
+def as_pack(max_path, scratch, images_of_max, archive, ops):
     name = os.path.basename(max_path)
     stem = os.path.splitext(name)[0]
     folder = os.path.join(scratch, "one")
     entries = [(stem + "/" + name, max_path)]
     entries += [(stem + "/" + arc, full) for arc, full in maps_of(max_path, archive.ASSET_EXTENSIONS)]
+    # An image no scene names: the operator's filter (ops._referenced_maps) must leave it in the zip.
+    unused = os.path.join(scratch, UNUSED)
+    os.makedirs(scratch, exist_ok=True)
+    with open(unused, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n not used")
+    entries.append((stem + "/unused/" + UNUSED, unused))
     zip_path = make_zip(os.path.join(folder, stem + ".zip"), entries)
-    images = import_one(zip_path, "%s in a .zip (%d map files)" % (name, len(entries) - 1), max_name=name,
+    images = import_one(zip_path, "%s in a .zip (%d map files)" % (name, len(entries) - 2), max_name=name,
                         pack_name=os.path.basename(zip_path))
     check("%s in a .zip: no fewer images than from the .max" % name, images >= images_of_max,
           "%d from the .zip, %d from the .max" % (images, images_of_max))
@@ -267,6 +277,24 @@ def as_pack(max_path, scratch, images_of_max, archive):
     outside = [img.filepath for img in bpy.data.images
                if img.filepath and not inside(bpy.path.abspath(img.filepath), pack)]
     check("%s in a .zip: every image comes from the pack folder" % name, not outside, ", ".join(outside[:5]))
+    referenced = ops._referenced_maps(max_path)
+    if referenced is None:
+        if argv:
+            print("NOTE %s in a .zip: no readable asset list, every map unpacked: unused-map check skipped" % name)
+        else:
+            check("%s in a .zip: its asset list is read (every fixture has one)" % name, False)
+        return
+    wanted = {archive.name_key(n) for n in referenced}
+    bases = [arc.rsplit("/", 1)[-1] for arc, _full in entries[1:]]
+    expected = sum(1 for b in bases if archive.refused_reason(b) is None and archive.name_key(b) not in wanted)
+    text = bpy.data.texts.get(TEXT_NAME)
+    body = text.as_string() if text is not None else ""
+    on_disk = sorted(os.listdir(pack)) if os.path.isdir(pack) else []
+    check("%s in a .zip: the image the scene does not use is not unpacked" % name,
+          os.path.isdir(pack) and UNUSED.casefold() not in {n.casefold() for n in on_disk}, ", ".join(on_disk))
+    line = "\n  Files the scene does not use, left out: %d\n" % expected
+    check("%s in a .zip: the report says %r" % (name, line.strip()), line in body + "\n",
+          [s for s in body.split("\n") if "does not use" in s])
 
 
 def attempt(**options):
@@ -278,7 +306,7 @@ def attempt(**options):
         return {'CANCELLED'}, str(e)
 
 
-def two_scenes(max_path, scratch):
+def two_scenes(max_path, scratch, ops):
     name = os.path.basename(max_path)
     folder = os.path.join(scratch, "two")
     zip_path = make_zip(os.path.join(folder, "two.zip"), [("a/" + name, max_path), ("b/" + SECOND, max_path)])
@@ -287,10 +315,29 @@ def two_scenes(max_path, scratch):
     check("two scenes in a .zip, none named: the message names both",
           ("a/" + name) in message and ("b/" + SECOND) in message, message.strip())
     check("two scenes in a .zip, none named: nothing unpacked", not os.path.exists(os.path.join(folder, "two")))
+    # What invoke() stores (it needs a window): the popup then previews whichever scene the Scene field names.
+    ops._TARGETS[ops._norm(zip_path)] = (folder, None, {})
+    first = os.path.join(folder, "two", os.path.splitext(name)[0])
+    labels = pack_panel(ops, zip_path, "a/" + name)
+    check("Scene Pack panel: names the folder of the scene chosen", labels[-2:] == ["Unpacks into", first],
+          str(labels))
+    second = os.path.join(folder, "two", "second")
+    labels = pack_panel(ops, zip_path, SECOND)
+    check("Scene Pack panel: names it again when the Scene field changes", labels[-2:] == ["Unpacks into", second],
+          str(labels))
+    check("Scene Pack panel: the preview wrote nothing", not os.path.exists(os.path.join(folder, "two")))
     import_one(zip_path, "two scenes in a .zip, %s named" % SECOND, max_name=SECOND, pack_name="two.zip",
                pack_scene=SECOND)
     check("two scenes in a .zip: the named scene is unpacked into its own folder",
           os.path.isfile(os.path.join(folder, "two", "second", SECOND)))
+    check("two scenes in a .zip: the unpack drops the popup's previews", ops._norm(zip_path) not in ops._TARGETS)
+    ops._TARGETS[ops._norm(zip_path)] = (folder, None, {})
+    labels = pack_panel(ops, zip_path, SECOND)
+    check("Scene Pack panel: the scene unpacked before is read from its folder",
+          labels[-2:] == ["Unpacked before: imports from", second], str(labels))
+    labels = pack_panel(ops, zip_path, "a/" + name)
+    check("Scene Pack panel: the other scene unpacks beside it", labels[-2:] == ["Unpacks into", first], str(labels))
+    ops._TARGETS.pop(ops._norm(zip_path), None)
 
 
 def selections(max_path, scratch):
@@ -359,10 +406,23 @@ class FakeLayout:
     def label(self, text="", icon='NONE'):
         self.labels.append(text)
 
+    def prop(self, data, name):
+        pass
+
+    def row(self):
+        return self
+
 
 class FakeOperator:
-    def __init__(self, path):
-        self.files, self.directory, self.filepath = [], "", path
+    def __init__(self, path, pack_scene=""):
+        self.files, self.directory, self.filepath, self.pack_scene = [], "", path, pack_scene
+
+
+def pack_panel(ops, zip_path, scene):
+    """The labels of the Scene Pack panel, as draw() shows them for the Scene field set to scene."""
+    layout = FakeLayout()
+    ops.import_pack(layout, FakeOperator(zip_path, scene), [(zip_path, ops._listing(zip_path))])
+    return layout.labels
 
 
 def preflight_panel(ops, path):
@@ -474,8 +534,8 @@ def run():
             FIXTURE["issues"] = 0 if argv else FIXTURE_ISSUES.get(os.path.basename(path), 0)
             images = import_one(path)
             work = os.path.join(scratch, str(n))
-            as_pack(path, work, images, archive)
-            two_scenes(path, work)
+            as_pack(path, work, images, archive, ops)
+            two_scenes(path, work, ops)
             selections(path, work)
         FIXTURE["modifiers"] = FIXTURE["issues"] = 0
         if not argv:

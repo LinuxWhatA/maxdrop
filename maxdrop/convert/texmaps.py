@@ -14,12 +14,12 @@
 kind says what the input is: COLOR (base color, specular and transmission, which V-Ray and Standard drive with the
 reflection and refraction colors, emission), DATA (roughness, metallic, opacity), NORMAL or BUMP. It sets the color
 space of every image below: sRGB for COLOR, Non-Color for the others (a Mix mask is always Non-Color). A Bitmap's
-gamma override (None: automatic, the default) is kept on its Image: on a color input, an override of 2.2 is sRGB,
-any other is Non-Color and the builder applies the override as a gamma (1.0: none); on the other inputs an image is
-data and the override is not applied. Constants are linear, a swatch made so by the scene's swatch rule
-(convert/colors.py: linear with the gamma on, the sRGB curve with it off): in a COLOR graph always linear RGB (also
-when the input itself is a float, as specular and transmission are: the builder takes the mean of the graph's color
-there, the measure materials.py uses), elsewhere a float, the mean of the linear color.
+gamma override (None: automatic, the default; 1.0 for an EXR or HDR file) is kept on its Image: on a color input, an
+override of 2.2 is sRGB, any other is Non-Color and the builder applies the override as a gamma (1.0: none); on the
+other inputs an image is data and the override is not applied. Constants are linear, a swatch made so by the scene's
+swatch rule (convert/colors.py: linear with the gamma on, the sRGB curve with it off): in a COLOR graph always
+linear RGB (also when the input itself is a float, as specular and transmission are: the builder takes the mean of
+the graph's color there, the measure materials.py uses), elsewhere a float, the mean of the linear color.
 
 The graph's nodes (frozen dataclasses): Image (an image map: the file as the scene stores it, the one the texture lookup
 found, Mapping, Crop, TexOutput, color space, gamma, alpha), Constant, Invert, Mix(a, b, factor, mask), Multiply,
@@ -38,8 +38,8 @@ files, the map angle kept, a height map in a bump slot a Bump node instead of dr
   amount, RGB level and offset) when it changes anything; alpha when the Bitmap gives its alpha to a mono input
   (mono output Alpha) or as its color (RGB output Alpha). A Bitmap without a file is no image (an issue).
 - CoronaBitmap -> Image the same way, from its own parameters: UVW scale and offset, W angle, tiling (none, repeat,
-  mirror) per axis, map channel, blur, clipping (crop or place), gamma (-1 automatic), mono / RGB output alpha, real-
-  world scale (an issue); its Output part as a Bitmap's.
+  mirror) per axis, map channel, blur, clipping (crop or place), gamma (-1 automatic, as a Bitmap's), mono / RGB
+  output alpha, real-world scale (an issue); its Output part as a Bitmap's.
 - VRayBitmap (VRayHDRI before V-Ray 5: the same class) -> Image the same way: its Placement and Output parts as a
   Bitmap's, its own crop / place and mono / RGB output alpha; its transfer function as the gamma (none: 1.0, inverse
   gamma g: 1 / g, sRGB: automatic, from 3ds Max and auto: automatic, linear for an EXR or HDR file), its overall
@@ -69,7 +69,8 @@ files, the map angle kept, a height map in a bump slot a Bump node instead of dr
 - A map that is set (and switched on) but converts to nothing (an unsupported class with no bitmap below, a
   Bitmap without a file, a cut branch) is an issue on its wrapper naming its class, and never stands in as the
   wrapper's own color for it (3ds Max uses that color only without a map or with the map off): a Color Correction,
-  Falloff, VRayDirt, Output, RGB Tint or VRayColor2Bump over it gives no graph, so the input keeps its own value.
+  Falloff, VRayDirt, Output, RGB Tint or VRayColor2Bump over it gives no graph and is not counted (the lost map
+  is reported), so the input keeps its own value.
   A Mix or CoronaMix weighs it by its amount: a side that does not show is drawn as its color (exact), a side that
   fills the result gives no graph, any other weight (or a mask) peels the wrapper to its other side's map, or no
   graph; an RGB Multiply is always peeled that way. A lost mask leaves the mix amount, a lost Composite layer is
@@ -78,26 +79,29 @@ files, the map angle kept, a height map in a bump slot a Bump node instead of dr
   the input's value with the map (Mix(Constant(value), map, amount)), above 1 multiplies the map; in a bump input the
   amount is the Bump's strength, in a normal input it scales the NormalMap's strengths.
 
-Each map object counts once in stats.peeled or stats.unsupported, each issue once in stats.issues. The file comes
-from anywhere: a reference cycle, a chain deeper than MAX_DEPTH, a reference to an object that is not a map or a
-damaged object end that branch (an issue), a shared map is converted once (no blow-up through repeated
-references), and unreadable Placement, Output or BitmapInfo chunks take the defaults. The chunks of the Placement object and the
-BitmapInfo are read here (3ds Max 2020 layout, docs/FORMAT.md). No bpy, no mathutils.
+Each map object counts at most once in stats.peeled or stats.unsupported, each issue once in stats.issues. The file
+comes from anywhere: a reference cycle, a chain deeper than MAX_DEPTH, a reference to an object that is not a map or
+a damaged object end that branch (an issue), a shared map is converted once (no blow-up through repeated
+references), and unreadable Placement, Output or BitmapInfo chunks take the defaults. Those chunks are read by
+reader/materials.py (placement, output_invert, bitmap_gamma); what they hold is judged here. No bpy, no mathutils.
 """
 import collections
 import dataclasses
 import math
-import struct
 
 from ..reader import chunks, classids, pblock
+from ..reader import materials as reader_materials
 from ..reader.classdir import ClassId
-from . import colors
+from . import colors, params
+from .params import finite as _finite
 
 ChunkError = chunks.ChunkError
 
 COLOR, DATA, NORMAL, BUMP = "color", "data", "normal", "bump"
 SRGB, NON_COLOR = "sRGB", "Non-Color"
-EXPLICIT, OBJECT_XYZ, VERTEX_COLOR, WORLD_XYZ = 0, 1, 2, 3  # Placement coordinate source
+EXPLICIT, OBJECT_XYZ, VERTEX_COLOR, WORLD_XYZ = (  # Placement coordinate source
+    reader_materials.UV_EXPLICIT, reader_materials.UV_OBJECT_XYZ, reader_materials.UV_VERTEX_COLOR,
+    reader_materials.UV_WORLD_XYZ)
 MAX_DEPTH = 8
 MAX_NODES = 256  # nodes of one graph drawn as a tree
 SRGB_GAMMA, GAMMA_TOLERANCE = 2.2, 0.05
@@ -146,7 +150,7 @@ VB_STANDARD, VB_INTENSITY, VB_ACESCG = 4, 2, 2
 # color_space (transfer function), measured with renderMap: 0 none (linear), 1 inverse gamma (pixel ^ (1 / gamma)),
 # 2 sRGB, 3 from 3ds Max (the input gamma, as a Bitmap's automatic), 4 auto (sRGB for an 8-bit file, the default)
 VB_LINEAR, VB_INVERSE_GAMMA, VB_SRGB, VB_AUTOMATIC = 0, 1, 2, (2, 3, 4)
-FLOAT_IMAGES = (".exr", ".hdr")  # files auto and from-3ds-Max read as linear
+FLOAT_IMAGES = (".exr", ".hdr")  # files an automatic gamma (Bitmap, CoronaBitmap, VRayBitmap auto) reads as linear
 MAX_MULTIPLIER = 1e6
 # image class -> (class name in issues, its file parameter in block 0); any other image class is a Bitmap
 _IMAGE_FILES = {classids.CORONA_BITMAP: ("CoronaBitmap", CB_FILE), classids.VRAY_BITMAP: ("VRayBitmap", VB_FILE)}
@@ -165,15 +169,10 @@ CM_MULTIPLY, CM_MIX = 2, 6
 # Bitmap, block 0
 BM_CLIP_U, BM_CLIP_V, BM_CLIP_W, BM_CLIP_H, BM_APPLY, BM_CROP_PLACE, BM_MONO, BM_RGB, BM_FILE = (
     0, 1, 2, 3, 6, 7, 9, 10, 13)
-# Placement (UVGen) old ParamBlock indices, and its chunks
+# Placement (UVGen) old ParamBlock indices (its chunks: reader_materials.placement)
 UV_U_OFFSET, UV_V_OFFSET, UV_U_TILING, UV_V_TILING, UV_U_ANGLE, UV_V_ANGLE, UV_W_ANGLE, UV_BLUR = range(8)
-_UV_FLAGS, _UV_AXIS, _UV_MAPPING_TYPE, _UV_SOURCE, _UV_CHANNEL = 0x9002, 0x9003, 0x9005, 0x9006, 0x900B
-U_TILE, V_TILE, U_MIRROR, V_MIRROR, REAL_WORLD = 0x1, 0x2, 0x4, 0x8, 0x08000000
-# Output (TexOutput) old ParamBlock indices and its flags chunk
+# Output (TexOutput) old ParamBlock indices (its flags: reader_materials.output_invert)
 OUT_LEVEL, OUT_OFFSET, OUT_AMOUNT = 0, 1, 2
-_OUT_FLAGS, OUT_INVERT = 0x0002, 0x2
-# BitmapInfo: the 0x0003 sibling of the bitmap entry holds 0x1201; its last 14 bytes start with gamma, flags
-_BITMAP_DATA, _BITMAP_INFO, _BI_TAIL, BI_GAMMA_OVERRIDE = 0x0003, 0x1201, 14, 0x1
 
 
 @dataclasses.dataclass(frozen=True)
@@ -217,8 +216,8 @@ class TexOutput:
 class Image:
     """An image map (Bitmap, CoronaBitmap, VRayBitmap). path / resolved: as the scene stores them (resolved:
     FileAssetMetaData3's); found: the textures.Found of the lookup, None without a lookup or when the file was not
-    found; gamma: the override (linear = pixel ^ gamma), None for automatic; alpha: the image's alpha is used, not
-    its color."""
+    found; gamma: the override (linear = pixel ^ gamma), None for automatic (1.0 for an EXR or HDR file); alpha: the
+    image's alpha is used, not its color."""
     index: int
     name: str
     path: str = ""
@@ -368,18 +367,12 @@ def first_image(node):
     return None
 
 
-def _finite(v):
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
-
-
 def _num(m, pid, default):
-    v = m.param(pid, 0)
-    return float(v) if _finite(v) else default
+    return params.num(m, pid, 0, default)
 
 
 def _flag(m, pid, default):
-    v = m.param(pid, 0)
-    return bool(v) if _finite(v) else default
+    return params.flag(m, pid, 0, default)
 
 
 def _vec(m, pid, default):
@@ -421,6 +414,12 @@ def colorspace(kind, gamma):
     if gamma is None or abs(gamma - SRGB_GAMMA) <= GAMMA_TOLERANCE:
         return SRGB
     return NON_COLOR
+
+
+def _auto_gamma(gamma, name):
+    """A Bitmap's or CoronaBitmap's gamma: automatic (None) reads a float file (EXR, HDR) as linear, as 3ds Max and
+    Corona do; an override is kept."""
+    return 1.0 if gamma is None and name.lower().endswith(FLOAT_IMAGES) else gamma
 
 
 class TexmapConverter:
@@ -550,9 +549,11 @@ class TexmapConverter:
             return rule(self, m, kind, walk, depth, chain)
         rule = _PEEL.get(key)
         if rule is not None:
-            walk.approximated = True
-            self._count(self.stats.peeled, m)
-            return rule(self, m, kind, walk, depth, chain)
+            node = rule(self, m, kind, walk, depth, chain)
+            if node is not None:
+                walk.approximated = True
+                self._count(self.stats.peeled, m)
+            return node
         return self._peel_to_image(m, kind, walk, depth, chain, "no bitmap below")
 
     def _peel_to_image(self, m, kind, walk, depth, chain, why):
@@ -652,7 +653,7 @@ class TexmapConverter:
                                                      (BM_CLIP_H, 1.0)))
         if _flag(m, BM_APPLY, False) and clip != (0.0, 0.0, 1.0, 1.0):
             crop = Crop(*clip, place=m.param(BM_CROP_PLACE, 0) == 1)
-        gamma = self._gamma(m)
+        gamma = _auto_gamma(self._gamma(m), entry.name)
         alpha = m.param(BM_MONO if kind == DATA else BM_RGB, 0) == 1
         return Image(m.index, entry.name, entry.path, entry.resolved, found, mapping, crop, self._output(out),
                      colorspace(kind, gamma), gamma, alpha)
@@ -745,77 +746,43 @@ class TexmapConverter:
         if _flag(m, CB_CLIP_ON, False) and clip != (0.0, 0.0, 1.0, 1.0):
             crop = Crop(*clip, place=m.param(CB_CLIP_MODE, 0) == 1)
         gamma = _num(m, CB_GAMMA, -1.0)  # -1: automatic
-        gamma = gamma if 0.1 <= gamma <= 10.0 else None
+        gamma = _auto_gamma(gamma if 0.1 <= gamma <= 10.0 else None, entry.name)
         alpha = m.param(CB_MONO if kind == DATA else CB_RGB, 0) == 1
         return Image(m.index, entry.name, entry.path, entry.resolved, found, mapping, crop, self._output(out),
                      colorspace(kind, gamma), gamma, alpha)
 
-    def _chunk_u32s(self, index, ids):
-        """{chunk id: u32} of the leaf children of object index with those ids; {} when unreadable."""
-        out = {}
-        try:
-            chunk = self.graph.scene.chunk(index)
-            if not chunk.container:
-                return out
-            for c in chunk.children:
-                if c.id in ids and not c.container and c.payload_size >= 4 and c.id not in out:
-                    out[c.id] = c.unpack("<I")[0]
-        except (ChunkError, IndexError, struct.error):
-            return {}
-        return out
-
     def _mapping(self, uv):
         if uv is None:
             return Mapping()
-        raw = self._chunk_u32s(uv.index, (_UV_FLAGS, _UV_AXIS, _UV_MAPPING_TYPE, _UV_SOURCE, _UV_CHANNEL))
-        flags = raw.get(_UV_FLAGS, U_TILE | V_TILE)
-        source = raw.get(_UV_SOURCE, EXPLICIT)
-        source = source if source in (EXPLICIT, OBJECT_XYZ, VERTEX_COLOR, WORLD_XYZ) else EXPLICIT
-        channel = raw.get(_UV_CHANNEL, 1)
+        p = reader_materials.placement(self.graph.scene, uv.index)
+        source = p.source if p.source in (EXPLICIT, OBJECT_XYZ, VERTEX_COLOR, WORLD_XYZ) else EXPLICIT
+        channel = 1 if p.channel is None else p.channel
         channel = 0 if source == VERTEX_COLOR else (channel if 0 <= channel <= 99 else 1)
-        axis = raw.get(_UV_AXIS, 0)
         return Mapping(
             channel=channel,
             tiling=(_old(uv, UV_U_TILING, 1.0), _old(uv, UV_V_TILING, 1.0)),
             offset=(_old(uv, UV_U_OFFSET, 0.0), _old(uv, UV_V_OFFSET, 0.0)),
             angle=(_old(uv, UV_U_ANGLE, 0.0), _old(uv, UV_V_ANGLE, 0.0), _old(uv, UV_W_ANGLE, 0.0)),
-            tile=(bool(flags & U_TILE), bool(flags & V_TILE)),
-            mirror=(bool(flags & U_MIRROR), bool(flags & V_MIRROR)),
-            axis=axis if axis in (0, 1, 2) else 0,
+            tile=p.tile,
+            mirror=p.mirror,
+            axis=p.axis if p.axis in (0, 1, 2) else 0,
             source=source,
-            environment=raw.get(_UV_MAPPING_TYPE, 0) != 0,
-            real_world=bool(flags & REAL_WORLD),
+            environment=p.environment,
+            real_world=p.real_world,
             blur=_old(uv, UV_BLUR, 1.0))
 
     def _output(self, part):
         """The TexOutput of a map's Output part, None when it changes nothing."""
         if part is None:
             return None
-        flags = self._chunk_u32s(part.index, (_OUT_FLAGS,)).get(_OUT_FLAGS, 0)
-        out = TexOutput(bool(flags & OUT_INVERT), _old(part, OUT_AMOUNT, 1.0), _old(part, OUT_LEVEL, 1.0),
-                        _old(part, OUT_OFFSET, 0.0))
+        out = TexOutput(reader_materials.output_invert(self.graph.scene, part.index), _old(part, OUT_AMOUNT, 1.0),
+                        _old(part, OUT_LEVEL, 1.0), _old(part, OUT_OFFSET, 0.0))
         return None if out == TexOutput() else out
 
     def _gamma(self, m):
-        """The Bitmap's gamma override, None for automatic or when it cannot be read."""
-        for slot, block in sorted(m.blocks.items()):
-            if block.block_id != 0 or slot not in m.refs:
-                continue
-            try:
-                chunk = self.graph.scene.chunk(m.refs[slot])
-                holders = [c for c in chunk.children if c.id == _BITMAP_DATA and c.container] if chunk.container \
-                    else []
-                info = holders[0].first(_BITMAP_INFO) if holders else None
-                if info is None or info.container or info.payload_size < _BI_TAIL:
-                    return None
-                data = info.tobytes()
-            except (ChunkError, IndexError):
-                return None
-            gamma, flags = struct.unpack_from("<fI", data, len(data) - _BI_TAIL)
-            if flags & BI_GAMMA_OVERRIDE and math.isfinite(gamma) and 0.1 <= gamma <= 10.0:
-                return gamma
-            return None
-        return None
+        """The Bitmap's gamma override, None for automatic, when it cannot be read or is outside 0.1 to 10."""
+        gamma = reader_materials.bitmap_gamma(self.graph.scene, m)
+        return gamma if gamma is not None and math.isfinite(gamma) and 0.1 <= gamma <= 10.0 else None
 
     def _normal(self, m, ids, kind, walk, depth, chain):
         normal = self._sub(m, ids.normal, ids.normal_on, NORMAL, walk, depth, chain)

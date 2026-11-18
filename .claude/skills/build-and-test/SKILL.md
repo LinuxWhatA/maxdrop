@@ -78,7 +78,7 @@ git diff --name-only "$base...HEAD"; git status --short
 | Docs only (`*.md`, `docs/`, `.claude/`, `.beads` metadata) | 1 (the site and license tests read some of these files) |
 | `maxdrop/*.py` (operator, prefs, compat) | 1, 2, 5 (= 3 and 4 on all three versions), 6 for a fix |
 | `maxdrop/__init__.py` (`_NAMES`, `_purge`, reload), `maxdrop/update.py` | the row above, plus 7 on 5.2 and 4.2 |
-| `maxdrop/intake/` | 1 (its tests load it by path), 2, 5, 6 for a fix |
+| `maxdrop/intake/` | 1 (its tests load it without Blender), 2, 5, 6 for a fix |
 | `maxdrop/reader/`, `maxdrop/convert/`, `maxdrop/build/` | the `maxdrop/*.py` row, plus 8 when the plan measures (fixture, then the corpus scenes it names) |
 | `maxdrop/blender_manifest.toml` `version` | 1, 2, 3 on all three versions, and the CHANGELOG check below; `docs/SUPPORT.md` says what that version imports |
 | `maxdrop/blender_manifest.toml` other fields (permissions, `blender_version_min`, ...) | 1, 2, 5, and 7 on 5.2 and 4.2 |
@@ -327,8 +327,8 @@ stay in `S`, and only counts and measurements are compared with `docs/BASELINE.m
 objects, meshes, materials, placeholders). `counts.nodes` is the number of nodes MaxDrop's reader walks in the
 file (`tools/baseline_import.py`; the importer builds one object per node), `null` only when the reader cannot
 index the file. `import_report` holds the counts of the operator's `Imported ...` line (objects, meshes,
-materials, placeholders, modifiers not applied, textures missing, approximated, issues), `null` when the log
-has no such line.
+curves, materials, placeholders, modifiers not applied, textures missing, approximated, issues), `null` when the
+log has no such line.
 
 ## Evidence and report
 

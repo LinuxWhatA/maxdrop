@@ -36,6 +36,12 @@
 # made, and the import report counts them.
 # Modified for MaxDrop, 2026-11-17 (jsiovn). New option Modifiers (Keep as Blender Modifiers / Ignore): TurboSmooth,
 # MeshSmooth, Shell and Symmetry become Subdivision Surface, Solidify and Mirror (build.modifiers).
+# Modified for MaxDrop, 2026-11-18 (jsiovn). The material builder's issues are material issues of the import report,
+# and build.report writes the text of a run of several files (publish_run).
+# Modified for MaxDrop, 2026-11-18 (jsiovn). A failure of the material conversion imports the scene without
+# materials and says so in the import report; materials the builder could not make are not counted as made.
+# Modified for MaxDrop, 2026-11-18 (jsiovn). The popup names the exact folder a pack unpacks into
+# (archive.preview), also after the Scene field names another scene of the pack.
 
 
 __author__ = "Sebastian Sille <nrgsille@gmail.com>"
@@ -44,6 +50,7 @@ __author__ = "Sebastian Sille <nrgsille@gmail.com>"
 import os
 import re
 import struct
+import traceback
 
 import bpy
 from bpy_extras.io_utils import (
@@ -67,6 +74,7 @@ _ARCHIVE_EXTENSIONS = (".zip", ".rar", ".7z")
 # Listings of the packs a drop or a script named, for the popup and the Scene search. Keyed by path, size and
 # modification time, so that a changed archive is listed again.
 _LISTINGS = {}
+# Per pack of the popup, by normalized path: (parent folder, the reason there is none, {scene: archive.preview()}).
 _TARGETS = {}
 _CACHE_MAX = 16
 _SHOWN_SCENES = 10
@@ -196,7 +204,8 @@ def _choose(path, scenes, text):
 
 def _target(path, context):
     """(the folder the pack folder will be made in, None), or (None, the reason there is none). The pack folder's
-    own name is archive.unpack()'s choice (a free name, an earlier unpack, a copy extracted by hand)."""
+    own name is archive.unpack()'s choice (a free name, an earlier unpack, a copy extracted by hand), which
+    archive.preview() tells beforehand."""
     try:
         return prefs.pack_parent(path, context), None
     except ValueError as e:
@@ -225,9 +234,14 @@ def _referenced_maps(max_path):
     return {e.name for e in table if e.name}
 
 
-def _existing(path, scenes, text, parent):
-    """("reused" | "in_place", .max path) when the import will use a folder already on disk, None when it will
-    unpack, or when the scene is not chosen yet."""
+def _preview(path, scenes, text):
+    """archive.preview() of the scene text chooses, ("unpacked" | "reused" | "in_place", .max path), computed once
+    per pack and scene since invoke() and kept in _TARGETS; None when there is no parent folder, the scene is not
+    chosen yet, its name matches none, or there is no free folder. A .max on disk gets its pre-flight line read."""
+    found = _TARGETS.get(_norm(path))
+    if found is None or found[0] is None:
+        return None
+    parent, _problem, previews = found
     archive = _archive()
     try:
         scene = _choose(path, scenes, text)
@@ -235,7 +249,27 @@ def _existing(path, scenes, text, parent):
         return None
     if scene is None:
         return None
-    return archive.existing_folder(path, scene, len(scenes) > 1, parent, references=_referenced_maps)
+    if scene not in previews:
+        if len(previews) >= _CACHE_MAX:
+            previews.clear()
+        try:
+            previews[scene] = archive.preview(path, scene, len(scenes) > 1, parent, references=_referenced_maps)
+        except Exception as e:  # cached as None: draw() runs on every redraw
+            print("MaxDrop: could not preview the pack folder of %s (%s)" % (os.path.basename(path), e))
+            previews[scene] = None
+        if previews[scene] and previews[scene][0] != "unpacked":
+            _remember_preflight(previews[scene][1])
+    return previews[scene]
+
+
+def _drawn_preview(operator, path, listing):
+    """_preview() for draw(), which must never raise; the Scene field may have named another scene since
+    invoke()."""
+    try:
+        return _preview(path, listing.scenes, operator.pack_scene)
+    except Exception as e:
+        print("MaxDrop: could not preview the pack folder of %s (%s)" % (os.path.basename(path), e))
+        return None
 
 
 def _scene_search(self, context, edit_text):
@@ -344,19 +378,6 @@ def _remove(cols, before):
         blocks = getattr(bpy.data, kind)
         for block in [b for b in blocks if b.as_pointer() not in before[kind] and not b.users]:
             blocks.remove(block)
-
-
-def _join_reports(reports, failed):
-    """Several files in one run: each scene was published on its own (console, status line), which leaves the text
-    "MaxDrop Report" with the last one; it then holds every report of the run, in import order, a blank line
-    between them, and a line per file that was not imported."""
-    from .build import report as build_report
-    parts = [rep.text() for rep in reports] + ["Not imported: " + line for line in failed]
-    block = bpy.data.texts.get(build_report.TEXT_NAME)
-    if block is None:
-        block = bpy.data.texts.new(build_report.TEXT_NAME)
-    block.clear()
-    block.write("\n\n".join(parts) + "\n")
 
 
 def _summary(path, result):
@@ -505,6 +526,7 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
             finally:
                 if window:
                     window.cursor_set('DEFAULT')
+            _TARGETS.pop(_norm(path), None)  # its previews are out of date now: the next invoke() makes new ones
             if result.mode == "unpacked":
                 written.append("%s into %s" % (os.path.basename(path), result.folder))
             resolved.append((result.max_path, result, path))
@@ -538,7 +560,8 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
         if not reports:
             return self._error("Nothing imported. " + "; ".join(failed))
         if len(reports) > 1 or failed:
-            _join_reports(reports, failed)
+            from .build import report as build_report
+            build_report.publish_run(reports, failed)
         for line in failed:
             self.report({'WARNING'}, "Not imported: " + line)
             print("MaxDrop: not imported: " + line)
@@ -567,8 +590,14 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
             unit = units.system_unit(sc)
             meters, note = _meters(self.units, unit, self.scale_objects)
             desc = convert_scene.describe(sc, meters, unit, convert_modifiers=self.modifiers == 'KEEP')
-            slots, counts = (_material_slots(cf, sc, desc, max_path, context, self.use_image_search) if materials
-                             else (None, None))
+            slots, counts, failed = None, None, []
+            if materials:
+                try:
+                    slots, counts = _material_slots(cf, sc, desc, max_path, context, self.use_image_search)
+                except Exception as e:  # a material rule's bug costs the materials, never the scene
+                    print("MaxDrop: materials of %s not converted:\n%s" % (name, traceback.format_exc()), end="")
+                    failed.append(("materials", "not converted (%s: %s): the scene is imported without materials"
+                                   % (type(e).__name__, e)))
             del sc  # the Scene holds the inflated stream of a compressed file
         if 'UV' not in self.object_filter:
             for md in desc.meshes.values():
@@ -590,15 +619,16 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
                                     meshes_built=len(built.meshes), curves_built=len(built.curves),
                                     dropped_uv_layers=built.dropped_uv_layers,
                                     pack=pack, pack_name=pack_name)
-        rep.issues.extend(builder.issues())
         if settings_skipped:
             rep.issues.append(("modifiers", "%d settings not on Blender %s, not set" % (settings_skipped,
                                                                                        bpy.app.version_string)))
         if materials:
-            conv_stats, tex_stats, lookup, swatches = counts
-            convert_report.add_materials(rep, len(built.materials), builder.classes, conv_stats=conv_stats,
+            conv_stats, tex_stats, lookup, swatches = counts or (None, None, None, None)
+            made = sum(m is not None for m in built.materials.values())
+            convert_report.add_materials(rep, made, builder.classes, conv_stats=conv_stats,
                                          tex_stats=tex_stats, lookup=lookup, sockets=builder.sockets_skipped,
-                                         blender=bpy.app.version_string, swatches=swatches)
+                                         blender=bpy.app.version_string, swatches=swatches,
+                                         build_issues=failed + builder.issues())
         del desc
         axis = axis_conversion(from_forward=self.axis_forward, from_up=self.axis_up).to_4x4()
         if axis != Matrix.Identity(4):
@@ -624,14 +654,12 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
                     window.cursor_set('DEFAULT')
             if len(_TARGETS) >= _CACHE_MAX:
                 _TARGETS.clear()
-            # Here, not in draw(): finding the folder probes it by creating a folder, and an existing copy is
-            # searched for on disk.
+            # Here, not in draw(): finding the parent folder probes it by creating a folder. The folder of the scene
+            # known now is previewed here too; draw() previews another one the Scene field names (read only).
             for path, found in packs:
                 parent, problem = _target(path, context)
-                existing = _existing(path, found.scenes, self.pack_scene, parent) if parent else None
-                _TARGETS[_norm(path)] = (parent, problem, existing)
-                if existing:  # a pack is never unpacked here: only a folder already on disk is read
-                    _remember_preflight(existing[1])
+                _TARGETS[_norm(path)] = (parent, problem, {})
+                _preview(path, found.scenes, self.pack_scene)  # a pack is never unpacked here
             listed = {_norm(path) for path, _found in packs}
             for path in _paths(self)[:_SHOWN_FILES]:
                 if _norm(path) not in listed and os.path.isfile(path):
@@ -659,12 +687,15 @@ def import_pack(layout, operator, packs):
         else:
             body.label(text="Scene: " + _base(listing.scenes[0]))
         body.label(text=_plural(listing.assets, "texture file"))
-        parent, problem, existing = _TARGETS.get(_norm(path), (None, None, None))
+        parent, problem, _previews = _TARGETS.get(_norm(path), (None, None, None))
+        found = None if problem else _drawn_preview(operator, path, listing)
         if problem:
             body.label(text=problem, icon='ERROR')
-        elif existing:
-            mode, max_path = existing
-            if mode == "reused":
+        elif found:
+            mode, max_path = found
+            if mode == "unpacked":
+                body.label(text="Unpacks into")
+            elif mode == "reused":
                 body.label(text="Unpacked before: imports from")
             else:
                 body.label(text="Not unpacked: imports the scene already in", icon='INFO')
@@ -680,8 +711,9 @@ def import_files(layout, operator):
     """The pre-flight line of each .max invoke() read: a drop's or a script's, or a pack's folder on disk."""
     rows = []
     for path in _paths(operator):
-        found = _TARGETS.get(_norm(path))
-        target = found[2][1] if found and found[2] else path
+        listing = _cached(path)
+        found = _drawn_preview(operator, path, listing) if listing is not None else None
+        target = found[1] if found and found[0] != "unpacked" else path
         line = _preflight_of(target)
         if line is not None:
             rows.append((os.path.basename(target), line))

@@ -60,8 +60,13 @@ powershell -ExecutionPolicy Bypass -File build.ps1    # dist\ (git-ignored): zip
   Dispatch on ClassID, never on class-name strings.
 - `maxdrop/intake/`: what a scene was downloaded as, turned into a `.max` on disk. `archive.py` lists a scene
   pack (`.zip` through `zipfile`; `.rar` and `.7z` through backends of the same interface) and unpacks the
-  chosen `.max` with its maps into a flat folder. Imported on demand, **never imports `bpy` or `mathutils`**;
-  its tests load it by path.
+  chosen `.max` with its maps into a flat folder. Imported on demand, **never imports `bpy` or `mathutils`**.
+- `maxdrop/pathnames.py`: name rules reader/, convert/ and intake/ share (`base_name()`, the reserved Windows
+  device names): the one module outside those packages they may import (`from .. import pathnames`), bpy-free
+  like them and importing nothing of the add-on (`tests/unit/test_reader_no_bpy.py` scans it). A test of a
+  module that imports it (directly or through another module) must load that module under a package of its own
+  whose path is `maxdrop/` (`maxdrop/__init__.py`, which imports bpy, never runs): the one-level
+  `maxdrop_reader` loaders of some reader tests and tools cannot resolve `..`.
 - `site/index.html` + `tools/make_site.py`: the landing page, filled from `dist/index.json` (`{{token}}`
   values). Self-contained: no third-party requests. The install link keeps the form Blender's own generator
   emits (`./maxdrop-<version>.zip?repository=.%2Findex.json&blender_version_min=4.2.0`).

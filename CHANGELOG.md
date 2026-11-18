@@ -8,6 +8,48 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
 
 ## [Unreleased]
 
+### Changed
+
+- Scene packs: the import popup names the exact folder a pack unpacks into (`<archive> (2)` when that name is
+  taken, `<archive>/<scene>` for a pack with several scenes), and names it again when the Scene field picks
+  another scene.
+- Scene packs: a password-protected pack gives one message, naming the archive, whether it is a `.zip`, a `.rar`
+  with a password on its data or one with encrypted names; entry names in messages and the Scene field are shown
+  with `/` on every backend, and no message says "drop the .max" any more.
+- Materials: importing a scene again, or a scene that shares texture files with one already imported, uses the
+  images already in the `.blend` for the same file and color space instead of loading copies (`name.001`); an
+  image that was painted on, packed, linked from a library or given another alpha mode is left alone and the file
+  loaded anew.
+
+### Fixed
+
+- Materials: a Bitmap or CoronaBitmap with automatic gamma reads an EXR or HDR file as linear, as 3ds Max and
+  Corona do, instead of as sRGB (too dark); a VRayBitmap already did.
+- A damaged `.max` whose objects reference objects that do not exist no longer risks crashing Blender 4.2 and 4.5
+  (Python 3.11) after the import is refused.
+- Scene packs: a hidden `.maxdrop-staging-*` folder left by an unpack that never finished (Blender closed or crashed
+  mid-way) is removed by the next unpack into that folder once it is hours old; two imports of the same pack at
+  once no longer make the second fail or replace a folder made in between: it takes the next free folder name (or
+  reuses the first one's folder); a `.zip` listing more entries than MaxDrop reads is refused before its directory
+  is loaded into memory; a Windows junction is no longer searched or written into, like a link.
+- Texture lookup: a folder with millions of files no longer slows an import down. Each search place reads at most
+  200,000 files and folders, the listing of the `.max` file's folder and its parent for `maps` / `textures`
+  folders included, instead of reading every entry of a huge folder before stopping; the report names the folder
+  where a search stopped.
+- Import report: the status line names material problems on their own ("2 material problems, 1 issue") and the text
+  MaxDrop Report states their total; a texture file that was found but did not load is listed under the material
+  issues instead of the other issues.
+- Import report: a Falloff, VRayDirt, Output, RGB Tint or VRayColor2Bump over a map that converts to nothing is no
+  longer listed as a simplified map (it draws nothing; its lost map is reported), and no longer marks a Mix that
+  hides it as approximated.
+- Import report: the Unpacker line of a `.rar` or `.7z` scene pack names the program that wrote the files when the
+  first one failed and another took over, not the one that only listed the pack.
+- Materials: a cropped or placed Bitmap with tiling off no longer repeats over the whole surface, and its mirror
+  setting now applies, per direction; a map on map channel 0 (vertex colors) is drawn on UV channel 1 and named in
+  the import report instead of sampling a UV map that does not exist; a texture file that holds no image is named
+  in the report instead of rendering magenta; a material whose conversion or build fails no longer stops the whole
+  scene from importing: the scene comes in without it and the report says so.
+
 ## [0.0.5] - 2026-11-18
 
 ### Added

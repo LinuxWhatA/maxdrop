@@ -27,16 +27,22 @@ without regard to case, in this order:
 
 The first rule that has the name wins; inside a rule the file nearest to the folder searched wins (breadth
 first, names sorted). Each rule's folders are walked once, when the rule is first needed, at most max_depth
-folders deep and max_entries files and folders per rule (the report says where the walk stopped). A link is a
-symbolic link or a name-surrogate reparse point (junction, mount point): never entered, never taken, in any rule;
-other reparse points (cloud placeholders, deduplicated files) are ordinary files and folders. Unreadable folders
-are skipped. No bpy, no reader import: this takes the stored strings.
+folders deep. The bound on work is a count, no time limit: a rule reads at most max_entries files and folders (one
+more to see the budget run out), the SIBLING rule's listing of the scene's folder and its parent included, and a
+folder's listing is read no further than the budget left, so a folder of millions of entries costs no more than
+the budget. The report says where a rule stopped; of the folder it stopped in, the entries taken follow the order
+the file system lists them (case-insensitive name order on NTFS), then names sorted. A link is a symbolic link or a name-surrogate
+reparse point (junction, mount point): never entered, never taken, in any rule; other reparse points (cloud
+placeholders, deduplicated files) are ordinary files and folders. Unreadable folders are skipped. No bpy, no reader
+import: this takes the stored strings.
 """
 import collections
-import heapq
+import itertools
 import os
 import stat
 import unicodedata
+
+from .. import pathnames
 
 SCENE, SIBLING, USER, ORIGINAL = 1, 2, 3, 4
 RULES = (SCENE, SIBLING, USER, ORIGINAL)
@@ -48,16 +54,6 @@ DEFAULT_MAX_ENTRIES = 200_000  # files and folders, per rule
 
 _NAME_SURROGATE = 0x20000000  # reparse tag bit of symbolic links, junctions and mount points
 _LOCAL_DRIVE_TYPES = frozenset((2, 3, 5, 6))  # GetDriveTypeW: removable, fixed, CD-ROM, RAM disk (4 = network)
-# the same set as intake/archive.py: Windows also reserves COM and LPT with a superscript digit
-_RESERVED = frozenset(["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
-                      + ["COM%s" % d for d in "123456789¹²³"]
-                      + ["LPT%s" % d for d in "123456789¹²³"])
-
-
-def base_name(path):
-    """The last part of a stored path, with both separators 3ds Max may write. (reader/assets.py has the same:
-    convert/ takes strings and does not import the reader.)"""
-    return path.replace("\\", "/").rsplit("/", 1)[-1]
 
 
 def name_key(name):
@@ -95,7 +91,7 @@ def refused_reason(path):
     parts = path[3:].replace("\\", "/").split("/")
     if ".." in parts:
         return "climbs out with .."
-    if any(p.split(".", 1)[0].rstrip(" ").upper() in _RESERVED for p in parts):
+    if any(pathnames.is_reserved(p) for p in parts):
         return "device name"
     return None
 
@@ -136,22 +132,36 @@ def _plain_file(path):
     return stat.S_ISREG(st.st_mode)
 
 
+def _by_name(entry):
+    return entry.name
+
+
 def _entries(folder, limit):
-    """The first limit entries of folder by name; only those are held, however many the folder has."""
+    """At most limit entries of folder, sorted by name: the listing is read no further, however many entries the
+    folder has. All of them when it has no more than limit."""
     try:
         with os.scandir(folder) as it:
-            return heapq.nsmallest(limit, it, key=lambda e: e.name)
+            return sorted(itertools.islice(it, max(limit, 0)), key=_by_name)
     except (OSError, ValueError):
         return []
 
 
-def _named(folder, keys):
-    """The entries of folder whose name_key is in keys, sorted by name; the rest of the listing is not held."""
+def _named(folder, keys, budget):
+    """(the entries of folder whose name_key is in keys, sorted by name; True when the listing was cut). Each entry
+    read is charged to budget, a one-item list; the listing stops at the first entry that finds it at 0."""
+    found, cut = [], False
     try:
         with os.scandir(folder) as it:
-            return sorted((e for e in it if name_key(e.name) in keys), key=lambda e: e.name)
+            for e in it:
+                if budget[0] <= 0:
+                    cut = True
+                    break
+                budget[0] -= 1
+                if name_key(e.name) in keys:
+                    found.append(e)
     except (OSError, ValueError):
-        return []
+        pass
+    return sorted(found, key=_by_name), cut
 
 
 def _kind(entry):
@@ -180,7 +190,7 @@ class TextureReport:
 
     def __init__(self):
         self.found = dict.fromkeys(RULES, 0)
-        self.truncated = []  # (rule, folder, max_entries): the walk of that rule stopped in folder
+        self.truncated = []  # (rule, folder, max_entries): the search of that rule stopped in folder
         self._found = set()
         self._missing = {}
 
@@ -215,23 +225,33 @@ class TextureIndex:
         self._cache = {}
         self.report = TextureReport()
 
-    def _roots(self, rule):
+    def _roots(self, rule, budget):
+        """The folders rule walks, in order, as (folder, whether its subfolders too); (folder, None) when the budget
+        ran out while listing folder to find them."""
         if rule == SCENE:
-            return [(self.scene_dir, self.scene_subfolders)]
-        if rule == SIBLING:
-            roots = []
+            yield self.scene_dir, self.scene_subfolders
+        elif rule == SIBLING:
+            # lazy: the scene folder's maps are walked before its parent is listed, so a crowded parent (a
+            # download folder) cannot spend the budget they need
             for folder in dict.fromkeys((self.scene_dir, os.path.dirname(self.scene_dir))):
-                roots.extend((e.path, True) for e in _named(folder, SIBLING_NAMES) if _kind(e) == "dir")
-            return roots
-        return [(d, True) for d in self.user_dirs]
+                named, cut = _named(folder, SIBLING_NAMES, budget)
+                if cut:
+                    yield folder, None
+                    return
+                for e in named:
+                    if _kind(e) == "dir":
+                        yield e.path, True
+        else:
+            for d in self.user_dirs:
+                yield d, True
 
     def _tier(self, rule):
         index = self._tiers.get(rule)
         if index is None:
             index = self._tiers[rule] = {}
             budget = [self.max_entries]
-            for root, recursive in self._roots(rule):
-                stopped = self._walk(root, recursive, index, budget)
+            for root, recursive in self._roots(rule, budget):
+                stopped = root if recursive is None else self._walk(root, recursive, index, budget)
                 if stopped is not None:
                     self.report.truncated.append((rule, stopped, self.max_entries))
                     break
@@ -254,7 +274,7 @@ class TextureIndex:
         return None
 
     def _find(self, path, resolved):
-        name = base_name(path) or base_name(resolved)
+        name = pathnames.base_name(path) or pathnames.base_name(resolved)
         if name_refused(name) is None:
             key = name_key(name)
             for rule in (SCENE, SIBLING, USER):
@@ -273,5 +293,5 @@ class TextureIndex:
         key = (path, resolved)
         if key not in self._cache:
             found = self._cache[key] = self._find(path, resolved)
-            self.report.add(base_name(path) or base_name(resolved), found)
+            self.report.add(pathnames.base_name(path) or pathnames.base_name(resolved), found)
         return self._cache[key]
