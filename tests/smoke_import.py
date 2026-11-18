@@ -31,8 +31,9 @@ for the fixtures the operator reported INFO with the report's summary, nothing l
 only things listed are on the material side: wrappers and maps approximated, map classes without a map below
 (vray_texmaps' Noise), texture files not found (the fixtures carry no images), material issues or, on
 Blender 4, Principled inputs that Blender lacks; and the modifiers not applied, as many as the oracle lists, in a
-fixture whose oracle lists some (modifier_pivot). Two scenes in one run: the text holds both reports; a file that
-was not imported is named after them.
+fixture whose oracle lists some (modifier_pivot; the ones converted to Blender modifiers are not counted), and
+the issues a fixture is made to raise (uvwmap, stack_convert). Two scenes
+in one run: the text holds both reports; a file that was not imported is named after them.
 Prints `IMPORT PASSED` (exit 0) or `IMPORT FAILED` (exit 1).
 """
 import glob
@@ -54,19 +55,49 @@ SECOND = "second.max"
 TEXT_NAME = "MaxDrop Report"
 failures = []
 REPORTS = []  # (level, message) of each scene the operator imported, while record_reports() wraps it
-FIXTURE = {"modifiers": 0}  # modifiers the current fixture's report must name as not applied (modifier_pivot: 3)
+EXTRUDE = ("0x000000a0", "0x00000000")  # its ClassID as the oracle writes it
+UVW_MAP = ("0x000f72b1", "0x00000000")
+# TurboSmooth, MeshSmooth, Shell, Symmetry: kept as Blender modifiers (convert/modifiers.py)
+CONVERTIBLE = {("0x0d727b3e", "0x491d29a7"), ("0x00000032", "0x00007f9e"), ("0x3b9b1a16", "0x6d84e8d0"),
+               ("0x2d7e702b", "0x0be41a6e")}
+# modifiers the current fixture's report must name as not applied (modifier_pivot: 2), issues it must list
+FIXTURE = {"modifiers": 0, "issues": 0}
+# What the oracle does not tell: a UVW Map of a type MaxDrop does not evaluate (shrink-wrap), and the issues each
+# fixture is made to raise (ISSUES in tests/unit/test_convert_scene.py)
+NOT_EVALUATED = {"FixtureUVWShrink"}
+FIXTURE_ISSUES = {"uvwmap.max": 2, "stack_convert.max": 1}
 
 
 def oracle_modifiers(path):
     """How many modifiers the report of path names as not applied (each class once per node whose stack holds it),
     from path's oracle (tests/fixtures/<name>.oracle.json); 0 without one. The rule is gather() in
-    maxdrop/convert/report.py; tests/blender/run.py counts the same way."""
+    maxdrop/convert/report.py. A shape whose lowest modifier that renders is an Extrude has it applied
+    (convert/extrude.py), and so are the UVW Maps that render right above it, or right above a mesh
+    (convert/uvwmap.py), and the run of TurboSmooth, MeshSmooth, Shell and Symmetry right above those is converted
+    to Blender modifiers (convert/modifiers.py): those are not counted."""
     try:
         with open(path[:-4] + ".oracle.json", encoding="ascii") as f:
             nodes = json.load(f)["nodes"]
     except OSError:
         return 0
-    return sum(len({tuple(m["class_id"]) for m in n["modifiers"]}) for n in nodes)
+    def counted(n):
+        mods = [m for m in reversed(n["modifiers"]) if m["enabled"] and m["enabled_in_renders"]]  # bottom first
+        applied = []
+        if n["shape"] is not None:
+            if not (mods and tuple(mods[0]["class_id"]) == EXTRUDE):
+                mods = []  # a shape without an Extrude at the bottom: a curve, nothing applied
+            applied, mods = mods[:1], mods[1:]
+        k = 0
+        while k < len(mods) and tuple(mods[k]["class_id"]) == UVW_MAP:
+            if n["name"] not in NOT_EVALUATED:
+                applied.append(mods[k])
+            k += 1
+        while k < len(mods) and tuple(mods[k]["class_id"]) in CONVERTIBLE:
+            applied.append(mods[k])
+            k += 1
+        return {tuple(m["class_id"]) for m in n["modifiers"] if not any(m is a for a in applied)}
+
+    return sum(len(counted(n)) for n in nodes)
 
 
 def check(name, cond, detail=""):
@@ -119,12 +150,15 @@ def check_report(name, max_name, pack_name=None):
         check("%s: the report names the scene pack" % name, ("\nScene pack: %s\n" % pack_name) in body)
     if not argv:
         summaries = [(kind, m) for kind, m in REPORTS if m.startswith("Imported ")]
-        modified = FIXTURE["modifiers"]
-        clean = not modified and summaries \
+        modified, issues = FIXTURE["modifiers"], FIXTURE["issues"]
+        clean = not modified and not issues and summaries \
             and all(kind == 'INFO' and m.endswith("nothing left out.") for kind, m in summaries) \
             and "\nNothing was left out." in body
         missing = summaries and all(kind == 'WARNING' for kind, _m in summaries) and only_known_gaps(body) \
-            and (not modified or all("; %d modifiers not applied" % modified in m for _k, m in summaries))
+            and (not modified or all("; %d modifier%s not applied" % (modified, "" if modified == 1 else "s") in m
+                                     for _k, m in summaries)) \
+            and (not issues or all(", %d issue%s." % (issues, "" if issues == 1 else "s") in m
+                                   for _k, m in summaries))
         check("%s: the operator reported INFO, nothing left out (or only the known gaps of the fixtures)" % name,
               clean or missing, str(summaries))
 
@@ -155,6 +189,8 @@ def only_known_gaps(body):
         known += ("  Principled inputs not on Blender ",)
     if FIXTURE["modifiers"]:
         known += ("  Modifiers not applied ",)
+    if FIXTURE["issues"]:
+        known += ("  Other issues: %d" % FIXTURE["issues"],)
     return bool(approximated or left_out) and all(head.startswith(known) for head in left_out)
 
 
@@ -435,12 +471,13 @@ def run():
                 import_one(path, pack_name=os.path.basename(path))
                 continue
             FIXTURE["modifiers"] = 0 if argv else oracle_modifiers(path)
+            FIXTURE["issues"] = 0 if argv else FIXTURE_ISSUES.get(os.path.basename(path), 0)
             images = import_one(path)
             work = os.path.join(scratch, str(n))
             as_pack(path, work, images, archive)
             two_scenes(path, work)
             selections(path, work)
-        FIXTURE["modifiers"] = 0
+        FIXTURE["modifiers"] = FIXTURE["issues"] = 0
         if not argv:
             units_and_preflight(ops)
             filters_and_failures(scratch)

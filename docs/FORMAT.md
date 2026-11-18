@@ -40,9 +40,10 @@ An object points to others by object index.
   the Editable Mesh of editable_mesh one.
 - `0x2035`: a `u32`, then `(u32 slot, i32 index)` pairs. The first value is the number of reference slots: 16
   for Node and RootNode, 48 for Texmaps and 2 for Bezier Float, Bezier Scale, Bezier Color, Boolean Controller and
-  Grid Reference in every fixture (and for the point class of Custom Curve Control, nameless in the class directory:
-  texmap_rules' Falloff curves), 34 for VRayMtl (vray_basic, vray_maps, vray_wrappers: what the SDK's
-  `NumRefs` reports for a VRayMtl), and for a ParamBlock2 the number of its reference slots (25 and 37 in
+  Grid Reference in every fixture, 2 for MtlBaseLib in stack_basic (and for the point class of Custom Curve
+  Control, nameless in the class directory: texmap_rules' Falloff curves), 34 for VRayMtl (vray_basic,
+  vray_maps, vray_wrappers: what the SDK's `NumRefs` reports for a VRayMtl), and for a ParamBlock2 the number of
+  its reference slots (25 and 37 in
   standard_physical and vray_wrappers; 37 for the VRayBlendMtl block, see [Parameter blocks](#parameter-blocks)).
   Every pair's slot is below it (`test_scene.py`). The reader does not need it. RootNode and the controllers have
   no pairs.
@@ -69,9 +70,9 @@ Reference slots of a node, checked on every node of every fixture (`test_scene.p
 - slot 1: the object. With no modifier it is the base object, whose ClassID and superclass equal the oracle's
   `base_class_id` and `base_superclass`. With modifiers it is a derived object: special id `0x2032`, past the
   class directory, whose references are its modifiers top to bottom and then the base object (modifier_pivot:
-  Bend, UVW Map, Editable Poly, the oracle's order; `Scene.object_stack` follows them). Nodes whose stacks end
-  in the same base object are exactly the oracle's `instances` (instances: three instances share the source's
-  object, the copy has its own; modifier_pivot: a bare source and two references with modifiers of their own,
+  Bend, UVW Map, Editable Poly, the oracle's order; `Scene.object_stack` follows them; see
+  [Modifiers](#modifiers)). Nodes whose stacks end in the same base object are exactly the oracle's `instances`
+  (instances: three instances share the source's object, the copy has its own; modifier_pivot: a bare source and two references with modifiers of their own,
   three slot-1 objects on one base object);
 - slot 3: the material, present exactly when the oracle names one (the group head of layers_flags has no
   material and three pairs instead of four);
@@ -91,6 +92,56 @@ which also checks the first `0x2035` values above). Decoded from layers_flags:
 `0x800` is not decoded. Renderable is not in `0x0960` (FixtureNoRender has `0x800`) but in `0x099C`, a `u32` on
 every node of every fixture: `0x0F00D600` on each node, `0x0F005600` on FixtureNoRender, so bit `0x8000` is
 renderable. `test_scene.py` checks every node's hidden, frozen and renderable flags against the oracle.
+
+## Modifiers
+
+A node's slot 1 with modifiers is a derived object `0x2032` (`reader/modifiers.py`, `tests/unit/test_modifiers.py`
+against the oracle's `modifiers` on every fixture; stack_basic and modifier_pivot have stacks):
+
+| Chunk | Content | Shown by |
+|---|---|---|
+| `0x2034` | references: the modifiers from the top of the stack down, then the object below them | every stack |
+| `0x204B` | 1 byte, `0x2e` | every derived object and modifier; not decoded |
+| `0x2500` | one container per modifier reference slot, in slot order: that modifier's context on this node | below |
+| `0x2501`, `0x2502` | empty; `0x2502` only on the derived objects of references (modifier_pivot's two, FixtureNestedRef) | not decoded |
+
+The object below the modifiers is the base object or another derived object. A reference (`reference` in MAXScript)
+wraps the shared derived object: stack_basic's FixtureNestedRef references `[Twist, FixtureNested's derived object]`
+and that one `[Taper, Editable Poly]`, so the reference's stack, bottom first, is Taper, Twist (the oracle lists
+Twist, Taper). An instanced modifier is one modifier object referenced by several derived objects, each with its
+own context: FixtureSharedA and FixtureSharedB (one Noise added to both selected boxes).
+
+A modifier context `0x2500`:
+
+| Chunk | Content | Shown by |
+|---|---|---|
+| `0x2510` | 12 x `f32`, rows 1 to 4 (row 4 = translation), then a `u32`: the Matrix3 flags (7 = identity, 6 = translated only) | `getModContextTM`: identity on every node but FixtureSharedA `[-10, 0, -10]` and FixtureSharedB `[10, 0, -10]` (flags 6) |
+| `0x2511` | 6 x `f32`: the context's box, min then max; `+1e30` x 3, `-1e30` x 3 = not computed when saved | `getModContextBBoxMin/Max` where stored; FixtureSharedA/B `[-15, -5, -10]..[15, 5, 10]` |
+| `0x2513` | 4 bytes: `00 01 04 00` on most, `00 00 04 04` and `00 00 04 00` on the shared contexts | not decoded |
+| `0x2512` | empty in stack_basic (FixtureTurbo's TurboSmooth); in 29 of 126 contexts of scene A, 80 of 121 of scene B | not decoded |
+
+Max computes a context's box when the modifier first needs it: modifier_pivot, built by script and saved before
+anything evaluated its stacks, holds empty boxes for its Bend and its TurboSmooth, while the oracle, dumped after
+evaluating the scene, reports one. A box is read only where stored.
+
+A modifier keeps its name and its three switches in `0x39BF`:
+
+| Chunk in `0x39BF` | Meaning | Shown by |
+|---|---|---|
+| `0x0100` | UTF-16 name; empty = the class directory's name | FixtureUVW, FixtureNoise (`m.name` in the oracle) |
+| `0x0110` | present: off (`enabled` false) | FixtureFlags' Bend |
+| `0x0120` | present: off in the viewport (`enabledInViews` false) | FixtureFlags' Taper |
+| `0x0130` | present: off in the renderer (`enabledInRenders` false) | FixtureFlags' Twist |
+
+Its references: UVW Map `[gizmo Position/Rotation/Scale, old ParamBlock]`; Bend, Taper, Twist, Noise `[gizmo
+Position/Rotation/Scale, center Position XYZ, block]`; TurboSmooth `[ParamBlock2]`. Bend and TurboSmooth keep a
+ParamBlock2, UVW Map, Taper, Twist and Noise the old ParamBlock (UVW Map: index 0 map type, 9 to 11 length, width,
+height, see [UVW Map](#uvw-map); TurboSmooth: parameter 0 iterations).
+
+A world-space modifier (a "binding", superclass `0x820`) sits in a derived object of its own, special id `0x2033`:
+a scratch file of 3ds Max 2020 (one box, a UVW Map, then a Map Scaler binding; not committed) had node slot 1 =
+`0x2033` with references `[Map Scaler, the 0x2032 derived object]` and the same `0x2500` layout. `modifiers.py`
+follows it; `Scene.object_stack` does not yet. Neither corpus scene has one.
 
 ## Layers
 
@@ -185,6 +236,277 @@ this order:
 | `0x20` | `2 * (degree - 3)` x `u32`: the triangulation diagonals, as vertex positions within the face | every quad: `[0, 2]`, in multi_uv `[2, 0]` |
 
 A field whose value is zero is left out: the top of every box has mask `0x30`, the other faces `0x38`.
+
+## Shapes
+
+`maxdrop/reader/shapes.py` reads them; `tests/unit/test_shapes.py` checks every shape node of every fixture against
+the oracle's `shape`: what 3ds Max's own conversion to an Editable Spline gives (knot types, segment types,
+positions and vectors within 1e-4, closed flags, interpolation and rendering settings). shapes has one node per
+case below. The classes, superclass `0x40` (shape):
+
+| Class (ClassID) | Kept as |
+|---|---|
+| SplineShape `(0xA, 0)` (Editable Spline) | its knots: FixtureEditable (a Circle collapsed, a knot moved), FixtureOpen |
+| Line `(0x1040, 0)` | its knots, the same chunks inside a `0x2000` container: FixtureLine |
+| Rectangle `(0x1065, 0)` | old ParamBlock at slot 1: 0 length, 1 width, 2 corner radius |
+| Circle `(0x1999, 0)` | old ParamBlock at slot 1: 0 radius |
+| Ellipse `(0x1097, 0)` | ParamBlock2 at slot 1: 0 length, 1 width, 2 outline thickness, 3 outline (on / off) |
+| Arc `(0x1996, 0)` | old ParamBlock at slot 1: 0 radius, 1 from, 2 to (degrees), 3 pie, 4 reverse |
+| NGon `(0x1050, 0)` | old ParamBlock at slot 1: 0 radius, 1 sides, 2 circular, 3 corner radius, 4 scribe |
+
+Every shape has the rendering block at reference slot 0, an old ParamBlock of 28 entries; the parametric ones keep
+their interpolation in another at slot 2 (0 steps, 1 optimize, 2 adaptive). Of the rendering block, set to distinct
+values in a scratch file of 3ds Max 2020 and in FixtureLine: 0 thickness (the diameter), 1 sides, 2 angle (degrees),
+3 to 5 the same for the viewport, 6 Enable In Renderer, 7 generate mapping coordinates, 8 Enable In Viewport, 9 use
+viewport settings, 11 rectangular, 12 width, 13 length, 14 the rectangular angle, 21 the auto-smooth threshold
+(radians).
+
+An Editable Spline keeps a BezierShape `0x1010`:
+
+| Chunk | Content |
+|---|---|
+| `0x1010` | one container per spline, below |
+| `0x1050` | `i32` steps; `-1` when adaptive (the probe: steps 7 and adaptive gave `-1` here and 7 below) |
+| `0x1060` | `u32` optimize (`0` off) |
+| `0x1020`, `0x1030`, `0x1040` | selections; not read |
+
+and beside it `0x1060`, an `i32`: the steps. A spline:
+
+| Chunk | Content |
+|---|---|
+| `0x2900` | `u32` knot count |
+| `0x2904` | `u32`, `0` in every file; not decoded |
+| `0x290A` | the knots, 52 bytes each: `i32` knot type (0 smooth, 1 corner, 2 Bezier, 3 Bezier corner), `i32` type of the segment that starts at the knot (0 curve, 1 line), an `f32` (not decoded), then the point, the in vector and the out vector as 3 x `f32` each, in object space, and a `u32` (not decoded) |
+| `0x290D` | `u32` closed |
+
+The vectors are positions, not offsets, and the file holds them for every knot type: what 3ds Max computed for a
+corner or smooth knot is what it shows. A segment of type line is straight whatever the vectors (FixtureLine's
+open spline: the oracle's segment middle is the middle of the chord, the Bezier through the vectors is not).
+Corpus scene A (format 14000): the same layout on all 255 splines of its 18 Editable Splines and 4 Lines, 434
+segments of type line; every shape node of the scene (29, with Rectangles) equals its oracle within 1e-5 of the
+knot's magnitude.
+
+The parametric shapes are made by the reader the way 3ds Max makes them, fitted to the oracle:
+
+- a circular arc of angle *a* gets vectors of radius times `veccalc(a)` along its tangents, where `veccalc` is the
+  3ds Max SDK's bisection that makes the mean distance of 10 points of the segment from the center equal the
+  radius: 0.5517857 for 90 degrees (the textbook 4/3 tan(a/4) is 0.552285);
+- Circle: 4 Bezier knots from angle 0, counter-clockwise; Ellipse: the same scaled to width / 2 and length / 2;
+- Rectangle: without a corner radius 4 Bezier-corner knots from (width / 2, length / 2), counter-clockwise, each
+  vector a third of the way to its neighbour; with one 8, each pair at the ends of a side, both vectors along that
+  side, radius x `veccalc(90 degrees)` long;
+- Arc: always 4 Bezier knots, 3 equal segments (FixtureArc 170 degrees, FixturePie 90, FixtureArcWide 350), the
+  first in vector and the last out vector at their knot; pie adds the center and closes the spline; reverse runs
+  from `to` back to `from`;
+- NGon: scribe 0 puts the corners at radius / cos(180 degrees / sides) (the radius is the apothem), scribe 1 at the
+  radius, the first at angle 0; Bezier-corner knots with vectors a third of the way to the neighbours, or with
+  circular a Bezier knot per corner with vectors of the arc between them.
+
+## Extrude
+
+The Extrude modifier (ClassID `(0xA0, 0)`, superclass `0x810`; `convert/extrude.py`, `tests/unit/test_extrude.py`
+against the extrude fixture's oracle) keeps its parameters in an old ParamBlock at reference slot 0:
+
+| Index | Parameter | extrude fixture |
+|---|---|---|
+| 0 | amount (`f32`) | FixtureExtRect 10, FixtureExtL -15 |
+| 1 | segments | FixtureExtRect 2, the others 1 |
+| 2, 3 | cap start, cap end | 1 everywhere |
+| 4 | cap type: 0 morph, 1 grid | 0 |
+| 5 | output: 0 patch, 1 mesh, 2 NURBS | 1 |
+| 6 | generate mapping coordinates | FixtureExtRect and FixtureExtAdaptive 1 |
+| 7 | generate material IDs | FixtureExtAdaptive 0, the others 1 |
+| 8 | use shape IDs | 0 |
+| 9 | smooth | 1 |
+
+Real-World Map Size is not in the block: the modifier's own chunk holds `0x2150 {0x0100 u32 1, 0x0110 {0x0120: 20
+bytes naming the class, 0x0130 u32}}`, and that `u32` is 1 on FixtureExtAdaptive, 0 on the others.
+
+What 3ds Max 2020 makes of it (`snapshotAsMesh`, probed on scratch scenes and checked on the fixture: the oracle's
+`eval_verts`, `eval_faces` and `bbox_*`; `tests/unit/test_extrude.py` holds the counts):
+
+- **Interpolation**: each segment gets `steps` points between its knots; with optimize, a straight segment (type
+  line, or both vectors on the chord) gets none; without optimize even a line segment gets its steps (a sharp
+  Rectangle, steps 2: 12 points). Adaptive: a straight segment gets none, a curved one 2^d - 1, d the smallest
+  depth up to 5 at which every piece turns by at most 2 degrees between the chords of its halves (a Circle: 31 per
+  quarter, 128 points; Arcs of 30, 90, 180, 300 degrees: 13, 25, 49, 97 points).
+- **Vertices**: per spline, one copy of its points per level (segments + 1), nothing more: the caps reuse them.
+- **Faces**: the sides two triangles per segment and level; a cap of n points with h holes n + 2h - 2 triangles,
+  without extra vertices (FixtureExtHole: 32 + 2 - 2 = 32 per cap). Nested closed splines alternate solid / hole
+  (FixtureExtIsland: a square, a hole, an island in it). An open spline gets no cap (FixtureExtOpen).
+- **Normals**: outward whatever the splines' direction and the sign of the amount; the side faces of an open spline
+  look to the right of it.
+- **Material IDs**: the cap facing +Z gets ID 1, the one facing -Z ID 2, the sides ID 3 (FixtureExtRect: the cap at
+  the shape faces down and is ID 2; FixtureExtL, amount -15: the cap at the shape faces up and is ID 1); without
+  Generate Material IDs every face is ID 1.
+- **Smoothing**: caps group 16; the sides change group only at a corner or Bezier-corner knot (FixtureExtMirror's
+  rounded Rectangle: sharp at its 8 Bezier-corner knots), the groups alternating 1, 2 (4 where three runs meet,
+  1, 3, 2 ... along a spline with no corner).
+- **Mapping**: the sides U along each spline by length (0 to 1, the seam at its first point), V up the levels; the
+  caps the shape's XY box, 0 to 1. Real-World Map Size: the lengths and sizes in file units instead.
+
+Scene A: 20 shapes with an Extrude (the census), all evaluated: vertex and triangle counts equal 3ds Max's on all
+20, the world box within 1e-3 plus the oracle's 6 significant digits on 16; the other 4 have an Edit Mesh or an FFD
+above the Extrude, which are not evaluated.
+
+## UVW Map
+
+The UVW Map modifier (ClassID `(0xF72B1, 0)`, superclass `0x810`; `convert/uvwmap.py`, `tests/unit/test_uvwmap.py`
+against the oracle's `eval_maps` of the uvwmap and uvwmap_oblique fixtures, and of modifier_pivot and stack_basic)
+references
+`[gizmo Position/Rotation/Scale, old ParamBlock]`:
+
+| Index | Parameter | uvwmap fixture |
+|---|---|---|
+| 0 | map type: 0 planar, 1 cylindrical, 2 spherical, 3 shrink-wrap, 4 box, 5 face, 6 XYZ to UVW | every type but face and XYZ to UVW |
+| 1, 2, 3 | U, V, W tile (`f32`) | FixtureUVWGizmo 2, 3, 1.5 |
+| 4, 5, 6 | U, V, W flip | FixtureUVWGizmo U, FixtureUVWBox V, FixtureUVWCyl W |
+| 7 | cap (cylindrical) | FixtureUVWCyl, FixtureUVWCylAxisX |
+| 8 | 0 map channel, 1 vertex color channel (not applied by MaxDrop: no UV layer) | 0 |
+| 9, 10, 11 | length, width, height (`f32`) | as 3ds Max fits them, or set: FixtureUVWGizmo 17, 23, 13 |
+| 12 | alignment: 0 X, 1 Y, 2 Z | FixtureUVWCylAxisX and FixtureUVWTwo's spherical 0, FixtureUVWAxisY 1 |
+| 13 | map channel | FixtureUVWGizmo 2, FixtureUVWTwo's spherical 3 |
+| 14, 15 | not known; 0 everywhere | |
+
+Real-World Map Size is not in the block: as on Extrude, `0x2150` holds `0x0110` entries, each a `0x0120` naming a
+class (the first 8 bytes its ClassID) and a `0x0130` `u32`; the entry naming the modifier's own class holds the flag
+(1 on FixtureUVWRealWorld). An instanced UVW Map (FixtureUVWSharedA/B) holds three entries.
+
+What 3ds Max 2020 computes (fitted to `meshop.getMapVert` on scratch scenes, then checked on the fixture: U and V
+within 1e-4 for planar and box, 1e-3 for the round types):
+
+- **Space**: a point p of the object goes to q = p * context * inverse(gizmo) (row vectors; the gizmo's matrix holds
+  its scale; FixtureUVWSharedA/B have two contexts). Then a frame (a, b, c): planar and box `(-qx, -qy, qz)` for
+  alignment Z, `(qz, -qy, qx)` for X, `(-qx, qz, qy)` for Y; cylindrical and spherical `(-qx, -qy, qz)` for Z,
+  `(-qx, -qz, -qy)` for X, `(qz, -qy, qx)` for Y. Setting the alignment does not change the gizmo's matrix.
+- **Planar**: u = a / width + 0.5, v = b / length + 0.5, w = c / height + 0.5. Real-World Map Size drops the 0.5 of
+  u and v; it changes nothing on the other types.
+- **Box**: the face normal, transformed like the points (not by the inverse transpose; uvwmap_oblique's spheres
+  under turned, unevenly scaled and mirrored gizmos tell the two apart) and divided by (width, length, height), picks
+  the axis k of its largest component, s its sign; with x, y, z = a / width, b / length, c / height: on ±a
+  u = 0.5 + s·y, v = z + 0.5; on ±b u = 0.5 - s·x, v = z + 0.5; on ±c u = 0.5 + s·x, v = y + 0.5; w = the coordinate
+  along k + 0.5.
+- **Cylindrical**: X = a / (length / 2), Y = b / (width / 2); u = 0.5 + atan2(X, -Y) / 2π, v = c / height + 0.5,
+  w = |(X, Y)|. Cap: a face whose normal, divided by (length / 2, width / 2, height), is largest along c gets
+  u = 0.5 - Y / 2, v = 0.5 + X / 2, w = c / height / 2.
+- **Spherical**: Z = c / (height / 2), r = |(X, Y, Z)|; u as cylindrical, v = 0.5 + asin(Z / r) / π, w = r.
+- **Flip, tile**: per component, flipped (1 - value), then times its tile.
+- **Seam**: 3ds Max shares map vertices and may shift a face's U by a whole turn, also on faces that do not cross the
+  seam; the image is the same. MaxDrop gives +1 to the corners below 0.5 of a face with an edge across the seam
+  (X = 0, Y > 0) and the mean U of the face to a corner on the axis. A face that goes around the axis
+  (FixtureUVWCylAxisX: 4 triangles) has no single U; there the two differ.
+
+Evaluated: the UVW Maps that render right above the base object or above an applied Extrude (FixtureUVWExtrude;
+FixtureUVWTwo, two in a row). One above another modifier (FixtureUVWAboveBend), a switched-off one (FixtureUVWOff)
+and shrink-wrap (FixtureUVWShrink) leave the stored channel.
+
+Scene A: 29 UVW Map modifiers (the census), 27 box and 2 planar, on 66 nodes; 23 evaluated, on 51 nodes; the other
+6 sit above an Edit Mesh or an FFD, which are not evaluated.
+
+## Modifiers converted to Blender modifiers
+
+TurboSmooth `(0x0D727B3E, 0x491D29A7)`, MeshSmooth `(0x32, 0x7F9E)`, Shell `(0x3B9B1A16, 0x6D84E8D0)` and Symmetry
+`(0x2D7E702B, 0x0BE41A6E)`, superclass `0x810`, each keep one ParamBlock2 in reference slot 0; Symmetry's mirror
+gizmo is a Position/Rotation/Scale controller in slot 1 (`convert/modifiers.py`; read on two scratch scenes of 3ds
+Max 2020 with every parameter set apart from its default, then the stack_convert fixture):
+
+| Class | Parameter id: parameter |
+|---|---|
+| TurboSmooth | 0 iterations, 1 use render iterations, 2 render iterations, 3 isoline display, 4 smooth result, 5 separate by materials, 6 separate by smoothing groups, 7 update (radio), 8 explicit normals |
+| MeshSmooth | 9 method (0 classic, 1 quad output, 2 NURMS), 4 iterations, 2 smoothness, 13 use render iterations, 14 render iterations, 15 use render smoothness, 16 render smoothness, 5 smooth result, 6 separate by materials, 7 separate by smoothing groups (and about twenty others: soft selection, cage, local control) |
+| Shell | 0 inner amount, 1 outer amount, 2 override material ID (edges), 3 its ID, 4 override smoothing group, 5 the group, 6 edge mapping, 7 TV offset, 8 override inner material ID, 9 its ID, 10 and 11 select edge / inner faces, 12 segments, 13 straighten corners, 14 auto smooth, 15 its angle, 16 select outer faces, 17 override outer material ID, 18 its ID, 19 bevel edges, 20 bevel shape |
+| Symmetry | 0 axis (0 X, 1 Y, 2 Z), 1 slice along mirror, 2 weld seam, 3 threshold, 4 flip |
+
+What 3ds Max 2020 makes, against Blender's evaluated meshes (`tests/blender/run.py`, the oracle's `eval_verts`,
+`eval_faces` and box after the stack):
+
+- **TurboSmooth, MeshSmooth NURMS / quad output**: Catmull-Clark on the control points, not the limit surface: a
+  box gives 26 vertices after one iteration, 98 after two, and Blender's Subdivision Surface with
+  `use_limit_surface` off has the same vertices (the limit surface shrinks the box to 8.4 of 10). MeshSmooth classic
+  is another scheme (80 vertices after two iterations). Separate by smoothing groups keeps the vertex count and
+  hardens the edges between groups (a crease of 1 in Blender).
+- **Shell**: the new surfaces lie at -inner and +outer amount along the vertex normals, not at an even thickness: a
+  box with outer amount 2 grows by 2 / √3 along each axis (Solidify with `use_even_offset` off).
+- **Symmetry**: the mirror plane is in the gizmo's space, q = p * context * inverse(gizmo), as UVW Map's; without
+  flip the side where q along the axis is positive stays, sliced at the plane; without slice the whole object is
+  mirrored and both copies stay (FixtureSymmetryNoSlice: 16 vertices). Weld seam: 3ds Max slices beside a vertex
+  that lies within the threshold of the plane, Blender's Mirror merges it with its copy onto the plane
+  (FixtureSymmetryTurned, a corner 0.062 off the plane, threshold 0.2: boxes 0.031 apart). On a shelled box (FixtureOrder)
+  3ds Max leaves the seam unwelded (32 vertices, 100 after a TurboSmooth; Blender 84): the same surface.
+
+Scene A: of its 2 TurboSmooth, 1 Shell and 1 Symmetry (the census), 1 TurboSmooth is converted; the rest sit on a
+shape without an Extrude below them (a curve). Scene B: TurboSmooth on 105 nodes, MeshSmooth on 51, Shell on 2
+converted; 6 TurboSmooth sit above an FFD(box).
+
+## Primitives
+
+The standard primitives, superclass `0x10`, keep one ParamBlock2 in reference slot 0 and no mesh: 3ds Max builds
+the mesh from the parameters each time (`convert/primitives.py`; ids read on scratch scenes of 3ds Max 2020 with
+every parameter set apart, the meshes compared vertex for vertex with `o.baseObject.mesh` on about 80 of them, then
+the primitives fixture and its `primitives.mesh.jsonl`). Lengths in file units, angles in radians:
+
+| Class (ClassId) | Parameter id: parameter |
+|---|---|
+| Box `(0x10, 0)` | 0 length (Y), 1 width (X), 2 height (Z), 3 width segments, 4 length segments, 5 height segments, 6 generate mapping coords |
+| Plane `(0x081F1DFC, 0x77566F65)` | 0 length, 1 width, 2 width segments, 3 length segments, 4 density, 5 render scale, 6 mapping |
+| Pyramid `(0x76BF318A, 0x4BF37B10)` | 0 width, 1 depth, 2 height, 3 width, 4 depth, 5 height segments, 6 mapping |
+| Sphere `(0x11, 0)` | 0 radius, 1 segments, 2 smooth, 3 hemisphere, 4 squash (0 chop), 5 base to pivot, 6 mapping, 7 slice, 8 and 9 its angles |
+| GeoSphere `(0, 0x7F9E)` | 0 radius, 1 segments, 2 base type (0 tetra, 1 octa, 2 icosa), 3 hemisphere, 4 smooth, 5 base to pivot, 6 mapping |
+| Cylinder `(0x12, 0)` | 0 radius, 1 height, 2 height segments, 3 cap segments, 4 sides, 5 smooth, 6 slice, 7 and 8 its angles, 9 mapping |
+| Cone `(0xA86C23DD, 0)` | 0 radius 1, 1 radius 2, 2 height, 3 height segments, 4 cap segments, 5 sides, 6 smooth, 7 slice, 8 and 9 its angles, 10 mapping |
+| Tube `(0x7B21, 0)` | 0 radius 1, 1 radius 2, 2 height, 3 sides, 4 cap segments, 5 height segments, 6 smooth, 7 slice, 8 and 9 its angles, 10 mapping |
+| Torus `(0x20, 0)` | 0 radius 1, 1 radius 2, 2 rotation, 3 twist, 4 segments, 5 sides, 6 smooth (0 none, 1 groups alternating by side, 2 all, 3 alternating by segment), 7 slice, 8 and 9 its angles, 10 mapping |
+
+Real-World Map Size is not in the block: `0x2150{0x0100 u32 1, 0x0110{0x0120 the class (classA, classB,
+superclass, 4), 0x0130 u32 flag}}` in the object's chunk; there is no `0x2150` while mapping is off.
+
+What 3ds Max builds (the TriMesh; MaxDrop merges two triangles that share an edge hidden in both, each with only that
+edge hidden, into the quad 3ds Max shows, and keeps every other triangle, so a cap's fan stays triangles around its
+center vertex and the vertex and triangle counts are 3ds Max's, which the oracle's `eval_verts` / `eval_faces` are):
+
+- **Box**: a lattice of segments, each side a grid. IDs (one-based) bottom 2, top 1, front (-Y) 5, right (+X) 4,
+  back 6, left 3; smoothing groups 2, 4, 8, 16, 32, 64 in that order; each side's UV 0..1 (U along +X on top and
+  front, -X on bottom and back, +Y right, -Y left; V along +Y on top and bottom, up on the sides). The sizes are
+  signed: a negative size hands the role of a side (its ID and UVs) to the opposite one (top and bottom when an odd
+  number of sizes is negative, front and back when the width is, left and right when the length is), while the
+  smoothing group stays with the side's place; the faces point in when width and length differ in sign (3ds Max's
+  own box: FixtureBoxInside). Plane: one grid, ID 1, group 1, facing up when width and length have one sign, else
+  down with ID 2 and U running back.
+- **Pyramid**: the apex, rings of the base outline scaled by k / segments, the base center. Groups front 4, right 2,
+  back 16, left 32, base 8; ID 1. Side UVs: apex (0.5, 1), V = z / height, U = 0.5 + x / width on the front (back:
+  minus), U = 1 - width / (2 depth) + y / depth on the right (left: minus); base U = 0.5 + x / width, V = 0.5 - y /
+  depth.
+- **Sphere**: poles at ±radius, rings at polar angles k · 360° / segments for k below segments / 2 (an odd count
+  leaves a wider last row), each from +Y turning towards -X. ID 2, group 1 (0 unsmoothed). UV: U = j / segments, V =
+  1 - 2k / segments (the south pole at 1 - 2 · floor(segments / 2) / segments). Base To Pivot raises it by the radius.
+- **GeoSphere**: the base solid (tetrahedron with a vertex on +Z, octahedron, icosahedron with a vertex on +Z and
+  its upper ring from +X), each face subdivided in rows of equal angles (a slerp along both edges, then along the
+  row), the apex of each face the first of its corners (the icosahedron's band: the lone corner). Smooth: ID 2, group
+  1; else ID 1, group 0. UV per face: U = 0.5 + atan2(y, x) / 360°, V = 1 - polar angle / 180°; a face spanning more
+  than half a turn brings its corners past 3/4 down by one; a pole takes the mean of the face's other corners. A
+  point on the -X meridian sits a rounding error to either side of it in 3ds Max (U 0 in some faces, 1 in others):
+  MaxDrop's float rounding decides that differently, a whole turn on a few faces near that meridian.
+- **Cylinder, Cone**: center fans and cap rings, the side in height segments; vertices from +X counterclockwise.
+  IDs: bottom fan 2, bottom cap rings 1, side 3, top cap rings 2, top fan 1 (the rings take the other cap's ID);
+  groups caps 1, side 8 (0 unsmoothed). UV: U = 0.75 + j / sides, each face shifted down a whole turn while its end
+  would reach 1; V = z / height on the side; the caps take the side's U with V 0 or 1 (degenerate), and a ring of
+  radius 0 (a cone's tip) U 0.5, the face below it without the seam's shift. Real-World Map Size: the side in file
+  units (U by 2π · radius 1), each cap flat over its rim's extent (U = x - min x, V = max y - y below, y - min y on
+  top). A negative height flips every face so that they point out.
+- **Tube**: the profile (outer side up, top inwards, inner side down, bottom outwards) swept from +Y turning towards
+  +X; the outer side's role (ID 3, the profile's start) is the larger radius's, the smaller one's under a negative
+  height (the faces then point out without a flip). IDs outer 3, top 1, inner 4, bottom 2; groups sides 2, caps 4
+  (all 0 unsmoothed). UV: U along the profile (q / profile points), V = j / sides; Real-World Map Size: U = (1 - j /
+  sides) · 2π · the larger radius, V the distance along the profile (the height signed, the caps' widths).
+- **Torus**: segments around Z from +Y towards +X, each ring of sides from the outer equator upwards, turned by
+  rotation + twist · (segment + 1) / segments. ID 1. Groups: smooth 0 none, 2 all 1, 1 alternating 2 / 1 by side
+  (4 on the last of an odd count), 3 the same by segment. UV: U = side / sides, V = segment / segments; Real-World
+  Map Size: U = (1 - segment / segments) · 2π · radius 1, V = side / sides · 2π · radius 2.
+
+Not built (the node stays a placeholder, a line in the report): Slice on a Sphere, Cylinder, Cone, Tube or Torus,
+and a Sphere's or GeoSphere's hemisphere. Plane's render scale and density act at render time only (built at the
+viewport size, a line in the report). Teapot is not built. A primitive past 2^21 face corners (`MAX_CORNERS`) is
+refused: a file can ask for any number of segments.
 
 ## System unit
 
@@ -470,8 +792,15 @@ Not shown by any fixture yet, so not stated above:
     and the others the reader keeps as raw bytes).
 - Other root container ids: `0x2014` and `0x2023` occur in older files, and the 64-bit chunk header (size 0,
   then a `u64`) in large ones.
-- What a modifier stores (its parameters, its gizmo, the per-node modifier context): the reader follows a
-  derived object's stack (slot 1 above) but reads nothing of a modifier yet.
+- Of shapes ([Shapes](#shapes)): NGon's corner radius and Ellipse's outline (no fixture sets them: drawn without,
+  an issue), an Arc whose `from` equals `to` (taken as a full turn), the order of a reversed pie's knots (the center
+  last), a Rectangle whose corner radius is more than half a side (its knots cross; 3ds Max's handling is not
+  known), the rectangular rendering section; the `f32` and the last `u32` of a knot, `0x2904`, `0x1070` of the
+  BezierShape and `0x2150` (on some Editable Splines and Lines); the other shape classes (Star, Text, Helix, Donut,
+  Section, NURBS curves...), which stay placeholders.
+- Of a modifier stack ([Modifiers](#modifiers)): `0x204B`, `0x2501`, `0x2502`, `0x2512` and `0x2513`; how the
+  gizmo controller combines with the context matrix; a modifier without `0x39BF` (4 of 74 modifier objects in scene
+  A, 3 of 46 in scene B: read with every switch on and the class name).
 - The meaning of bit `0x800` and the other flag bits in `0x0960`.
 - Layer and node flags no fixture has, found with `tools/maxdiff.py` on scratch files saved by 3ds Max 2020 (three
   boxes on two layers; the same scene saved again; then one change per file). `reader/scene.py` relies on them:

@@ -18,6 +18,18 @@ vertex and face counts, UV layers, sharp edges and flat faces, material indices,
 oracle's instances), outward normals as rendered (the inverse transpose of the world matrix times each face normal
 points away from the oracle's bounding box center, also on the mirrored object) and the class of each placeholder. The
 oracle has no map channels or smoothing groups: those expectations come from the fixture scripts (tools/fixtures/*.ms).
+shapes: each shape node a curve object (3D, FREE handles) with the oracle's splines, point counts and cyclic flags,
+its points where 3ds Max has its knots, each segment's middle (mathutils.geometry.interpolate_bezier) where 3ds Max
+interpolates it (the straight segment included), the resolution from the steps, a bevel and faces only on the
+renderable FixtureLine.
+Converted modifiers (TurboSmooth, MeshSmooth, Shell, Symmetry): each object's Blender modifiers in 3ds Max's order with
+the description's settings and mirror empties, creases where a smoother separates by smoothing groups, and the
+evaluated mesh with 3ds Max's vertex and triangle counts and world box (stack_convert, stack_basic, modifier_pivot);
+stack_convert imported with Modifiers: Ignore gets none.
+primitives (convert/primitives.py): each node a mesh with 3ds Max's vertex and triangle counts (eval_verts, eval_faces)
+and world box, its UV layer (none without Generate Mapping Coords), sharp edges, the unsmoothed GeoSphere flat, normals
+outward but for the Planes (up, or down for the one of negative width) and the Box of negative width (in, as 3ds Max
+makes it); the instance shares FixtureBox's mesh; the TurboSmooth over a Box evaluates to 3ds Max's counts.
 layers_flags: two layer collections, one hidden object, one with hide_render, the group head as the parent of its two
 members. modifier_pivot: a node with modifiers gets its base mesh (no bounding box check, the oracle's is after the
 modifiers), the report names the modifiers not applied, and the node whose pivot alone is rotated keeps its object
@@ -50,6 +62,7 @@ import traceback
 
 import bpy
 from mathutils import Matrix, Vector
+from mathutils.geometry import interpolate_bezier
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
@@ -63,12 +76,17 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1
     "corona_maps": ["UVMap"],
     "corona_physical": ["UVMap"],
     "editable_mesh": ["UVMap"],
+    "extrude": [],  # per mesh: EXTRUDE_UV_LAYERS
     "gamma_swatches": ["UVMap"],
     "hierarchy": [],
     "instances": ["UVMap"],
     "layers_flags": [],
-    "modifier_pivot": ["UVMap"],  # the base mesh's channel: the UVW Map modifier is not applied
+    "modifier_pivot": ["UVMap"],  # FixtureBent's UVW Map writes channel 1 (applied, the Bend above it is not)
     "multi_uv": ["UVMap", "UVChannel_2", "UVChannel_3"],
+    "primitives": {"FixtureBoxNoMap": []},  # else UVMap: Generate Mapping Coords
+    "shapes": ["UVMap"],  # FixtureBox; the shapes are curves
+    "stack_basic": ["UVMap"],  # FixtureTurbo's UVW Map writes channel 1; no other modifier is applied
+    "stack_convert": ["UVMap"],  # the modifiers become Blender modifiers on the base meshes
     "standard_physical": ["UVMap"],
     "texmap_rules": ["UVMap"],
     "units_cm": ["UVMap"],
@@ -78,11 +96,46 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1
     "vray_maps": ["UVMap"],
     "vray_texmaps": ["UVMap"],
     "vray_wrappers": ["UVMap"],
+    "uvwmap": {"FixtureUVWGizmo": ["UVMap", "UVChannel_2"], "FixtureUVWTwo": ["UVMap", "UVChannel_3"]},  # else UVMap
+    "uvwmap_oblique": ["UVMap"],
 }
 # editable_mesh: group 1 on top and bottom, 2 on the sides; a box with a group per side: 12; modifier_pivot's box of
 # four height segments: 4 x 4 vertical side edges and both rims
-SHARP_EDGES = {"editable_mesh": 8, "modifier_pivot": 24}
+# a converted TurboSmooth or MeshSmooth with Smooth Result leaves no sharp edge
+SHARP_EDGES = {"editable_mesh": 8, "modifier_pivot": {"FixtureSmooth": 0, None: 24},
+               "stack_basic": {"FixtureTurbo": 0, None: 12},
+               "stack_convert": {"FixtureTurboOne": 0, "FixtureMeshSmooth": 0, "FixtureOrder": 0, None: 12},
+               # boxes of 3 x 2 x 2 segments: 28; the cylinder's rims 2 x 16; the sphere is smooth
+               "uvwmap": {"FixtureUVWCyl": 32, "FixtureUVWSphere": 0, "FixtureUVWSharedB": 12, None: 28},
+               # smooth spheres, the rims of a 10-sided cylinder
+               "uvwmap_oblique": {"FixtureUVWObliqueCap": 20, None: 0},
+               # primitives (tests/unit/test_convert_scene.py, SHARP_EDGES_PRIMITIVES); the TurboSmooth smooths
+               "primitives": {"FixtureBox": 36, "FixtureBoxCopy": 36, "FixtureBoxDown": 12, "FixtureBoxNoMap": 12,
+                              "FixtureBoxSmooth": 0, "FixturePyramid": 18, "FixtureGeoOcta": 48,
+                              "FixtureCylinder": 20, "FixtureCone": 18, "FixtureTube": 32, "FixtureTorus": 96,
+                              "FixtureBoxInside": 16, "FixtureCylinderDown": 14, "FixtureConeTip": 14,
+                              "FixtureTubeSwap": 28, "FixtureTorusOdd": 35, "FixturePyramidDown": 14,
+                              "FixtureCylinderReal": 14, "FixtureTubeDown": 28, None: 0}}
 SHARP_EDGES_DEFAULT = 12
+FLAT_SHADED = {"FixtureGeoOcta"}  # a GeoSphere not smoothed: no smoothing group, every face flat
+# primitives whose normals are not "away from the box center": a Plane's point up or down (by its sizes' signs), and
+# a Box of width -12 keeps 3ds Max's faces, which point in
+PLANE_NORMALS = {"FixturePlane": 1.0, "FixturePlaneDown": -1.0, "FixturePlaneReal": 1.0}
+INSIDE_OUT = {"FixtureBoxInside"}
+# hollow: a tube's inner side and a torus's inner half face the box center; closed, they enclose a positive volume
+# the oracle's base_class_id of the primitives MaxDrop builds (convert/primitives.py)
+PRIMITIVE_CLASSES = {("0x00000010", "0x00000000"), ("0x00000011", "0x00000000"), ("0x00000012", "0x00000000"),
+                     ("0x00000020", "0x00000000"), ("0xa86c23dd", "0x00000000"), ("0x00007b21", "0x00000000"),
+                     ("0x00000000", "0x00007f9e"), ("0x081f1dfc", "0x77566f65"), ("0x76bf318a", "0x4bf37b10")}
+HOLLOW = {"FixtureTube", "FixtureTubeSwap", "FixtureTubeDown", "FixtureTorus", "FixtureTorusOdd"}
+# extrude (Generate Mapping Coords on two nodes); sharp edges: the vertical edges at corner knots, one per level, and
+# both rims of every capped outline; V - E + F: a solid 2, one with a round tunnel 0, a ring and its island 0 + 2
+EXTRUDE_UV_LAYERS = {"FixtureExtRect": ["UVMap"], "FixtureExtAdaptive": ["UVMap"],
+                     "FixtureUVWExtrude": ["UVMap"]}  # uvwmap: no mapping from the Extrude, the UVW Map's
+EXTRUDE_SHARP_EDGES = {"FixtureExtRect": 16, "FixtureExtL": 18, "FixtureExtHole": 68, "FixtureExtIsland": 36,
+                       "FixtureExtOpen": 0, "FixtureExtMirror": 72, "FixtureExtAdaptive": 256, "FixtureUVWExtrude": 12}
+EXTRUDE_EULER = {"FixtureExtRect": 2, "FixtureExtL": 2, "FixtureExtHole": 0, "FixtureExtIsland": 2,
+                 "FixtureExtOpen": None, "FixtureExtMirror": 2, "FixtureExtAdaptive": 2, "FixtureUVWExtrude": 2}
 VALUE_TOLERANCE = 1e-4
 SPECULAR_LEVEL = 0.5  # the IR's specular is a reflection weight: 1 is Blender's Specular IOR Level 0.5
 DEG = math.pi / 180.0
@@ -100,6 +153,8 @@ def empty_scene():
         bpy.data.objects.remove(ob)
     for mesh in list(bpy.data.meshes):
         bpy.data.meshes.remove(mesh)
+    for curve in list(bpy.data.curves):
+        bpy.data.curves.remove(curve)
     for col in list(bpy.data.collections):
         bpy.data.collections.remove(col)
     for text in list(bpy.data.texts):
@@ -171,13 +226,18 @@ def run_fixture(path, modules):
     root = bpy.data.collections.get(name)
     meters = desc.meters
     nodes = oracle["nodes"]
-    check("%s: one object per node" % name, len(desc.nodes) == len(nodes) == len(bpy.data.objects),
-          "%d objects, %d nodes" % (len(bpy.data.objects), len(nodes)))
+    helpers = [ob for ob in bpy.data.objects if ob.get("maxdrop_helper") == "mirror"]
+    mirrors = sum(1 for n in desc.nodes for m in n.converted if m.mirror is not None)
+    check("%s: one object per node, one empty per mirror object" % name,
+          len(desc.nodes) == len(nodes) == len(bpy.data.objects) - len(helpers) and len(helpers) == mirrors,
+          "%d objects, %d nodes, %d mirror empties" % (len(bpy.data.objects), len(nodes), len(helpers)))
     check("%s: nodes in oracle order" % name, [n.name for n in desc.nodes] == [n["name"] for n in nodes])
     obs = objects_of(desc)
     meshes = {ob.data.name: ob.data for ob in obs if ob.type == 'MESH'}
     handle_of = {ob.as_pointer(): o["handle"] for ob, o in zip(obs, nodes)}
     offset_of = {o["handle"]: (o["offset_pos"], o["offset_rot"], o["offset_scale"]) for o in nodes}
+    shading_of = {o["handle"]: next((m.shading for m in node.converted if m.kind == "SUBSURF"), None)
+                  for node, o in zip(desc.nodes, nodes)}
     for ob, node, o in zip(obs, desc.nodes, nodes):
         label = "%s/%s" % (name, o["name"])
         parent = handle_of.get(ob.parent.as_pointer()) if ob.parent else None
@@ -190,13 +250,21 @@ def run_fixture(path, modules):
         flags = (ob.hide_viewport, ob.hide_get(view_layer=view_layer), ob.hide_render, ob.hide_select)
         check(label + ": hidden, renderable and frozen flags",
               flags == (o["hidden"], o["hidden"], not o["renderable"], o["frozen"]), str(flags))
-        if o["base_verts"] is None:
+        if o["shape"] is not None and node.kind == convert_scene.MESH:
+            check_extruded(label, ob, node, o, meters, plan)
+            continue
+        if o["shape"] is not None:
+            check_curve(label, ob, o["shape"], meters)
+            continue
+        primitive = tuple(o["base_class_id"]) in PRIMITIVE_CLASSES  # built from its parameters
+        if o["base_verts"] is None and not primitive:
             check(label + ": placeholder empty", ob.type == 'EMPTY' and ob.get("maxdrop_class") == o["base_class_name"],
                   "%s %r" % (ob.type, ob.get("maxdrop_class")))
             continue
         check(label + ": mesh object", ob.type == 'MESH', ob.type)
         if ob.type != 'MESH':
             continue
+        check_converted(label, ob, node, o, meters, desc)
         mesh = ob.data
         mw = world_of(ob)
         world = [mw @ v.co for v in mesh.vertices]
@@ -207,37 +275,78 @@ def run_fixture(path, modules):
                   and close(hi, o["bbox_max"], BBOX_TOLERANCE),
                   "%s..%s vs %s..%s" % (["%.6g" % v for v in lo], ["%.6g" % v for v in hi], o["bbox_min"],
                                         o["bbox_max"]))
-        check(label + ": vertex and face counts", (len(mesh.vertices), len(mesh.polygons)) ==
-              (o["base_verts"], o["base_faces"]), "%d, %d" % (len(mesh.vertices), len(mesh.polygons)))
+        if primitive:  # the oracle counts the triangles of the TriMesh 3ds Max builds, after the modifiers
+            if not o["modifiers"]:
+                triangles = sum(len(p.vertices) - 2 for p in mesh.polygons)
+                check(label + ": vertex and triangle counts = 3ds Max's", (len(mesh.vertices), triangles) ==
+                      (o["eval_verts"], o["eval_faces"]), "%d, %d" % (len(mesh.vertices), triangles))
+        else:
+            check(label + ": vertex and face counts", (len(mesh.vertices), len(mesh.polygons)) ==
+                  (o["base_verts"], o["base_faces"]), "%d, %d" % (len(mesh.vertices), len(mesh.polygons)))
         uv = [layer.name for layer in mesh.uv_layers]
-        check(label + ": UV layers", uv == UV_LAYERS[name], str(uv))
+        want = UV_LAYERS[name]
+        check(label + ": UV layers", uv == (want.get(o["name"], ["UVMap"]) if isinstance(want, dict) else want),
+              str(uv))
         md = desc.meshes[node.mesh]
         for (uv_name, uv_data), layer in zip(md.uv_layers, mesh.uv_layers):
             got = [c for d in layer.data for c in d.uv]
             check(label + ": UV data of " + uv_name, close(got, uv_data.ravel().tolist(), 1e-6))
         sharp = mesh.attributes.get("sharp_edge")
         count = sum(1 for d in sharp.data if d.value) if sharp else 0
-        check(label + ": sharp edges", count == SHARP_EDGES.get(name, SHARP_EDGES_DEFAULT), str(count))
+        want = SHARP_EDGES.get(name, SHARP_EDGES_DEFAULT)
+        want = want.get(o["name"], want[None]) if isinstance(want, dict) else want
+        check(label + ": sharp edges", count == want, str(count))
         flat = mesh.attributes.get("sharp_face")
-        check(label + ": every face smooth", flat is None or not any(d.value for d in flat.data))
+        if o["name"] in FLAT_SHADED:
+            check(label + ": every face flat", flat is not None and all(d.value for d in flat.data))
+        else:
+            check(label + ": every face smooth", flat is None or not any(d.value for d in flat.data))
         indices = [p.material_index for p in mesh.polygons]
         check(label + ": each face on its material's slot", indices == plan[node.mesh].indices.tolist(),
               str(indices))
         sharing = sorted(handle_of[other.as_pointer()] for other in obs if other.data == mesh)
         # the object offset is baked into the mesh: only the instances with the same offset share it
-        same_offset = [h for h in o["instances"] if offset_of[h] == offset_of[o["handle"]]]
+        same_offset = [h for h in o["instances"] if offset_of[h] == offset_of[o["handle"]]
+                       and shading_of[h] == shading_of[o["handle"]]]  # a converted smoother's shading: own mesh
         check(label + ": objects sharing the mesh = oracle instances with its offset", sharing == same_offset,
               str(sharing))
         box = (lo, hi) if o["modifiers"] else (o["bbox_min"], o["bbox_max"])
         center = (Vector(box[0]) + Vector(box[1])) * (meters / 2.0)
         normal_matrix = mw.to_3x3().inverted().transposed()
-        outward = [(normal_matrix @ p.normal).dot(mw @ p.center - center) > 0 for p in mesh.polygons]
-        check(label + ": normals outward as rendered", all(outward), "%d of %d" % (sum(outward), len(outward)))
+        faces = [p for p in mesh.polygons if p.area > 1e-12]  # a cone's tip cap: its points all in one place
+        if o["name"] in HOLLOW:
+            volume = 0.0
+            for p in mesh.polygons:
+                a = mesh.vertices[p.vertices[0]].co
+                for k in range(1, len(p.vertices) - 1):
+                    volume += a.dot(mesh.vertices[p.vertices[k]].co.cross(mesh.vertices[p.vertices[k + 1]].co)) / 6
+            check(label + ": a closed mesh facing out (positive volume)", volume * mw.determinant() > 0, str(volume))
+        elif o["name"] in PLANE_NORMALS:
+            up = [(normal_matrix @ p.normal).z * PLANE_NORMALS[o["name"]] > 0 for p in faces]
+            check(label + ": normals point %s as in 3ds Max" % ("up" if PLANE_NORMALS[o["name"]] > 0 else "down"),
+                  all(up), "%d of %d" % (sum(up), len(up)))
+        else:
+            outward = [(normal_matrix @ p.normal).dot(mw @ p.center - center) > 0 for p in faces]
+            if o["name"] in INSIDE_OUT:
+                check(label + ": normals inward as 3ds Max makes them", not any(outward),
+                      "%d of %d out" % (sum(outward), len(outward)))
+            else:
+                check(label + ": normals outward as rendered", all(outward), "%d of %d" % (sum(outward),
+                                                                                          len(outward)))
     if name == "instances":
         users = sorted(m.users for m in bpy.data.meshes)
         check("instances: four objects share one mesh, the copy has its own", users == [1, 4], str(users))
     if name == "modifier_pivot":
         check_modifier_pivot(obs, meters)
+    if name == "extrude":
+        kinds = [ob.type for ob in obs]
+        check("extrude: seven meshes, the switched-off Extrude a curve", kinds == ['MESH'] * 7 + ['CURVE'],
+              str(kinds))
+    if name == "shapes":
+        curves = sorted(c.name for c in bpy.data.curves)
+        shaped = sum(1 for o in nodes if o["shape"] is not None)
+        check("shapes: one curve per shape node, one mesh", len(curves) == shaped == 13 and len(meshes) == 1,
+              str(curves))
     if name == "hierarchy":
         mirrored = [n.name for n in desc.nodes if n.mirrored]
         check("hierarchy: FixtureLeaf is the mirrored node", mirrored == ["FixtureLeaf"], str(mirrored))
@@ -266,18 +375,204 @@ def run_fixture(path, modules):
     level, line = build_report.publish(rep)
     text = bpy.data.texts.get(build_report.TEXT_NAME)
     published = text is not None and text.as_string().rstrip("\n") == rep.text()
-    # the report counts each modifier class once per node whose stack holds it: not applied, the base mesh is built
-    modified = sum(len({tuple(m["class_id"]) for m in o["modifiers"]}) for o in nodes)
+    # the report counts each modifier class once per node whose stack holds it, applied (an Extrude on a shape, the
+    # UVW Maps right above it or a mesh) or not (the rest: the base mesh is built); every modifier of the oracle is
+    # one or the other
+    split = [len(n.applied) + len(n.converted) + len(n.modifiers) for n in desc.nodes]
+    check("%s: each modifier applied or not" % name, split == [len(o["modifiers"]) for o in nodes], str(split))
+    modified = sum(len(set(n.modifiers)) for n in desc.nodes)
+    applied = sum(len(set(n.applied)) for n in desc.nodes)
+    issues = len(desc.issues)  # the issues a fixture is made to raise (tests/unit/test_convert_scene.py)
+    check("%s: the report counts each applied modifier" % name, sum(rep.modifiers_applied.values()) == applied,
+          str(dict(rep.modifiers_applied)))
+    converted = sum(len({m.class_name for m in n.converted}) for n in desc.nodes)
+    check("%s: the report counts each converted modifier" % name,
+          sum(rep.modifiers_converted.values()) == converted, str(dict(rep.modifiers_converted)))
+
     if modified:
-        check("%s: report published, nothing left out but the %d modifiers" % (name, modified),
+        check("%s: report published, nothing left out but the %d modifiers and %d issues" % (name, modified, issues),
               level == "WARNING" and published and not rep.approximated
-              and rep.left_out == sum(rep.modifiers.values()) == modified
-              and line.endswith("; %d modifiers not applied. See the text %s." % (modified, build_report.TEXT_NAME)),
+              and rep.left_out == sum(rep.modifiers.values()) + issues and sum(rep.modifiers.values()) == modified
+              and line.endswith("; %d modifier%s not applied%s. See the text %s." % (
+                  modified, "" if modified == 1 else "s", ", %d issue%s" % (issues, "" if issues == 1 else "s")
+                  if issues else "", build_report.TEXT_NAME)),
               line)
     else:
         check("%s: report published, nothing left out" % name, level == "INFO" and published, line)
     print("COUNTS %s: objects=%d meshes=%d placeholders=%d issues=%d" % (
         name, len(bpy.data.objects), len(bpy.data.meshes), sum(desc.placeholders.values()), len(desc.issues)))
+
+
+def check_extruded(label, ob, node, o, meters, plan):
+    """A shape under an Extrude: a mesh with the oracle's world box, vertex count and triangle count, closed with
+    normals outward as rendered (the signed volume of the world mesh, times the sign of the world matrix's
+    determinant, is positive) when capped, its UV layers, sharp edges and material slots."""
+    check(label + ": mesh object", ob.type == 'MESH', ob.type)
+    if ob.type != 'MESH':
+        return
+    mesh, mw = ob.data, world_of(ob)
+    world = [mw @ v.co for v in mesh.vertices]
+    lo = [min(p[k] for p in world) / meters for k in range(3)]
+    hi = [max(p[k] for p in world) / meters for k in range(3)]
+    check(label + ": world bounding box", close(lo, o["bbox_min"], BBOX_TOLERANCE)
+          and close(hi, o["bbox_max"], BBOX_TOLERANCE),
+          "%s..%s vs %s..%s" % (["%.6g" % v for v in lo], ["%.6g" % v for v in hi], o["bbox_min"], o["bbox_max"]))
+    triangles = sum(len(p.vertices) - 2 for p in mesh.polygons)
+    check(label + ": vertex and triangle counts", (len(mesh.vertices), triangles) == (o["eval_verts"], o["eval_faces"]),
+          "%d, %d" % (len(mesh.vertices), triangles))
+    name = o["name"]
+    euler = EXTRUDE_EULER[name]
+    if euler is not None:
+        uses = collections.Counter(tuple(sorted(e.vertices)) for p in mesh.polygons for e in
+                                   (mesh.edges[mesh.loops[i].edge_index] for i in p.loop_indices))
+        check(label + ": closed (every edge has two faces)", set(uses.values()) == {2}, str(set(uses.values())))
+        check(label + ": V - E + F", len(mesh.vertices) - len(mesh.edges) + len(mesh.polygons) == euler)
+        volume = 0.0
+        for p in mesh.polygons:
+            v = [world[i] for i in p.vertices]
+            for k in range(1, len(v) - 1):
+                volume += v[0].dot(v[k].cross(v[k + 1])) / 6.0
+        check(label + ": normals outward as rendered", volume * mw.to_3x3().determinant() > 0, "%g" % volume)
+    uv = [layer.name for layer in mesh.uv_layers]
+    check(label + ": UV layers", uv == EXTRUDE_UV_LAYERS.get(name, []), str(uv))
+    sharp = mesh.attributes.get("sharp_edge")
+    count = sum(1 for d in sharp.data if d.value) if sharp else 0
+    check(label + ": sharp edges", count == EXTRUDE_SHARP_EDGES[name], str(count))
+    indices = [p.material_index for p in mesh.polygons]
+    check(label + ": each face on its material's slot", indices == plan[node.mesh].indices.tolist(), str(indices))
+    check(label + ": a material", any(sl.material for sl in ob.material_slots))
+
+
+# 3ds Max leaves the seam of FixtureOrder's shelled boxes unwelded (32 vertices before the TurboSmooth, 100 after);
+# Blender's Mirror welds it (84): the same surface, so only the box is compared there
+EVAL_COUNT_DIFFERS = {"FixtureOrder"}
+
+
+def _setting_ok(got, want):
+    if isinstance(want, tuple):
+        return tuple(got) == want
+    if isinstance(want, float):
+        return abs(got - want) <= 1e-6 * max(1.0, abs(want))
+    return got == want
+
+
+def check_converted(label, ob, node, o, meters, desc):
+    """The Blender modifiers of a node (node.converted, convert.modifiers): types, order, names, settings and mirror
+    objects; when MaxDrop evaluates the rest of the stack, the evaluated mesh has 3ds Max's vertex and triangle
+    counts (eval_verts, eval_faces) and world box. Creases on the sharp edges of a mesh that asks for them."""
+    md = desc.meshes[node.mesh]
+    crease = ob.data.attributes.get("crease_edge")
+    sharp = ob.data.attributes.get("sharp_edge")
+    if md.creases:
+        flags = [d.value for d in sharp.data] if sharp else []
+        check(label + ": sharp edges creased", crease is not None and len(flags) == len(crease.data)
+              and all((c.value == 1.0) == f for c, f in zip(crease.data, flags)) and any(flags))
+    else:
+        check(label + ": no crease", crease is None or not any(d.value for d in crease.data))
+    mods = list(ob.modifiers)
+    check(label + ": Blender modifiers in 3ds Max's order", [(m.type, m.name) for m in mods] ==
+          [(c.kind, c.name) for c in node.converted], str([(m.type, m.name) for m in mods]))
+    if not node.converted:
+        return
+    for mod, c in zip(mods, node.converted):
+        bad = [a for a, v in c.settings if not _setting_ok(getattr(mod, a), v)]
+        check(label + ": %s settings" % mod.name, not bad and mod.show_viewport == c.show_viewport, str(bad))
+        if mod.type == 'MIRROR':
+            mirror = mod.mirror_object
+            if c.mirror is None:
+                check(label + ": no mirror object", mirror is None)
+            else:
+                check(label + ": the mirror object an empty child at the gizmo", mirror is not None
+                      and mirror.type == 'EMPTY' and mirror.parent == ob and close(
+                          [v for row in mirror.matrix_basis for v in row], [v for row in c.mirror for v in row],
+                          1e-6), mirror and str(mirror.matrix_basis))
+    if node.modifiers:
+        return
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev = ob.evaluated_get(dg)
+    mesh = ev.to_mesh()
+    try:
+        mw = world_of(ob)
+        world = [mw @ v.co for v in mesh.vertices]
+        triangles = sum(len(p.vertices) - 2 for p in mesh.polygons)
+        counts = (len(mesh.vertices), triangles)
+    finally:
+        ev.to_mesh_clear()
+    lo = [min(p[k] for p in world) / meters for k in range(3)]
+    hi = [max(p[k] for p in world) / meters for k in range(3)]
+    # a vertex within the weld threshold of the mirror plane: Blender's Mirror merges it with its copy onto the
+    # plane, 3ds Max's Symmetry slices beside it (FixtureSymmetryTurned: a corner 0.062 off the plane, threshold 0.2)
+    weld = max([dict(c.settings)["merge_threshold"] / meters for c in node.converted
+                if c.kind == 'MIRROR' and dict(c.settings)["use_mirror_merge"]] or [0.0])
+    tolerance = BBOX_TOLERANCE + weld
+    check(label + ": evaluated world box = 3ds Max's", close(lo, o["bbox_min"], tolerance)
+          and close(hi, o["bbox_max"], tolerance),
+          "%s..%s vs %s..%s" % (["%.6g" % v for v in lo], ["%.6g" % v for v in hi], o["bbox_min"], o["bbox_max"]))
+    if o["name"] not in EVAL_COUNT_DIFFERS:
+        check(label + ": evaluated vertex and triangle counts = 3ds Max's", counts == (o["eval_verts"],
+                                                                                       o["eval_faces"]),
+              "%d, %d vs %s, %s" % (counts + (o["eval_verts"], o["eval_faces"])))
+
+
+def check_ignore_option(path, modules):
+    """stack_convert imported with Modifiers: Ignore: no Blender modifier, no mirror empty, every modifier counted as
+    not applied."""
+    empty_scene()
+    result = bpy.ops.import_scene.maxdrop(filepath=path, modifiers='IGNORE')
+    check("stack_convert: Ignore: the operator finishes", result == {'FINISHED'}, str(result))
+    mods = [m.type for ob in bpy.data.objects for m in ob.modifiers]
+    check("stack_convert: Ignore: no Blender modifier, no empty", mods == [] and all(
+        ob.type == 'MESH' for ob in bpy.data.objects), str(mods))
+    text = bpy.data.texts.get(modules[4].TEXT_NAME)
+    check("stack_convert: Ignore: the report counts them as not applied", text is not None and
+          "nodes by class: Symmetry 4, TurboSmooth 4, Shell 2, Bend 1, MeshSmooth 1" in text.as_string()
+          and "converted to a Blender modifier" not in text.as_string())
+
+
+def check_curve(label, ob, shape, meters):
+    """A shape node's curve object against the oracle's knots (object space: no fixture shape has an object
+    offset): splines, points, cyclic flags, each segment's middle, resolution and bevel."""
+    check(label + ": curve object", ob.type == 'CURVE', ob.type)
+    if ob.type != 'CURVE':
+        return
+    cu = ob.data
+    want = shape["splines"]
+    got = [(len(sp.bezier_points), sp.use_cyclic_u, sp.type) for sp in cu.splines]
+    check(label + ": splines, points and cyclic flags", got == [(len(w["knots"]), w["closed"], 'BEZIER') for w in want],
+          str(got))
+    check(label + ": 3D", cu.dimensions == '3D', cu.dimensions)
+    steps = 12 if shape["adaptive"] else shape["steps"] + 1
+    check(label + ": resolution from the steps", cu.resolution_u == steps and
+          all(sp.resolution_u == steps for sp in cu.splines), "%d vs %d" % (cu.resolution_u, steps))
+    if shape["renderable"]:
+        check(label + ": a bevel of the thickness", abs(cu.bevel_depth - shape["thickness"] / 2 * meters) < 1e-9 and
+              cu.bevel_resolution == (shape["sides"] - 4) // 2, "%g, %d" % (cu.bevel_depth, cu.bevel_resolution))
+    else:
+        check(label + ": no bevel", cu.bevel_depth == 0, str(cu.bevel_depth))
+    for k, (sp, w) in enumerate(zip(cu.splines, want)):
+        pts = sp.bezier_points
+        n = len(pts)
+        knots = [list(p.co / meters) for p in pts]
+        check("%s spline %d: points at the knots" % (label, k),
+              close([c for p in knots for c in p], [c for x in w["knots"] for c in x["pos"]], MATRIX_TOLERANCE))
+        check("%s spline %d: FREE handles" % (label, k),
+              all(p.handle_left_type == p.handle_right_type == 'FREE' for p in pts))
+        mids, expected = [], []
+        for j, x in enumerate(w["knots"]):
+            if x["mid"] is None:
+                continue
+            a, b = pts[j], pts[(j + 1) % n]
+            mid = interpolate_bezier(a.co, a.handle_right, b.handle_left, b.co, 3)[1]
+            mids += list(mid / meters)
+            expected += x["mid"]
+        check("%s spline %d: segment middles where 3ds Max interpolates them" % (label, k),
+              close(mids, expected, MATRIX_TOLERANCE), "%s vs %s" % (["%.6g" % v for v in mids], expected))
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = ob.evaluated_get(depsgraph)
+    mesh = evaluated.to_mesh()
+    faces = len(mesh.polygons)
+    evaluated.to_mesh_clear()
+    check(label + ": faces exactly when it renders", (faces > 0) == shape["renderable"], str(faces))
 
 
 def check_modifier_pivot(obs, meters):
@@ -1086,6 +1381,11 @@ def main():
         except Exception:
             traceback.print_exc()
             check("shear: no exception", False)
+        try:
+            check_ignore_option(os.path.join(ROOT, "tests", "fixtures", "stack_convert.max"), modules)
+        except Exception:
+            traceback.print_exc()
+            check("modifiers ignored: no exception", False)
         for label, run_check in (("material slots", lambda: check_material_slots(modules)),
                                  ("found textures", check_found_textures), ("builder", check_builder)):
             try:

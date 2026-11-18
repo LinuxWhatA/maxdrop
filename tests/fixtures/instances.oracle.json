@@ -145,6 +145,7 @@
       "bbox_max": [5, 5, 10],
       "bbox_min": [-5, -5, 0],
       "eval_faces": 12,
+      "eval_maps": null,
       "eval_verts": 8,
       "frozen": false,
       "handle": 1,
@@ -161,6 +162,7 @@
       "offset_scale": [1, 1, 1],
       "parent": null,
       "renderable": true,
+      "shape": null,
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]
     },
     {
@@ -172,6 +174,7 @@
       "bbox_max": [25, 5, 10],
       "bbox_min": [15, -5, 0],
       "eval_faces": 12,
+      "eval_maps": null,
       "eval_verts": 8,
       "frozen": false,
       "handle": 2,
@@ -188,6 +191,7 @@
       "offset_scale": [1, 1, 1],
       "parent": null,
       "renderable": true,
+      "shape": null,
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 20, 0, 0]
     },
     {
@@ -199,6 +203,7 @@
       "bbox_max": [47.0711, 7.07107, 10],
       "bbox_min": [32.9289, -7.07107, 0],
       "eval_faces": 12,
+      "eval_maps": null,
       "eval_verts": 8,
       "frozen": false,
       "handle": 3,
@@ -215,6 +220,7 @@
       "offset_scale": [1, 1, 1],
       "parent": null,
       "renderable": true,
+      "shape": null,
       "transform": [0.707107, 0.707107, 0, -0.707107, 0.707107, 0, 0, 0, 1, 40, 0, 0]
     },
     {
@@ -226,6 +232,7 @@
       "bbox_max": [70, 10, 20],
       "bbox_min": [50, -10, 0],
       "eval_faces": 12,
+      "eval_maps": null,
       "eval_verts": 8,
       "frozen": false,
       "handle": 4,
@@ -242,6 +249,7 @@
       "offset_scale": [1, 1, 1],
       "parent": null,
       "renderable": true,
+      "shape": null,
       "transform": [2, 0, 0, 0, 2, 0, 0, 0, 2, 60, 0, 0]
     },
     {
@@ -253,6 +261,7 @@
       "bbox_max": [5, 25, 10],
       "bbox_min": [-5, 15, 0],
       "eval_faces": 12,
+      "eval_maps": null,
       "eval_verts": 8,
       "frozen": false,
       "handle": 5,
@@ -269,10 +278,11 @@
       "offset_scale": [1, 1, 1],
       "parent": null,
       "renderable": true,
+      "shape": null,
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 20, 0]
     }
   ],
-  "oracle_version": 2,
+  "oracle_version": 5,
   "renderer": {"class_id": ["0x00000001", "0x00000000"], "class_name": "Default_Scanline_Renderer"},
   "time": 0,
   "units": {"display_metric": "meters", "display_type": "Generic", "display_us": "ft_Frac_In", "system_scale": 1, "system_type": "millimeters"}

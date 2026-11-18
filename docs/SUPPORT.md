@@ -1,8 +1,10 @@
 # What MaxDrop imports
 
-**This page describes version 0.0.4.** Nodes, meshes, transforms, hierarchy, instances, layers, scene units and
+**This page describes version 0.0.5.** Nodes, meshes, transforms, hierarchy, instances, layers, scene units and
 materials are read by MaxDrop's own reader; the engine of [io_scene_max](https://github.com/nrgsille76/io_scene_max)
-1.9.2 that 0.0.3 still used for materials is gone. A scene pack (`.zip`, `.rar`, `.7z`) is unpacked and its `.max`
+1.9.2 that 0.0.3 still used for materials is gone. From 0.0.5 the room shell arrives too (shapes, Extrude, UVW
+Map), as do nine of the standard primitives and TurboSmooth, MeshSmooth, Shell and Symmetry as Blender modifiers. A
+scene pack (`.zip`, `.rar`, `.7z`) is unpacked and its `.max`
 imported (see [Files](#files)), and several `.max` files chosen at once are imported one after the other.
 
 How far to trust the list: MaxDrop's test files (`tests/fixtures/`, saved by 3ds Max 2020) are compared with what
@@ -14,14 +16,20 @@ without an error, and 99.7 % and 99.9 % of their objects without modifiers get t
 Standard, Physical Material and the texture maps below): the parameters MaxDrop reads are compared with what 3ds Max
 reports, and the Blender material with those parameters, on Blender 4.2, 4.5 and 5.2. In the two commercial scenes,
 the conversion of 214 of 214 and 220 of 220 materials (100 %) gives what the same rules give from the
-parameters 3ds Max reports, textures included (see [BASELINE.md](BASELINE.md)). The page is updated with every
-version.
+parameters 3ds Max reports, textures included (see [BASELINE.md](BASELINE.md)). Modifiers are checked the same
+way: in the test files, the meshes MaxDrop makes from shapes with an Extrude, from primitives, with UVW Maps and with
+the modifiers it keeps as Blender modifiers have 3ds Max's vertex and triangle counts and bounding box (Symmetry's
+weld aside, see its row), and UVW Map coordinates equal 3ds Max's. In the scene whose room is built from outlines
+(3ds Max 2015), all 20 extruded shapes of the room get 3ds Max's vertex and triangle counts, and the 16 whose
+stack MaxDrop evaluates in full its bounding box (the other 4 have an Edit Mesh or an FFD above the Extrude, which
+MaxDrop does not apply); in both scenes every object whose modifiers are all applied or converted gets 3ds Max's
+vertex count (57 and 150 objects). The page is updated with every version.
 
 "Not yet" means the importer does not convert it: the node arrives as an empty (a *placeholder*) at its place in
 the hierarchy, with its 3ds Max class name in the custom property `maxdrop_class`.
 
-After every import the **import report** says what arrived and what did not: the unit, the objects and meshes
-built, layers, hidden and frozen objects, groups, the placeholders by class, the modifiers not applied, unknown
+After every import the **import report** says what arrived and what did not: the unit, the objects, meshes and
+curves built, layers, hidden and frozen objects, groups, the placeholders by class, the modifiers not applied, unknown
 controllers and geometry errors, the unpack of a scene pack; the materials built and converted by class, the
 wrappers and maps that were simplified (peeled to what is below them) by class, material and map classes without a
 rule, the textures found by each step of the lookup and the ones not found by file name (for a scene from a pack:
@@ -39,11 +47,16 @@ your computer.
 | UV channels of those meshes | **Imported**, every channel from 1 up: `UVMap` for channel 1, `UVChannel_<n>` for channel n; at most 8 per mesh (Blender's limit) |
 | Smoothing groups | **Imported**: an edge between two faces that share no group is sharp, a face without a group is flat |
 | Instances | **Imported** as one mesh shared by the objects |
-| Object with modifiers | **Base object only**: the stack is not evaluated, so Extrude, UVW Map, TurboSmooth, Shell, Symmetry, Edit Poly and the others have no effect |
+| Object with modifiers | **Base object only**: the stack is not evaluated, so Edit Poly, Edit Mesh, FFD, Noise, Bend and the others have no effect (each class a line in the report). The exceptions are Extrude on a shape and UVW Map, applied, and TurboSmooth, MeshSmooth, Shell and Symmetry, kept as Blender modifiers (below) |
+| TurboSmooth, MeshSmooth, Shell, Symmetry | **Kept as Blender modifiers** in 3ds Max's order, with the import option *Modifiers: Keep as Blender Modifiers* (the default; *Ignore* leaves them out): TurboSmooth and MeshSmooth become Subdivision Surface (iterations and render iterations as levels; Smooth Result smooths the shading, separate by smoothing groups creases the edges between groups), Shell becomes Solidify (inner and outer amount), Symmetry becomes Mirror (axis, flip, slice, weld threshold; an empty is the mirror object when the gizmo was moved or turned). Only right above the base mesh, its Extrude or its UVW Maps: one above another modifier is not converted (a line in the report). Not converted, each a line in the report: MeshSmooth classic (made as Catmull-Clark) and its smoothness, separate by materials, Shell segments, bevel and material-ID or smoothing-group overrides. A vertex within Symmetry's weld threshold of the plane is merged onto the plane, where 3ds Max slices beside it. Viewport levels that would give an object more than about a million faces are lowered (a line in the report; the render levels stay) |
+| UVW Map | **Applied** into its map channel as 3ds Max maps it: planar, box, cylindrical (with or without cap) and spherical, with the gizmo's position, rotation and size, U / V / W tiling and flips, the X / Y / Z alignment, Real-World Map Size and an instanced UVW Map's own placement on each object. Several UVW Maps on one stack are applied in order; channel 1 is the UV map `UVMap`, channel n `UVChannel_n`. A face across the seam of a cylindrical or spherical map does not smear. Only UVW Maps right above the base object or its Extrude, with nothing else between: one above another modifier keeps the stored coordinates, as do shrink-wrap, face, XYZ-to-UVW and one writing the vertex color channel (each a line in the report) |
+| Extrude on a shape | **Imported** as a mesh, as 3ds Max makes it: the sides in their segments, caps at both ends (holes in a cap where one spline lies inside another, solid again inside a hole), normals outward, material IDs 1 / 2 / 3 when it generates them, sharp edges at corner knots, mapping coordinates when it generates them (Real-World Map Size in file units). Grid caps are made as morph caps, a patch or NURBS output as a mesh and shape IDs are not read (each a line in the report). Only an Extrude that is the lowest modifier of the shape: one with another modifier below it leaves the shape a curve; the modifiers above it are not applied, but for UVW Maps and the modifiers kept as Blender modifiers |
 | Dummy helper, group head | **Imported** as an empty (the group's members are its children, as in 3ds Max) |
-| Box, Sphere, Cylinder, Cone, Torus, Plane | Not yet: placeholder (version 0.0.2 rebuilt them as Blender primitives) |
+| Box, Plane, Pyramid, Sphere, GeoSphere, Cylinder, Cone, Tube, Torus | **Imported** as the mesh 3ds Max builds from their parameters: the same vertices, the same polygons (a cap's fan stays triangles around its center), the pivot where 3ds Max has it, smoothing groups (sharp and flat edges) and material IDs as 3ds Max assigns them (a Box's sides 1 to 6), and, with Generate Mapping Coords, the same `UVMap` (Real-World Map Size in file units). Negative sizes as in 3ds Max for a Box, a Plane and the height of a Pyramid, Cylinder, Cone or Tube (a Box whose width and length differ in sign keeps its faces pointing in, as there); other negative sizes are built but not checked against 3ds Max. A primitive with modifiers is a mesh like any other below them (UVW Map applied, TurboSmooth and the others kept as Blender modifiers). Not yet, a placeholder with a line in the report: Slice on a Sphere, Cylinder, Cone, Tube or Torus, and the hemisphere of a Sphere or GeoSphere. A Plane's render scale and density are left out (a line in the report). Near the -X meridian of a GeoSphere a few faces' U may sit a whole turn from 3ds Max's |
+| Teapot | Not yet: placeholder |
 | Boolean compound object, Biped | Not yet: placeholder |
-| Line, Rectangle, Ellipse, Circle, NURBS surface | Not yet: placeholder |
+| Line, Editable Spline, Rectangle, Circle, Ellipse, Arc, NGon | **Imported** as curve objects: each spline with its knots and handles as 3ds Max draws them (straight segments stay straight), open or closed, the interpolation steps as the resolution. A shape that renders in 3ds Max (Enable In Renderer) gets a round bevel of its thickness; a rectangular section is drawn round, an NGon's corner radius and an Ellipse's outline are left out (each a line in the report). With modifiers other than an Extrude the shape arrives as the curve |
+| Star, Text, Helix, Donut, Section, NURBS curves and surfaces | Not yet: placeholder |
 | Standard lights, V-Ray lights, sky | Not yet: placeholder |
 | Cameras and their targets | Not yet: placeholder |
 | Everything else: other lights, hair, proxies (`.vrmesh`, Corona proxy), XRefs, particles, bones… | Not yet: placeholder |
@@ -136,8 +149,8 @@ the scene in the archive is kept.
   are not verified one by one yet.
 - When a `.max` is dropped, the options popup shows a **File** line: the 3ds Max version, the renderer, the
   number of objects and the unit, read in a fraction of a second even from a large scene.
-- A very large scene works but needs time and memory: see [BASELINE.md](BASELINE.md) (version 0.0.4 next to
-  0.0.3 and the engine they replaced).
+- A very large scene works but needs time and memory: see [BASELINE.md](BASELINE.md) (version 0.0.5 next to
+  0.0.4, 0.0.3 and the engine they replaced).
 - **Scene packs**: a `.zip`, `.rar` or `.7z` holding the scene, chosen in *File › Import*; a `.rar` or `.7z` can
   also be dropped (a dropped `.zip` goes to Blender's extension installer). The format is recognised by the file's
   content. The chosen `.max` and the image and `.ies` files it names are unpacked into a folder named after the
@@ -154,4 +167,4 @@ the scene in the archive is kept.
 
 ## What comes next
 
-In this order: room shells (splines, Extrude, UVW Map), then lights and cameras.
+Lights and cameras: V-Ray, Corona and standard lights, the sun and sky, cameras with their targets.

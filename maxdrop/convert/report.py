@@ -12,6 +12,11 @@
     rep.summary()                       # (level, line): "INFO" when nothing was approximated or left out, else
                                         # "WARNING"
 
+Modifiers have three outcomes, counted per class once per node whose stack holds one: applied (baked into the
+mesh), converted (to a Blender modifier) and ignored (the object arrives as its base object, a "not applied" left
+out). gather() counts each node's applied, converted and modifiers (not applied) under the three;
+rep.add_modifiers(outcome, class names) counts one node's modifiers under an outcome.
+
 desc is a convert.scene.SceneDescription. The counts of what build/ made default to the description's own. pack is
 the result of maxdrop.intake.archive.unpack() when the import started from a scene pack (read by attribute, so
 this module never imports the intake package), and pack_name the archive's file name: its block comes first.
@@ -32,6 +37,7 @@ from ..reader import controllers
 from . import textures
 
 MAX_LISTED = 50
+APPLIED, CONVERTED, IGNORED = "applied", "converted", "ignored"
 LEVEL_INFO, LEVEL_WARNING = "INFO", "WARNING"
 GEOMETRY = "geometry: "
 UNKNOWN_CONTROLLER = "transform: " + controllers.UNKNOWN_CLASS  # convert.scene's wording of that issue
@@ -40,8 +46,9 @@ UNKNOWN_CONTROLLER = "transform: " + controllers.UNKNOWN_CLASS  # convert.scene'
 class Report:
     """Counters and lists of one import. issues and geometry_errors are [(node label, reason)], material_issues
     [(material or map object index, reason)]. materials_built is None when the import made no materials."""
-    __slots__ = ("source", "unit", "meters", "nodes", "objects_built", "meshes_built", "layers", "hidden_layers",
-                 "hidden", "unrenderable", "frozen", "groups", "placeholders", "unknown_controllers", "modifiers",
+    __slots__ = ("source", "unit", "meters", "nodes", "objects_built", "meshes_built", "curves_built", "layers",
+                 "hidden_layers", "hidden", "unrenderable", "frozen", "groups", "placeholders", "unknown_controllers", "modifiers",
+                 "modifiers_applied", "modifiers_converted",
                  "dropped_uv_layers", "unknown_controller_nodes", "geometry_errors", "issues", "pack", "pack_name",
                  "materials_built", "materials", "wrappers", "grey_materials", "maps_peeled", "maps_unsupported",
                  "sockets_skipped", "blender", "textures_found", "textures_missing", "texture_search_stopped",
@@ -50,11 +57,14 @@ class Report:
     def __init__(self, source=""):
         self.source, self.unit, self.meters = source, None, 1.0
         self.nodes = self.objects_built = self.meshes_built = self.layers = self.hidden_layers = 0
+        self.curves_built = 0
         self.hidden = self.unrenderable = self.frozen = self.groups = self.dropped_uv_layers = 0
         self.unknown_controller_nodes = 0  # their issues, listed by class in unknown_controllers instead
         self.placeholders = collections.Counter()
         self.unknown_controllers = collections.Counter()
-        self.modifiers = collections.Counter()  # class name -> nodes whose stack holds it, not applied
+        self.modifiers = collections.Counter()  # class name -> nodes whose stack holds it, ignored (not applied)
+        self.modifiers_applied = collections.Counter()  # class name -> nodes, baked into the mesh
+        self.modifiers_converted = collections.Counter()  # class name -> nodes, as a Blender modifier
         self.geometry_errors, self.issues = [], []
         self.pack, self.pack_name = None, ""
         self.materials_built, self.blender = None, ""
@@ -67,6 +77,12 @@ class Report:
         self.textures_found = []  # [(lookup rule name, files found)] in lookup order
         self.textures_missing, self.texture_search_stopped, self.material_issues = [], [], []
         self.swatches = ""  # how color swatches were made linear (the scene's gamma)
+
+    def add_modifiers(self, outcome, class_names):
+        """Count one node's modifiers under outcome (APPLIED, CONVERTED or IGNORED): each class once."""
+        counter = {APPLIED: self.modifiers_applied, CONVERTED: self.modifiers_converted,
+                   IGNORED: self.modifiers}[outcome]
+        counter.update(set(class_names))
 
     @property
     def approximated(self):
@@ -91,6 +107,8 @@ class Report:
         """(level, one line) for the operator's report."""
         name = self.source or "the scene"
         built = "%s, %s" % (_plural(self.objects_built, "object"), _plural(self.meshes_built, "mesh", "meshes"))
+        if self.curves_built:
+            built += ", " + _plural(self.curves_built, "curve")
         if self.materials_built is not None:
             built += ", " + _plural(self.materials_built, "material")
         if not self.left_out and not self.approximated:
@@ -118,11 +136,17 @@ class Report:
         else:
             lines.append("Units: not stated in the file, %g m per unit" % self.meters)
         lines.append("Nodes read: %d" % self.nodes)
-        lines.append("Objects built: %d, meshes: %d" % (self.objects_built, self.meshes_built))
+        lines.append("Objects built: %d, meshes: %d" % (self.objects_built, self.meshes_built)
+                     + (", curves: %d" % self.curves_built if self.curves_built else ""))
         lines.append("Layers: %d (%d hidden)" % (self.layers, self.hidden_layers))
         lines.append("Objects hidden: %d, not renderable: %d, frozen: %d" % (self.hidden, self.unrenderable,
                                                                              self.frozen))
         lines.append("Groups: %d" % self.groups)
+        if self.modifiers_applied:
+            lines.append("Modifiers applied (baked into the mesh), nodes by class: " + _counts(self.modifiers_applied))
+        if self.modifiers_converted:
+            lines.append("Modifiers converted to a Blender modifier, nodes by class: "
+                         + _counts(self.modifiers_converted))
         if self.materials_built is not None:
             lines.append("Materials built: %d" % self.materials_built
                          + (" (converted by class: %s)" % _counts(self.materials) if self.materials else ""))
@@ -146,7 +170,9 @@ class Report:
         if self.placeholders:
             lines.append("  Placeholders (empties) by class: " + _counts(self.placeholders))
         if self.modifiers:
-            lines.append("  Modifiers not applied (the base mesh is built), nodes by class: " + _counts(self.modifiers))
+            lines.append("  Modifiers not applied (ignored: the object arrives as its base object, or as its Extrude "
+                         "makes it), nodes by class: "
+                         + _counts(self.modifiers))
         if self.unknown_controllers:
             lines.append("  Unknown controllers by class (identity used): " + _counts(self.unknown_controllers))
         if self.dropped_uv_layers:
@@ -259,7 +285,8 @@ def _pack_lines(pack, pack_name):
     return lines
 
 
-def gather(desc, source="", objects_built=None, meshes_built=None, dropped_uv_layers=0, pack=None, pack_name=""):
+def gather(desc, source="", objects_built=None, meshes_built=None, dropped_uv_layers=0, pack=None, pack_name="",
+           curves_built=None):
     """The Report of one import from its SceneDescription and what build/ made of it."""
     rep = Report(source)
     rep.unit = desc.unit.name if desc.unit is not None else None
@@ -267,6 +294,7 @@ def gather(desc, source="", objects_built=None, meshes_built=None, dropped_uv_la
     rep.nodes = len(desc.nodes)
     rep.objects_built = len(desc.nodes) if objects_built is None else objects_built
     rep.meshes_built = len(desc.meshes) if meshes_built is None else meshes_built
+    rep.curves_built = len(desc.curves) if curves_built is None else curves_built
     rep.dropped_uv_layers = dropped_uv_layers
     rep.layers = len(desc.layers)
     rep.hidden_layers = sum(1 for la in desc.layers if la.hidden)
@@ -275,7 +303,9 @@ def gather(desc, source="", objects_built=None, meshes_built=None, dropped_uv_la
         rep.unrenderable += not node.renderable
         rep.frozen += node.frozen
         rep.groups += node.group_head
-        rep.modifiers.update(set(node.modifiers))
+        rep.add_modifiers(IGNORED, node.modifiers)
+        rep.add_modifiers(APPLIED, getattr(node, "applied", ()))
+        rep.add_modifiers(CONVERTED, [m.class_name for m in getattr(node, "converted", ())])
     rep.placeholders.update(desc.placeholders)
     rep.unknown_controllers.update(desc.unknown_controllers)
     labels = {node.index: node.name or "object %d" % node.index for node in desc.nodes}

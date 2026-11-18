@@ -5,10 +5,11 @@
 """Tests of maxdrop/convert/scene.py, the scene description: no Blender. The smoothing-group rule, the loop reversal
 of a mirrored object offset, and every committed fixture against its 3ds Max oracle (order, parents, world
 matrices, world bounding boxes, counts, shared meshes, units) and its authoring script (UV channels, smoothing
-groups).
+groups), the shapes' curves against the oracle's knots and segment midpoints.
 
     python -I -m unittest discover tests
 """
+import collections
 import glob
 import importlib
 import json
@@ -16,6 +17,7 @@ import os
 import sys
 import types
 import unittest
+from unittest import mock
 
 try:
     import numpy
@@ -38,6 +40,7 @@ conv = importlib.import_module(_PKG + ".convert.scene")
 geometry = importlib.import_module(_PKG + ".reader.geometry")
 cfb = importlib.import_module(_PKG + ".reader.cfb")
 reader_scene = importlib.import_module(_PKG + ".reader.scene")
+shapes = importlib.import_module(_PKG + ".reader.shapes")
 
 # From the fixture scripts (tools/fixtures/*.ms: mapcoords:true gives channel 1); the oracle has no map channels or
 # smoothing groups.
@@ -49,12 +52,18 @@ UV_LAYERS = {
     "corona_maps": ["UVMap"],
     "corona_physical": ["UVMap"],
     "editable_mesh": ["UVMap"],
+    # per mesh (named after its first node): Extrude makes channel 1 only with Generate Mapping Coords.
+    "extrude": {"FixtureExtRect": ["UVMap"], "FixtureExtAdaptive": ["UVMap"]},
     "gamma_swatches": ["UVMap"],
     "hierarchy": [],
     "instances": ["UVMap"],
     "layers_flags": [],
-    "modifier_pivot": ["UVMap"],  # the base mesh's channel: the UVW Map modifier is not applied
+    "modifier_pivot": ["UVMap"],  # FixtureBent's UVW Map writes channel 1 (applied, the Bend above it is not)
     "multi_uv": ["UVMap", "UVChannel_2", "UVChannel_3"],
+    "primitives": collections.defaultdict(lambda: ["UVMap"], {"FixtureBoxNoMap": []}),  # Generate Mapping Coords
+    "shapes": ["UVMap"],  # FixtureBox; the shapes are curves
+    "stack_basic": ["UVMap"],  # FixtureTurbo's UVW Map writes channel 1; no other modifier is applied
+    "stack_convert": ["UVMap"],  # its modifiers become Blender modifiers: the base meshes are built
     "standard_physical": ["UVMap"],
     "texmap_rules": ["UVMap"],
     "units_cm": ["UVMap"],
@@ -64,10 +73,53 @@ UV_LAYERS = {
     "vray_maps": ["UVMap"],
     "vray_texmaps": ["UVMap"],
     "vray_wrappers": ["UVMap"],
+    # per mesh: every box, the cylinder and the sphere have channel 1; two UVW Maps write channels 2 and 3
+    "uvwmap": collections.defaultdict(lambda: ["UVMap"], {"FixtureUVWGizmo": ["UVMap", "UVChannel_2"],
+                                                          "FixtureUVWTwo": ["UVMap", "UVChannel_3"]}),
+    "uvwmap_oblique": ["UVMap"],
 }
 SHARP_EDGES_POLY_BOX = 12  # one smoothing group per side: every edge of the box
 SHARP_EDGES_EDITABLE_MESH = 8  # group 1 on top and bottom, 2 on the sides: the rims of top and bottom
 SHARP_EDGES_TALL_BOX = 24  # modifier_pivot's four height segments: 4 x 4 vertical side edges and both rims
+# extrude: the vertical edges at corner knots (one per level) and both rims of every capped outline
+SHARP_EDGES_EXTRUDE = {"FixtureExtRect": 4 * 2 + 8, "FixtureExtL": 6 + 12, "FixtureExtHole": 4 + 8 + 56,
+                       "FixtureExtIsland": 12 + 24, "FixtureExtOpen": 0, "FixtureExtMirror": 8 + 64,
+                       "FixtureExtAdaptive": 256, "FixtureUVWExtrude": 4 + 8}
+# uvwmap: boxes of 3 x 2 x 2 segments, a group per side: 28 edges; the cylinder's two rims; the sphere is smooth
+SHARP_EDGES_UVWMAP = {"FixtureUVWCyl": 32, "FixtureUVWSphere": 0, "FixtureUVWSharedB": SHARP_EDGES_POLY_BOX,
+                      # uvwmap_oblique: smooth spheres, the rims of a 10-sided cylinder
+                      "FixtureUVWObliqueBox": 0, "FixtureUVWObliqueMirror": 0, "FixtureUVWObliqueCap": 20,
+                      "FixtureUVWObliqueBoxX": 0, "FixtureUVWObliquePlanarX": 0}
+# primitives: a group per side of a box (FixtureBox's edges in segments: 4 x 3 + 4 x 2 + 4 x 4), the rims of
+# cylinders, cones and tubes, the pyramid's four ridges of 2 segments and its base outline of 10, the torus's
+# alternating groups (every edge between two sides; on the odd one every edge between two segments), every edge of
+# the unsmoothed GeoSphere; spheres, smooth GeoSpheres and planes have none
+SHARP_EDGES_PRIMITIVES = {"FixtureBox": 36, "FixtureBoxDown": 12, "FixtureBoxNoMap": 12, "FixtureBoxSmooth": 0,
+                          "FixturePlane": 0, "FixturePyramid": 4 * 2 + 10, "FixtureSphere": 0, "FixtureGeoSphere": 0,
+                          "FixtureGeoOcta": 48, "FixtureCylinder": 20, "FixtureCone": 18, "FixtureTube": 32,
+                          "FixtureTorus": 96, "FixtureBoxInside": 16, "FixturePlaneDown": 0,
+                          "FixtureCylinderDown": 14, "FixtureConeTip": 14, "FixtureTubeSwap": 28,
+                          "FixtureTorusOdd": 35, "FixturePlaneReal": 0, "FixturePyramidDown": 4 * 2 + 6,
+                          "FixtureSphereOdd": 0, "FixtureGeoReal": 0, "FixtureCylinderReal": 14,
+                          "FixtureTubeDown": 28}
+FLAT_MESHES = {"FixtureGeoOcta"}
+# the oracle's base_class_id of the primitives MaxDrop builds (convert/primitives.py)
+PRIMITIVE_CLASSES = {("0x00000010", "0x00000000"), ("0x00000011", "0x00000000"), ("0x00000012", "0x00000000"),
+                     ("0x00000020", "0x00000000"), ("0xa86c23dd", "0x00000000"), ("0x00007b21", "0x00000000"),
+                     ("0x00000000", "0x00007f9e"), ("0x081f1dfc", "0x77566f65"), ("0x76bf318a", "0x4bf37b10")}
+# the issues the fixtures are made to raise
+ISSUES = {"uvwmap": ["uvw map: a UVW Map above Bend is not evaluated",
+                     "uvw map: shrink-wrap mapping is not evaluated: the stored channel stays"],
+          "stack_convert": ["modifiers: TurboSmooth above Bend is not converted"]}
+# meshes under a converted smoother with Smooth Result: no sharp edge (modifier_pivot's reference, stack_basic's box)
+SHARP_EDGES_SMOOTHED = {"FixtureSmooth": 0, "FixtureTurbo": 0, "FixtureTurboOne": 0, "FixtureMeshSmooth": 0,
+                        "FixtureOrder": 0}
+
+
+def _shading(node):
+    """The ("shading", ...) a converted smoother adds to a node's mesh key, else None."""
+    last = node.mesh[-1] if node.mesh else None
+    return last if isinstance(last, tuple) and len(last) == 2 and last[0] == "shading" else None
 
 
 def _oracle(path):
@@ -274,6 +326,49 @@ class DamagedInput(unittest.TestCase):
         self.assertEqual(dict(desc.unknown_controllers), {"Position/Rotation/Scale": len(desc.nodes)})
 
 
+class Curves(unittest.TestCase):
+    def _shape(self, knots, closed=False, **kw):
+        render = shapes.DEFAULT_RENDER._replace(**kw)
+        return shapes.Shape(shapes.classids.LINE, (shapes.Spline(tuple(knots), closed),), 6, True, False, render, ())
+
+    def test_straight_segment_and_offset(self):
+        """A segment of type line gets its handles on the chord; the offset and meters apply to every handle."""
+        k = shapes.Knot
+        knots = [k(shapes.BEZIER, shapes.LINE, (0, 0, 0), (0, -5, 0), (0, 5, 0)),
+                 k(shapes.BEZIER, shapes.CURVE, (9, 0, 0), (9, 5, 0), (9, -5, 0)),
+                 k(shapes.CORNER, shapes.LINE, (9, 9, 0), (9, 9, 0), (9, 9, 0))]
+        offset = ((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (1, 2, 3, 1))
+        cd, issues = conv.curve_description("k", "n", self._shape(knots), offset, 0.5)
+        sp = cd.splines[0]
+        self.assertEqual(issues, [])
+        self.assertEqual(sp.points, [(0.5, 1, 1.5), (5, 1, 1.5), (5, 5.5, 1.5)])
+        self.assertEqual(sp.right[0], (2, 1, 1.5))  # a third of the chord, not the stored (0, 5)
+        self.assertEqual(sp.left[1], (3.5, 1, 1.5))
+        self.assertEqual(sp.right[1], (5, -1.5, 1.5))  # a curve segment keeps its vector
+        self.assertEqual(sp.right[2], (5, 5.5, 1.5))  # open: no segment after the last knot
+        self.assertEqual((cd.resolution, cd.bevel_depth), (7, 0.0))
+
+    def test_closing_straight_segment_and_bevel(self):
+        k = shapes.Knot
+        knots = [k(shapes.CORNER, shapes.CURVE, (0, 0, 0), (0, 0, 0), (0, 0, 0)),
+                 k(shapes.CORNER, shapes.LINE, (3, 0, 0), (3, 0, 0), (3, 0, 0))]
+        cd, issues = conv.curve_description("k", "n", self._shape(knots, closed=True, renderable=True, thickness=4.0,
+                                                                  sides=3, rectangular=True), None, 1.0)
+        self.assertEqual((cd.splines[0].right[1], cd.splines[0].left[0]), ((2, 0, 0), (1, 0, 0)))
+        self.assertEqual((cd.bevel_depth, cd.bevel_resolution), (2.0, 0))
+        self.assertEqual(len(issues), 1)  # the rectangular section is drawn round
+
+    @unittest.skipIf(numpy is None, "numpy missing")  # shapes.max has a box: its mesh is read with numpy
+    def test_refused_shape_is_a_placeholder_with_an_issue(self):
+        path = os.path.join(ROOT, "tests", "fixtures", "shapes.max")
+        with mock.patch.object(shapes, "read_shape", side_effect=shapes.ShapeError("object 1 (Line): damaged")):
+            desc = conv.read(path)
+        self.assertEqual(desc.curves, {})
+        self.assertEqual(sum(desc.placeholders.values()), 13)
+        self.assertEqual(len(desc.issues), 13)
+        self.assertTrue(all(reason.startswith("shape: ") for _i, reason in desc.issues))
+
+
 class Shear(unittest.TestCase):
     def test_rotation_and_axis_scale_are_not_shear(self):
         c, s = 0.6, 0.8
@@ -396,7 +491,9 @@ class Fixtures(unittest.TestCase):
     def test_world_bounding_boxes_equal_the_oracle(self):
         for name, desc, oracle in self.cases:
             for node, o in zip(desc.nodes, oracle["nodes"]):
-                if node.kind != conv.MESH or o["modifiers"]:  # the oracle's box is after the modifiers
+                # the oracle's box is after every modifier: a UVW Map left as it is moves nothing
+                if node.kind != conv.MESH or any(m != "UVW Map" for m in node.modifiers) or node.converted or \
+                        (o["modifiers"] and not node.applied):
                     continue
                 p = _world_points(node, desc.meshes[node.mesh]) / desc.meters
                 numpy.testing.assert_allclose(p.min(axis=0), o["bbox_min"], atol=BBOX_TOLERANCE,
@@ -407,11 +504,21 @@ class Fixtures(unittest.TestCase):
     def test_counts_equal_the_oracle(self):
         for name, desc, oracle in self.cases:
             for node, o in zip(desc.nodes, oracle["nodes"]):
-                self.assertEqual(node.kind, conv.MESH if o["base_verts"] is not None else conv.EMPTY, name)
+                extruded = o["shape"] is not None and o["eval_verts"] is not None  # an Extrude on the shape
+                primitive = tuple(o["base_class_id"]) in PRIMITIVE_CLASSES
+                kind = conv.MESH if o["base_verts"] is not None or extruded or primitive else \
+                    conv.CURVE if o["shape"] else conv.EMPTY
+                self.assertEqual(node.kind, kind, "%s %s" % (name, node.name))
                 if node.kind == conv.MESH:
                     md = desc.meshes[node.mesh]
-                    self.assertEqual((len(md.positions), len(md.loop_starts)), (o["base_verts"], o["base_faces"]),
-                                     "%s %s" % (name, node.name))
+                    if primitive and o["modifiers"]:  # 3ds Max's counts are after the TurboSmooth
+                        self.assertTrue(node.converted, "%s %s" % (name, node.name))
+                    elif extruded or primitive:  # 3ds Max's counts are of triangles
+                        self.assertEqual((len(md.positions), int((md.loop_totals - 2).sum())),
+                                         (o["eval_verts"], o["eval_faces"]), "%s %s" % (name, node.name))
+                    else:
+                        self.assertEqual((len(md.positions), len(md.loop_starts)), (o["base_verts"], o["base_faces"]),
+                                         "%s %s" % (name, node.name))
                     self.assertEqual(int(md.loop_totals.sum()), len(md.loop_vertices))
 
     def test_shared_meshes_equal_the_oracle_instances(self):
@@ -423,9 +530,12 @@ class Fixtures(unittest.TestCase):
             def offset(o):
                 return o["offset_pos"], o["offset_rot"], o["offset_scale"]
 
+            shading = {o["handle"]: _shading(node) for node, o in zip(desc.nodes, oracle["nodes"])}
             for node, o in zip(desc.nodes, oracle["nodes"]):
                 if node.kind == conv.MESH:
-                    want = [h for h in o["instances"] if offset(by_handle[h]) == offset(o)]
+                    # a converted smoother's shading is the mesh's own: an instance without it has another mesh
+                    want = [h for h in o["instances"] if offset(by_handle[h]) == offset(o)
+                            and shading[h] == shading[o["handle"]]]
                     self.assertEqual(sorted(handle[u] for u in desc.meshes[node.mesh].users), want,
                                      "%s %s" % (name, node.name))
 
@@ -460,7 +570,12 @@ class Fixtures(unittest.TestCase):
     def test_uv_layers_follow_the_map_channels(self):
         for name, desc, _o in self.cases:
             for md in desc.meshes.values():
-                self.assertEqual([n for n, _uv in md.uv_layers], UV_LAYERS[name], name)
+                want = UV_LAYERS[name]
+                if isinstance(want, collections.defaultdict):
+                    want = want[md.name]
+                elif isinstance(want, dict):
+                    want = want.get(md.name, [])
+                self.assertEqual([n for n, _uv in md.uv_layers], want, name)
                 for _n, uv in md.uv_layers:
                     self.assertEqual(uv.shape, (len(md.loop_vertices), 2))
                     self.assertEqual(uv.dtype, numpy.float32)
@@ -468,15 +583,22 @@ class Fixtures(unittest.TestCase):
     def test_sharp_edges_from_smoothing_groups(self):
         for name, desc, _o in self.cases:
             want = {"editable_mesh": SHARP_EDGES_EDITABLE_MESH,
-                    "modifier_pivot": SHARP_EDGES_TALL_BOX}.get(name, SHARP_EDGES_POLY_BOX)
+                    "modifier_pivot": SHARP_EDGES_TALL_BOX, "uvwmap": 28}.get(name, SHARP_EDGES_POLY_BOX)
             for md in desc.meshes.values():
-                self.assertEqual(len(md.sharp_edges), want, name)
-                self.assertFalse(md.sharp_faces.any(), name)
+                if name == "primitives":  # FixtureBox is a name of other fixtures too
+                    want = SHARP_EDGES_PRIMITIVES[md.name]
+                want_here = SHARP_EDGES_SMOOTHED.get(md.name, SHARP_EDGES_EXTRUDE.get(
+                    md.name, SHARP_EDGES_UVWMAP.get(md.name, want)))
+                self.assertEqual(len(md.sharp_edges), want_here, "%s %s" % (name, md.name))
+                # an unsmoothed GeoSphere has no smoothing group: every face flat
+                self.assertEqual(bool(md.sharp_faces.any()), md.name in FLAT_MESHES, "%s %s" % (name, md.name))
+                if md.name in FLAT_MESHES:
+                    self.assertTrue(md.sharp_faces.all(), name)
 
     def test_placeholders(self):
         for name, desc, _o in self.cases:
             self.assertEqual(dict(desc.placeholders), {}, name)  # the group head is a Dummy: converted, an empty
-            self.assertEqual(desc.issues, [], name)
+            self.assertEqual(sorted(r for _i, r in desc.issues), ISSUES.get(name, []), name)
             self.assertEqual(dict(desc.unknown_controllers), {}, name)
         desc = dict((n, d) for n, d, _o in self.cases)["layers_flags"]
         head = next(n for n in desc.nodes if n.kind == conv.EMPTY)
@@ -509,6 +631,47 @@ class Fixtures(unittest.TestCase):
         self.assertEqual(sorted(k for k, n in by_name.items() if n.group_member),
                          sorted(k for k, n in by_name.items() if n.parent == head))
         self.assertEqual(len([n for n in desc.nodes if n.parent == head]), 2)
+
+    def test_curves_equal_the_oracle(self):
+        """Every shape node's curve: splines, points and cyclic flags as 3ds Max converts the shape, each segment's
+        Bezier midpoint where 3ds Max interpolates it (straight segments included), resolution and bevel."""
+        for name, desc, oracle in self.cases:
+            for node, o in zip(desc.nodes, oracle["nodes"]):
+                if o["shape"] is None or node.kind == conv.MESH:  # an extruded shape is a mesh
+                    self.assertIsNone(node.curve)
+                    continue
+                label = "%s %s" % (name, node.name)
+                cd = desc.curves[node.curve]
+                self.assertIn(node.index, cd.users, label)
+                self.assertIsNone(node.curve[1], label)  # no object offset in the fixtures: object space = curve's
+                want = o["shape"]["splines"]
+                self.assertEqual([(len(sp.points), sp.cyclic) for sp in cd.splines],
+                                 [(len(w["knots"]), w["closed"]) for w in want], label)
+                for sp, w in zip(cd.splines, want):
+                    n = len(sp.points)
+                    for k, knot in enumerate(w["knots"]):
+                        numpy.testing.assert_allclose(numpy.asarray(sp.points[k]) / desc.meters, knot["pos"],
+                                                      atol=1e-4, err_msg=label)
+                        if knot["mid"] is None:
+                            continue
+                        j = (k + 1) % n
+                        mid = (numpy.asarray(sp.points[k]) + 3 * numpy.asarray(sp.right[k]) +
+                               3 * numpy.asarray(sp.left[j]) + numpy.asarray(sp.points[j])) / 8 / desc.meters
+                        numpy.testing.assert_allclose(mid, knot["mid"], atol=1e-4, err_msg="%s knot %d" % (label, k))
+                s = o["shape"]
+                self.assertEqual(cd.resolution, conv.ADAPTIVE if s["adaptive"] else s["steps"] + 1, label)
+                if s["renderable"]:
+                    self.assertAlmostEqual(cd.bevel_depth, s["thickness"] / 2 * desc.meters, places=9)
+                    self.assertEqual(cd.bevel_resolution, (s["sides"] - 4) // 2, label)
+                else:
+                    self.assertEqual(cd.bevel_depth, 0.0, label)
+
+    def test_shapes_are_not_placeholders(self):
+        desc = dict((n, d) for n, d, _o in self.cases)["shapes"]
+        self.assertEqual([n.kind for n in desc.nodes], [conv.CURVE] * 13 + [conv.MESH])
+        self.assertEqual(len(desc.curves), 13)
+        line = next(n for n in desc.nodes if n.name == "FixtureLine")
+        self.assertEqual(desc.curves[line.curve].bevel_resolution, 2)  # 8 sides
 
     def test_material_indices_from_the_reader(self):
         desc = dict((n, d) for n, d, _o in self.cases)["box_poly_standard"]

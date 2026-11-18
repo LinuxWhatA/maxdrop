@@ -8,6 +8,38 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-11-18
+
+### Added
+
+- **Shapes as curves**: Line, Editable Spline, Rectangle, Circle, Ellipse, Arc and NGon arrive as Blender curve
+  objects with their splines, knots and handles as 3ds Max draws them, straight segments straight, open or closed,
+  at their place in the hierarchy. A shape set to render in 3ds Max gets its thickness as a round bevel. The import
+  report counts the curves.
+- **Extrude**: a shape with an Extrude arrives as the mesh 3ds Max makes of it: walls, floors and ceilings drawn as
+  outlines are closed, with caps (holes where one outline lies inside another), outward normals, material IDs,
+  sharp corners and mapping coordinates. The import report counts it as applied.
+- **UVW Map**: planar, box, cylindrical (with cap) and spherical UVW Map modifiers give the mesh the mapping the
+  artist set, in their map channel, with the gizmo's place, turn and size, tiling, flips, alignment and Real-World
+  Map Size, also on an extruded shape and with several UVW Maps on one stack. Faces across the seam of a round map
+  do not smear. Shrink-wrap, face and XYZ-to-UVW keep the stored coordinates, as does a UVW Map above a modifier
+  MaxDrop does not apply (each a line in the report).
+- **TurboSmooth, MeshSmooth, Shell and Symmetry as Blender modifiers**: they arrive as Subdivision Surface, Solidify
+  and Mirror in 3ds Max's order, with their iterations, Smooth Result and smoothing-group creases, inner and outer
+  amounts, axis, flip, slice, weld threshold and a moved or turned mirror gizmo (an empty), so the evaluated mesh
+  matches 3ds Max's. New import option **Modifiers: Keep as Blender Modifiers / Ignore**. One above a modifier
+  MaxDrop does not evaluate stays off (a line in the report); the report counts the converted ones.
+- **Primitives**: Box, Plane, Pyramid, Sphere, GeoSphere, Cylinder, Cone, Tube and Torus arrive as the meshes 3ds
+  Max builds from their parameters (segments, smoothing, material IDs, mapping coordinates, Real-World Map Size,
+  negative sizes) instead of empties, and take UVW Maps and the modifiers kept as Blender modifiers like any mesh.
+  Slice and hemispheres are not built yet: such a primitive stays an empty, with a line in the report.
+
+### Changed
+
+- **Import report, modifiers**: the line of modifiers not applied says what that means, "ignored: the object
+  arrives as its base object, or as its Extrude makes it", and the report lists the modifiers applied (Extrude,
+  UVW Map) apart from those converted to a Blender modifier.
+
 ### Fixed
 
 - **Multi/Sub-Object material IDs past the list**: a face whose material ID has no entry gets the sub-material

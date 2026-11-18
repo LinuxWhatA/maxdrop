@@ -17,7 +17,7 @@ global MaxDropOracle
 
 struct MaxDropOracleStruct
 (
-	version = 2,
+	version = 5,
 
 	fn num v =
 	(
@@ -173,6 +173,100 @@ struct MaxDropOracleStruct
 		sort hs
 	),
 
+	-- the modifier context of m on node n: its transform and box (an empty box is +1e30 .. -1e30), and the flags
+	fn modJson n m =
+	(
+		local tm = try (getModContextTM n m) catch undefined
+		inline #( \
+			#("class_id", cid (classOf m)), \
+			#("class_name", str ((classOf m) as string)), \
+			#("context_bbox_max", vec (try (getModContextBBoxMax n m) catch undefined)), \
+			#("context_bbox_min", vec (try (getModContextBBoxMin n m) catch undefined)), \
+			#("context_tm", if tm == undefined then "null" else mat12 tm), \
+			#("enabled", bool m.enabled), \
+			#("enabled_in_renders", bool m.enabledInRenders), \
+			#("enabled_in_views", bool m.enabledInViews), \
+			#("name", str m.name) \
+		)
+	),
+
+	-- the base object of a shape node as 3ds Max's own Bezier: a copy of the node without its modifiers, collapsed to
+	-- an Editable Spline; knots and vectors in object space (getKnotPoint answers in world space)
+	fn shapeJson n =
+	(
+		local b = n.baseObject
+		if superClassOf b != shape do return "null"
+		local t = copy n
+		while t.modifiers.count > 0 do deleteModifier t 1
+		convertToSplineShape t
+		local inv = inverse t.objectTransform
+		local splines = #()
+		for s = 1 to numSplines t do
+		(
+			local segs = numSegments t s
+			local knots = for k = 1 to numKnots t s collect inline #( \
+				#("in", vec ((getInVec t s k) * inv)), \
+				#("mid", if k <= segs then vec ((interpBezier3D t s k 0.5) * inv) else "null"), \
+				#("out", vec ((getOutVec t s k) * inv)), \
+				#("pos", vec ((getKnotPoint t s k) * inv)), \
+				#("segment", if k <= segs then str ((getSegmentType t s k) as string) else "null"), \
+				#("type", str ((getKnotType t s k) as string)) \
+			)
+			append splines (obj #(#("closed", bool (isClosed t s)), #("knots", block knots 12)) 10)
+		)
+		delete t
+		obj #( \
+			#("adaptive", bool b.adaptive), \
+			#("angle", num b.render_angle), \
+			#("display_render_mesh", bool b.render_displayRenderMesh), \
+			#("length", num b.render_length), \
+			#("optimize", bool b.optimize), \
+			#("rectangular", bool b.render_rectangular), \
+			#("renderable", bool b.render_renderable), \
+			#("sides", intOrNull b.render_sides), \
+			#("splines", block splines 8), \
+			#("steps", intOrNull b.steps), \
+			#("thickness", num b.render_thickness), \
+			#("width", num b.render_width) \
+		) 6
+	),
+
+	-- the map channels the node's UVW Map modifiers write, evaluated: per triangle corner of snapshotAsMesh (world
+	-- space) the position, the face normal and the map vertex; null without a UVW Map
+	fn evalMapsJson n =
+	(
+		local chans = #()
+		for m in n.modifiers where classOf m == Uvwmap do
+		(
+			local ch = if m.channel == 1 then 0 else m.mapChannel
+			appendIfUnique chans ch
+		)
+		if chans.count == 0 or superClassOf n != GeometryClass do return "null"
+		sort chans
+		local s = try (snapshotAsMesh n) catch undefined
+		if s == undefined do return "null"
+		local items = #()
+		for ch in chans do
+		(
+			local corners = #()
+			if meshop.getMapSupport s ch do for f = 1 to s.numfaces do
+			(
+				local fc = getFace s f
+				local mf = meshop.getMapFace s ch f
+				local nrm = getFaceNormal s f
+				for k = 1 to 3 do
+				(
+					local p = getVert s fc[k]
+					local t = meshop.getMapVert s ch mf[k]
+					append corners (list #(num p.x, num p.y, num p.z, num nrm.x, num nrm.y, num nrm.z, num t.x, num t.y, num t.z))
+				)
+			)
+			append items (obj #(#("channel", ch as string), #("corners", block corners 10)) 8)
+		)
+		free s
+		block items 6
+	),
+
 	fn nodeJson n index mats =
 	(
 		local b = n.baseObject
@@ -183,7 +277,7 @@ struct MaxDropOracleStruct
 		local bb = try (nodeGetBoundingBox n (matrix3 1)) catch undefined
 		local bmin = if bb == undefined then "null" else vec bb[1]
 		local bmax = if bb == undefined then "null" else vec bb[2]
-		local mods = for m in n.modifiers collect inline #(#("class_id", cid (classOf m)), #("class_name", str ((classOf m) as string)))
+		local mods = for m in n.modifiers collect modJson n m
 		local matIndex = if n.material == undefined then "null" else (((findItem mats n.material) - 1) as string)
 		local parent = if n.parent == undefined then "null" else (n.parent.handle as string)
 		obj #( \
@@ -195,6 +289,7 @@ struct MaxDropOracleStruct
 			#("bbox_max", bmax), \
 			#("bbox_min", bmin), \
 			#("eval_faces", intOrNull ev[2]), \
+			#("eval_maps", evalMapsJson n), \
 			#("eval_verts", intOrNull ev[1]), \
 			#("frozen", bool n.isFrozen), \
 			#("handle", n.handle as string), \
@@ -211,6 +306,7 @@ struct MaxDropOracleStruct
 			#("offset_scale", vec n.objectOffsetScale), \
 			#("parent", parent), \
 			#("renderable", bool n.renderable), \
+			#("shape", shapeJson n), \
 			#("transform", mat12 n.transform) \
 		) 4
 	),

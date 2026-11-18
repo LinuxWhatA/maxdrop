@@ -147,6 +147,7 @@
       "bbox_max": [5, 5, 10],
       "bbox_min": [-5, -5, 0],
       "eval_faces": 12,
+      "eval_maps": null,
       "eval_verts": 8,
       "frozen": false,
       "handle": 1,
@@ -163,6 +164,7 @@
       "offset_scale": [1, 1, 1],
       "parent": null,
       "renderable": true,
+      "shape": null,
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]
     },
     {
@@ -174,6 +176,7 @@
       "bbox_max": [25, 5, 10],
       "bbox_min": [15, -5, 0],
       "eval_faces": 12,
+      "eval_maps": null,
       "eval_verts": 8,
       "frozen": false,
       "handle": 2,
@@ -190,6 +193,7 @@
       "offset_scale": [1, 1, 1],
       "parent": null,
       "renderable": true,
+      "shape": null,
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 20, 0, 0]
     },
     {
@@ -201,6 +205,7 @@
       "bbox_max": [45, 5, 10],
       "bbox_min": [35, -5, 0],
       "eval_faces": 12,
+      "eval_maps": null,
       "eval_verts": 8,
       "frozen": false,
       "handle": 3,
@@ -217,6 +222,7 @@
       "offset_scale": [1, 1, 1],
       "parent": null,
       "renderable": false,
+      "shape": null,
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 40, 0, 0]
     },
     {
@@ -228,6 +234,7 @@
       "bbox_max": [10.01, 30.01, 5.01],
       "bbox_min": [9.99, 29.99, 4.99],
       "eval_faces": null,
+      "eval_maps": null,
       "eval_verts": null,
       "frozen": false,
       "handle": 6,
@@ -244,6 +251,7 @@
       "offset_scale": [1, 1, 1],
       "parent": null,
       "renderable": true,
+      "shape": null,
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 10, 30, 5]
     },
     {
@@ -255,6 +263,7 @@
       "bbox_max": [5, 35, 10],
       "bbox_min": [-5, 25, 0],
       "eval_faces": 12,
+      "eval_maps": null,
       "eval_verts": 8,
       "frozen": false,
       "handle": 4,
@@ -271,6 +280,7 @@
       "offset_scale": [1, 1, 1],
       "parent": 6,
       "renderable": true,
+      "shape": null,
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 30, 0]
     },
     {
@@ -282,6 +292,7 @@
       "bbox_max": [25, 35, 10],
       "bbox_min": [15, 25, 0],
       "eval_faces": 12,
+      "eval_maps": null,
       "eval_verts": 8,
       "frozen": false,
       "handle": 5,
@@ -298,10 +309,11 @@
       "offset_scale": [1, 1, 1],
       "parent": 6,
       "renderable": true,
+      "shape": null,
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 20, 30, 0]
     }
   ],
-  "oracle_version": 2,
+  "oracle_version": 5,
   "renderer": {"class_id": ["0x00000001", "0x00000000"], "class_name": "Default_Scanline_Renderer"},
   "time": 0,
   "units": {"display_metric": "meters", "display_type": "Generic", "display_us": "ft_Frac_In", "system_scale": 1, "system_type": "millimeters"}

@@ -32,6 +32,10 @@
 # asset list names (_referenced_maps), and the popup asks the same of an earlier unpack.
 # Modified for MaxDrop, 2026-11-17 (jsiovn). Color swatches follow the gamma setting the scene was saved with
 # (convert.colors): both converters share the rule read once, and the import report states it.
+# Modified for MaxDrop, 2026-11-17 (jsiovn). Shapes are built as curves: a failed build also removes the curves it
+# made, and the import report counts them.
+# Modified for MaxDrop, 2026-11-17 (jsiovn). New option Modifiers (Keep as Blender Modifiers / Ignore): TurboSmooth,
+# MeshSmooth, Shell and Symmetry become Subdivision Surface, Solidify and Mirror (build.modifiers).
 
 
 __author__ = "Sebastian Sille <nrgsille@gmail.com>"
@@ -74,7 +78,7 @@ _SHOWN_FILES = 5
 _UNREADABLE = (OSError, ValueError, IndexError, struct.error)
 # What a build makes besides objects and collections, in the order a failed build removes them. Addresses, not
 # names: a new datablock could reuse the address of one freed meanwhile, but the build frees none.
-_MADE = ("meshes", "materials", "images")
+_MADE = ("meshes", "curves", "materials", "images")
 
 # Saved in presets by identifier; the numbers keep each item's value stable.
 UNITS = (
@@ -84,6 +88,12 @@ UNITS = (
     ('METERS', "Meters", "One unit of the file is a meter", 3),
     ('INCHES', "Inches", "One unit of the file is an inch", 4),
     ('FEET', "Feet", "One unit of the file is a foot", 5),
+)
+# Saved in presets by identifier, like UNITS.
+MODIFIERS = (
+    ('KEEP', "Keep as Blender Modifiers",
+     "TurboSmooth and MeshSmooth become Subdivision Surface, Shell Solidify, Symmetry Mirror", 0),
+    ('IGNORE', "Ignore", "The objects arrive without these modifiers (each counted in the import report)", 1),
 )
 UNIT_METERS = {'MILLIMETERS': 0.001, 'CENTIMETERS': 0.01, 'METERS': 1.0, 'INCHES': 0.0254, 'FEET': 0.3048}
 _SEP = re.compile(r"[\\/]")
@@ -324,13 +334,13 @@ def _material_slots(cf, sc, desc, max_path, context, image_search):
 
 def _remove(cols, before):
     """Remove what a failed build left: the objects of the file's collection tree, the collections, and the meshes,
-    materials and images made since before ({kind: the as_pointer() of each datablock before the build}) that
+    curves, materials and images made since before ({kind: the as_pointer() of each datablock before the build}) that
     nothing uses."""
     for ob in list(cols.root.all_objects):
         bpy.data.objects.remove(ob)
     for col in list(cols.layers.values()) + [cols.root]:
         bpy.data.collections.remove(col)
-    for kind in _MADE:  # meshes first: a removed mesh frees its materials, a removed material its images
+    for kind in _MADE:  # meshes and curves first: they free their materials, a removed material its images
         blocks = getattr(bpy.data, kind)
         for block in [b for b in blocks if b.as_pointer() not in before[kind] and not b.users]:
             blocks.remove(block)
@@ -400,6 +410,12 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
                ),
         description="What to bring in with the objects",
         default={'MATERIAL', 'UV'},
+    )
+    modifiers: EnumProperty(
+        name="Modifiers",
+        description="What becomes of the 3ds Max modifiers Blender has an equivalent for",
+        items=MODIFIERS,
+        default='KEEP',
     )
     # SKIP_PRESET as well as SKIP_SAVE: the operator has presets, and a scene name belongs to one pack.
     pack_scene: StringProperty(
@@ -533,10 +549,11 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
         collection, then publish its import report (console and the text "MaxDrop Report"). pack: archive.unpack()'s
         result when the scene came from a scene pack, pack_name the archive's file name. ([(report level, line)],
         the convert.report.Report), the report's summary last; one of _UNREADABLE when the file cannot be read. A
-        build that fails is removed again (objects, collections, meshes, materials, images) before the exception goes
-        on."""
+        build that fails is removed again (objects, collections, meshes, curves, materials, images) before the
+        exception goes on."""
         from .build import collections as build_collections
         from .build import materials as build_materials
+        from .build import modifiers as build_modifiers
         from .build import objects as build_objects
         from .build import report as build_report
         from .convert import report as convert_report
@@ -549,7 +566,7 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
             sc = reader_scene.Scene.from_file(cf)
             unit = units.system_unit(sc)
             meters, note = _meters(self.units, unit, self.scale_objects)
-            desc = convert_scene.describe(sc, meters, unit)
+            desc = convert_scene.describe(sc, meters, unit, convert_modifiers=self.modifiers == 'KEEP')
             slots, counts = (_material_slots(cf, sc, desc, max_path, context, self.use_image_search) if materials
                              else (None, None))
             del sc  # the Scene holds the inflated stream of a compressed file
@@ -563,15 +580,20 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
         try:
             built = build_objects.build(desc, cols.root, cols, view_layer, slots=slots,
                                         material=builder.make if materials else None)
+            settings_skipped = build_modifiers.add(desc, built)
             build_collections.finish(cols, view_layer)
         except BaseException:
             _remove(cols, before)
             raise
         del slots
         rep = convert_report.gather(desc, source=name, objects_built=len(built.objects),
-                                    meshes_built=len(built.meshes), dropped_uv_layers=built.dropped_uv_layers,
+                                    meshes_built=len(built.meshes), curves_built=len(built.curves),
+                                    dropped_uv_layers=built.dropped_uv_layers,
                                     pack=pack, pack_name=pack_name)
         rep.issues.extend(builder.issues())
+        if settings_skipped:
+            rep.issues.append(("modifiers", "%d settings not on Blender %s, not set" % (settings_skipped,
+                                                                                       bpy.app.version_string)))
         if materials:
             conv_stats, tex_stats, lookup, swatches = counts
             convert_report.add_materials(rep, len(built.materials), builder.classes, conv_stats=conv_stats,
@@ -684,6 +706,7 @@ def import_include(layout, operator):
         layrow.prop(operator, "use_image_search")
         layrow.label(text="", icon='OUTLINER_OB_IMAGE' if operator.use_image_search else 'IMAGE_DATA')
         layout.column().prop(operator, "object_filter")
+        layout.prop(operator, "modifiers")
 
 
 def import_transform(layout, operator):
