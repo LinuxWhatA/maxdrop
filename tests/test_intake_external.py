@@ -104,11 +104,11 @@ class VersionTests(unittest.TestCase):
     def test_floors(self):
         self.assertTrue(Tool(UNRAR, "x", (7, 13)).too_old)
         self.assertFalse(Tool(UNRAR, "x", (7, 23)).too_old)
-        self.assertTrue(Tool(SEVENZIP, "x", (25, 0)).too_old)
-        self.assertFalse(Tool(SEVENZIP, "x", (25, 1)).too_old)
+        self.assertTrue(Tool(SEVENZIP, "x", (25, 1)).too_old)
+        self.assertFalse(Tool(SEVENZIP, "x", (26, 2)).too_old)
         self.assertTrue(Tool(SEVENZIP, "x", (16, 2)).too_old)
-        self.assertTrue(Tool(BSDTAR, "x", (3, 7, 3)).too_old)
-        self.assertFalse(Tool(BSDTAR, "x", (3, 7, 4)).too_old)
+        self.assertTrue(Tool(BSDTAR, "x", (3, 8, 7)).too_old)
+        self.assertFalse(Tool(BSDTAR, "x", (3, 8, 8)).too_old)
         # A distribution's bsdtar: its number says nothing.
         self.assertFalse(Tool(BSDTAR, "/usr/bin/bsdtar", (3, 7, 2), system=True).too_old)
         self.assertEqual(Tool(UNRAR, "x", (7, 23)).label, "UnRAR 7.23")
@@ -873,6 +873,28 @@ class RealToolTests(TempCase):
                     # Two wood.jpg: the one beside the scene is kept, the other reported.
                     self.assertEqual([c.replace("\\", "/") for c in result.collided], ["pack/other/wood.jpg"])
                     self.assertEqual(sorted(os.listdir(case_dir)), sorted([name, name.rsplit(".", 1)[0]]))
+                    say(label, True)
+
+    def test_cancelled_by_the_watch(self):
+        """A watch that raises Cancelled ends the program and leaves only the pack in its folder."""
+        for name in ("normal.rar", "plain.7z"):
+            flavors = [f for f in (UNRAR, SEVENZIP, BSDTAR) if name in self.CASES[f]]
+            for tool, label in self.tools_for("cancel %s" % name, flavors):
+                with self.subTest(tool=tool.label, pack=name):
+                    self.only(tool)
+                    case_dir = tempfile.mkdtemp(dir=self.tmp)
+                    pack = os.path.join(case_dir, name)
+                    shutil.copyfile(os.path.join(PACKS, name), pack)
+                    seen = []
+
+                    def stop(n):
+                        seen.append(n)
+                        raise archive.Cancelled()
+
+                    with self.assertRaises(archive.Cancelled):
+                        archive.unpack(pack, watch=stop)
+                    self.assertEqual(seen, [0])
+                    self.assertEqual(os.listdir(case_dir), [name])
                     say(label, True)
 
     def test_references_unpack_only_the_named_maps(self):

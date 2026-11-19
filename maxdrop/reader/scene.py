@@ -16,7 +16,7 @@
         scene.layers()                  # Layer records in the Layer Manager's order
         scene.layer(node.layer)         # name, hidden, frozen, renderable, parent (a layer's object index)
 
-The Scene stream holds one root container (0x2014, 0x2023 or 0x2025 so far); its children are the objects. The
+The Scene stream holds one root container (0x2014, 0x2022, 0x2023 or 0x2025 so far); its children are the objects. The
 object index is a child's position, its chunk id the class index into the class directory. References: 0x2034
 is an i32 array (position = slot, -1 = empty); 0x2035 is a u32 (meaning unknown) then (u32 slot, i32 index)
 pairs. A Node (class (1, 0), superclass 1) has 0x0962 name, 0x0960 i32 parent + u32 flags, 0x096A/B/C pivot
@@ -31,22 +31,24 @@ of the stack first; its base can be another derived object. docs/FORMAT.md says 
 Nodes are keyed by object index, never by name: two nodes with the same name are two nodes. A parent that is not
 a Node (the RootNode, another class, out of range) means top level. A parent cycle is cut at its member with the
 lowest object index, which becomes top level and is listed in cut_cycles; a layer's parent cycle is cut the same
-way, and a parent layer that is not a layer or cannot be read means top level. A reference past the object list, more
-than MAX_REFS references in one object, a payload of the wrong size, a derived-object cycle or a file without a
-Scene stream raise ChunkError (a ValueError). One damaged record poisons only itself: a node whose 0x0960 cannot
-be read is top level for the hierarchy (listed in bad_parents) while node() on it raises. Every walk is iterative
+way, and a parent layer that is not a layer or cannot be read means top level. A reference past the object list,
+more than MAX_REFS references in one object, more than MAX_NODES nodes, a payload of the wrong size, a
+derived-object cycle or a file without a Scene stream raise ChunkError (a MaxFileError). One damaged record poisons
+only itself: a node whose 0x0960 cannot be read is top level for the hierarchy (listed in bad_parents) while node()
+on it raises. Every walk is iterative
 and bounded by the object count. No bpy.
 """
 import collections
 import struct
 
-from . import chunks, classdir, classids
+from . import chunks, classdir, classids, strings as strings_mod
 
 ChunkError = chunks.ChunkError
 
-ROOT_IDS = frozenset((0x2014, 0x2023, 0x2025))  # root container ids seen so far; others are read the same way
+ROOT_IDS = frozenset((0x2014, 0x2022, 0x2023, 0x2025))  # root container ids seen so far; others are read the same way
 DERIVED_OBJECT = 0x2032
 MAX_REFS = 1 << 20  # per object and chunk: a hostile payload must not become millions of Python ints
+MAX_NODES = 1 << 20  # scene B, the largest corpus scene, has 2 251; Blender is unusable long before this
 SLOT_TM, SLOT_OBJECT, SLOT_MATERIAL, SLOT_LAYER = 0, 1, 3, 6
 GROUP_HEAD, GROUP_MEMBER, HIDDEN, FROZEN = 0x40, 0x100, 0x100000, 0x200000  # node 0x0960, layer 0x1020
 RENDERABLE = 0x8000  # node 0x099C, layer 0x1050
@@ -159,14 +161,16 @@ def _floats(chunk, count, default):
 class Scene:
     """The objects of a Scene stream (bytes-like or cfb.Stream) with the file's ClassDirectory."""
 
-    def __init__(self, data, classes, max_depth=chunks.DEFAULT_MAX_DEPTH, max_chunks=chunks.DEFAULT_MAX_CHUNKS):
-        top = chunks.index(data, max_depth, max_chunks)
+    def __init__(self, data, classes, max_depth=chunks.DEFAULT_MAX_DEPTH, max_chunks=chunks.DEFAULT_MAX_CHUNKS,
+                 strings=None):
+        top = chunks.index(data, max_depth, max_chunks, strings)
         if not len(top):
             raise ChunkError("the Scene stream is empty")
         root = top[0]
         if not root.container:
             raise ChunkError("the Scene stream starts with a leaf chunk %04X, not a container" % root.id)
         self.classes = classes
+        self.strings = root.strings  # how the names decode: chunks.WIDE or a strings.Strings
         self.root_id = root.id
         self._root = root
         self._objects = root.children
@@ -192,6 +196,9 @@ class Scene:
             elif entry.superclass == classids.SC_REF_TARGET and entry.class_id == classids.LAYER_MANAGER:
                 manager_classes.add(entry.index)
         self.node_indices = tuple(i for i, cid in enumerate(self._ids) if cid in node_classes)
+        if len(self.node_indices) > MAX_NODES:
+            raise ChunkError("the scene has %d objects, more than the %d MaxDrop imports"
+                             % (len(self.node_indices), MAX_NODES))
         self._node_set = frozenset(self.node_indices)
         self.root_node = next((i for i, cid in enumerate(self._ids) if cid in root_classes), None)
         self.layer_indices = tuple(i for i, cid in enumerate(self._ids) if cid in layer_classes)
@@ -199,13 +206,15 @@ class Scene:
         self._managers = tuple(i for i, cid in enumerate(self._ids) if cid in manager_classes)
 
     @classmethod
-    def from_file(cls, cf, classes=None):
-        """From an open cfb.CompoundFile; the class directory is read from it unless given."""
+    def from_file(cls, cf, classes=None, encoding="AUTO"):
+        """From an open cfb.CompoundFile; the class directory is read from it unless given. encoding: how the
+        8-bit strings of a file of 3ds Max 2012 or older decode ("AUTO" or a codec of strings.CODECS)."""
         if not cf.exists("Scene"):
             raise ChunkError("the file has no Scene stream")
+        strings = strings_mod.of_file(cf, encoding)
         if classes is None:
-            classes = classdir.ClassDirectory.from_file(cf)
-        return cls(cf.open("Scene"), classes)
+            classes = classdir.ClassDirectory.from_file(cf, strings)
+        return cls(cf.open("Scene"), classes, strings=strings)
 
     def __len__(self):
         return len(self._ids)
@@ -440,7 +449,12 @@ class Scene:
         if not chunk.container:
             raise ChunkError("layer %d is a leaf chunk" % i)
         name = chunk.first(_LAYER_NAME)
-        name = name.tobytes().decode("utf-8", "replace").rstrip("\x00") if name is not None else ""
+        if name is None:
+            name = ""
+        elif self.strings.wide:  # UTF-8 in a file of 3ds Max 2013 or later, unlike its other names
+            name = name.tobytes().decode("utf-8", "replace").rstrip("\x00")
+        else:
+            name = name.text()
         what = "layer %d" % i
         layer = Layer(i, name, _u32(chunk.first(_LAYER_FLAGS), 0, what),
                       _u32(chunk.first(_LAYER_RENDER), RENDERABLE, what), self._layer_hierarchy()[i])

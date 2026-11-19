@@ -57,6 +57,15 @@
 # previews are dropped when the archive at that path changed since invoke().
 # Modified for MaxDrop, 2026-11-19 (jsiovn). The Scene Pack panel puts the folder of its error lines on a label of
 # its own, and invoke() keeps no folder of a pack it cannot look at.
+# Modified for MaxDrop, 2026-11-19 (jsiovn). An import started from a window runs in steps (maxdrop.import_progress):
+# progress in the status bar, Esc cancels and removes what the run made. The unpack and the reading run in a worker
+# thread there; an import from a script or without a window stays synchronous.
+# Modified for MaxDrop, 2026-11-19 (jsiovn). New option Text Encoding: the code page of the names of a file saved by
+# 3ds Max 2012 or older; the pre-flight line names the one Auto chose for such a file.
+# Modified for MaxDrop, 2026-11-19 (jsiovn). A file whose reading runs out of memory or recursion depth is reported
+# as not imported too, with a reason also when the error carries no message.
+# Modified for MaxDrop, 2026-11-20 (jsiovn). A SystemExit or KeyboardInterrupt in the import's worker thread fails
+# the run as a RuntimeError, so the progress runner still tears down and removes what the run made.
 
 
 __author__ = "Sebastian Sille <nrgsille@gmail.com>"
@@ -65,6 +74,8 @@ __author__ = "Sebastian Sille <nrgsille@gmail.com>"
 import os
 import re
 import struct
+import threading
+import time
 import traceback
 
 import bpy
@@ -99,12 +110,28 @@ _SHOWN_SCENES = 10
 # Pre-flight lines of the .max files a drop or a script named, by normalized path.
 _PREFLIGHT = {}
 _SHOWN_FILES = 5
-# A .max that cannot be read. The reader raises CfbError / ChunkError (ValueErrors); IndexError and struct.error are
-# caught too, so that a gap in its checks still reports the file as not imported instead of stopping the run.
-_UNREADABLE = (OSError, ValueError, IndexError, struct.error)
+# A .max that cannot be read. The reader raises reader.errors.MaxFileError (a ValueError); IndexError, struct.error,
+# MemoryError and RecursionError are caught too, so that a gap in its checks still reports the file as not imported
+# instead of stopping the run.
+_UNREADABLE = (OSError, ValueError, IndexError, struct.error, MemoryError, RecursionError)
 # What a build makes besides objects and collections, in the order a failed build removes them. Addresses, not
 # names: a new datablock could reuse the address of one freed meanwhile, but the build frees none.
 _MADE = ("meshes", "curves", "lights", "cameras", "materials", "images")
+# The render settings build.cameras.set_render() changes, put back when a run is cancelled.
+_RENDER = ("resolution_x", "resolution_y", "resolution_percentage", "pixel_aspect_x", "pixel_aspect_y")
+# A modal run: seconds of work per timer event, the timer's interval, the steps of the progress shown in the cursor,
+# the share of a scene's progress its reading takes (scene B: 9 s of reading and describing, 7 s of building), and
+# how long an Esc during an unpack waits for the unpacker to stop and remove its staging folder.
+_SLICE = 0.1
+_TICK = 0.05
+_PROGRESS_STEPS = 1000
+_READ_SHARE = 0.55
+_STOP_WAIT = 10.0
+# Runs execute() hands to maxdrop.import_progress, by key; the run being stepped, and the worker threads of runs
+# (a cancelled read ends only with its file), so that a second import waits.
+_RUNS = {}
+_ACTIVE = []
+_WORKERS = []
 
 # The default Light Strength: V-Ray 5.2 renders against Cycles renders of the same lights (docs/FORMAT.md,
 # "VRayLight", where the measured ratios are). The standard, photometric, sun and IES powers are derived from V-Ray
@@ -127,6 +154,22 @@ MODIFIERS = (
      "TurboSmooth and MeshSmooth become Subdivision Surface, Shell Solidify, Symmetry Mirror", 0),
     ('IGNORE', "Ignore", "The objects arrive without these modifiers (each counted in the import report)", 1),
 )
+# Saved in presets by identifier, like UNITS. The codecs are reader.strings.CHOICES.
+TEXT_ENCODINGS = (
+    ('AUTO', "Auto", "The code page the file records, else UTF-8, else Western (1252)", 0),
+    ('CP1252', "Western (1252)", "English and Western European names", 1),
+    ('CP1250', "Central European (1250)", "Polish, Czech, Hungarian and other Central European names", 2),
+    ('CP1251', "Cyrillic (1251)", "Russian, Ukrainian, Bulgarian and other Cyrillic names", 3),
+    ('CP1253', "Greek (1253)", "Greek names", 4),
+    ('CP1254', "Turkish (1254)", "Turkish names", 5),
+    ('CP932', "Japanese (932)", "Japanese names (Shift JIS)", 6),
+    ('CP936', "Simplified Chinese (936)", "Simplified Chinese names (GBK)", 7),
+    ('CP949', "Korean (949)", "Korean names", 8),
+    ('CP950', "Traditional Chinese (950)", "Traditional Chinese names (Big5)", 9),
+    ('UTF_8', "UTF-8", "Names saved as UTF-8", 10),
+)
+TEXT_CODECS = {'CP1252': "cp1252", 'CP1250': "cp1250", 'CP1251': "cp1251", 'CP1253': "cp1253", 'CP1254': "cp1254",
+               'CP932': "cp932", 'CP936': "cp936", 'CP949': "cp949", 'CP950': "cp950", 'UTF_8': "utf-8"}
 UNIT_METERS = {'MILLIMETERS': 0.001, 'CENTIMETERS': 0.01, 'METERS': 1.0, 'INCHES': 0.0254, 'FEET': 0.3048}
 _SEP = re.compile(r"[\\/]")
 
@@ -329,6 +372,15 @@ def _scene_search(self, context, edit_text):
     return [s for s in scenes if text in s.casefold()] or scenes
 
 
+def _reason(e):
+    """The message of one of _UNREADABLE for the report; a MemoryError or RecursionError often has none."""
+    if isinstance(e, MemoryError):
+        return str(e) or "not enough memory to read it"
+    if isinstance(e, RecursionError):
+        return "recursion too deep while importing it"
+    return str(e) or type(e).__name__
+
+
 def _plural(n, word, many=None):
     return "%d %s" % (n, word if n == 1 else many or word + "s")
 
@@ -346,7 +398,7 @@ def _meters(choice, unit, scale):
 def _preflight(path):
     """One line about a .max before it is imported: 3ds Max version, renderer, objects (nodes), unit. Reads the
     summary stream and the index of the Scene stream, not the objects (0.1 s on a scene of 800 MB)."""
-    from .reader import cfb, metadata, units
+    from .reader import cfb, metadata, strings, units
     from .reader import scene as reader_scene
     try:
         with cfb.CompoundFile(path) as cf:
@@ -357,8 +409,9 @@ def _preflight(path):
             sc = reader_scene.Scene.from_file(cf)
             unit = units.system_unit(sc)
             nodes = len(sc.node_indices)
+            names = sc.strings
     except _UNREADABLE as e:
-        return "Not readable as a .max file (%s)" % e
+        return "Not readable as a .max file (%s)" % _reason(e)
     release = info.get("max_release")
     parts = ["3ds Max %s" % release if release else "3ds Max version not stated"]
     renderer = (info.get("renderer") or {}).get("name")
@@ -366,6 +419,9 @@ def _preflight(path):
         parts.append(renderer)
     parts.append(_plural(nodes, "object"))
     parts.append(unit.name if unit is not None else "unit not stated")
+    if not names.wide:  # what Auto chose for an 8-bit file, so the user knows whether to set Text Encoding
+        parts.append("names: " + (dict(strings.CHOICES).get(names.codec, names.codec) if names.codec
+                                  else "UTF-8, else Western (1252)"))
     return ", ".join(parts)
 
 
@@ -386,18 +442,19 @@ def _preflight_of(path):
         return None
 
 
-def _material_slots(sc, desc, table, max_path, context, image_search):
+def _material_slots(sc, desc, table, max_path, dirs, image_search):
     """(the material slots of desc's meshes {mesh key: MeshSlots}, (the material converter's, the texture-map
     converter's and the texture lookup's counters, the scene's swatch rule) for the import report): every material
     converted, its texture files looked up. sc: the reader Scene, which the converters read; table: the file's
-    reader.assets.AssetTable (the one the scene description got); the counters hold no reference to either."""
+    reader.assets.AssetTable (the one the scene description got); dirs: the texture search folders
+    (prefs.texture_dirs); the counters hold no reference to either. Touches no Blender data."""
     from .convert import colors as convert_colors
     from .convert import materials as convert_materials
     from .convert import texmaps as convert_texmaps
     from .convert import textures as convert_textures
     from .reader import materials as reader_materials
     graph = reader_materials.MaterialGraph(sc)
-    index = convert_textures.TextureIndex(max_path, prefs.texture_dirs(context), scene_subfolders=image_search)
+    index = convert_textures.TextureIndex(max_path, dirs, scene_subfolders=image_search)
     swatches = convert_colors.of_scene(sc)
     tex = convert_texmaps.TexmapConverter(graph, table, textures=index, swatches=swatches)
     conv = convert_materials.MaterialConverter(graph, texmaps=tex, swatches=swatches)
@@ -430,6 +487,372 @@ def _summary(path, result):
                + result.unwanted)
     return "%s: %s from %s, %s, %d skipped" % (
         os.path.basename(path), os.path.basename(result.max_path), result.folder, done, skipped)
+
+
+class ImportOptions:
+    """The operator's settings an import reads, copied: a modal run outlives the operator that started it."""
+    __slots__ = ("units", "scale_objects", "use_image_search", "object_filter", "modifiers", "light_strength",
+                 "keep_targets", "axis_forward", "axis_up", "text_encoding")
+    DEFAULTS = {"text_encoding": 'AUTO'}  # an option added after scripts and tests that build ImportOptions
+
+    def __init__(self, **values):
+        for name in self.__slots__:
+            setattr(self, name, values[name] if name in values else self.DEFAULTS[name])
+
+    @classmethod
+    def of(cls, op):
+        values = {name: getattr(op, name) for name in cls.__slots__}
+        values["object_filter"] = set(values["object_filter"])
+        return cls(**values)
+
+
+class _Stop(Exception):
+    """A run ends with this message for the user, as execute() did with _error() before it ran in steps."""
+
+
+# What _in_thread() yields while its worker runs: the driver of a modal run waits for the next timer event instead of
+# asking again at once (which would take the interpreter from the worker).
+_WAIT = object()
+
+
+def _drain(steps):
+    """Run a step generator to its end; its return value."""
+    while True:
+        try:
+            next(steps)
+        except StopIteration as end:
+            return end.value
+
+
+def _in_thread(fn, *args, stop=None, **kwargs):
+    """Step generator: fn(*args, **kwargs) in a worker thread, yielding _WAIT while it runs; its return value, or its
+    exception raised here. fn must touch no Blender data. Closed early: stop (a threading.Event fn watches) is set
+    and the worker given _STOP_WAIT seconds to end; without stop its result is dropped when it ends."""
+    box = {}
+
+    def work():
+        try:
+            box["value"] = fn(*args, **kwargs)
+        except BaseException as e:
+            box["error"] = e
+
+    worker = threading.Thread(target=work, name="MaxDrop import", daemon=True)
+    _WORKERS[:] = [w for w in _WORKERS if w.is_alive()] + [worker]
+    worker.start()
+    try:
+        while worker.is_alive():
+            yield _WAIT
+    except GeneratorExit:
+        if stop is not None:
+            stop.set()
+            worker.join(_STOP_WAIT)
+        raise
+    if "error" in box:
+        error = box["error"]
+        if not isinstance(error, Exception):
+            # A worker's SystemExit or KeyboardInterrupt ended only the read; raised as it is, it would pass the
+            # modal runner's except Exception and skip its teardown and the removal of what the run made.
+            raise RuntimeError("the import thread ended with %s" % type(error).__name__) from error
+        raise error
+    return box["value"]
+
+
+class _Read:
+    """What _read_scene() read of a .max: desc, the unit note, the material slots and counters, the conversion
+    failures, the light colors' swatch note."""
+    __slots__ = ("desc", "note", "slots", "counts", "failed", "light_note")
+
+
+def _read_scene(max_path, opts, dirs):
+    """Reader, scene description and material conversion of one .max (ImportOptions opts, texture search folders
+    dirs): everything the build needs, in a _Read. One of _UNREADABLE when the file cannot be read. Touches no
+    Blender data: a modal run calls it in a worker thread."""
+    from .convert import cameras, colors
+    from .convert import scene as convert_scene
+    from .reader import assets, cfb, units
+    from .reader import scene as reader_scene
+    name = os.path.basename(max_path)
+    read = _Read()
+    with cfb.CompoundFile(max_path) as cf:
+        sc = reader_scene.Scene.from_file(cf, encoding=TEXT_CODECS.get(opts.text_encoding, "AUTO"))
+        unit = units.system_unit(sc)
+        meters, read.note = _meters(opts.units, unit, opts.scale_objects)
+        table = assets.AssetTable.from_file(cf)
+        desc = convert_scene.describe(sc, meters, unit, convert_modifiers=opts.modifiers == 'KEEP',
+                                      assets=table, views=cameras.saved_views(cf))
+        read.slots, read.counts, read.failed = None, None, []
+        if 'MATERIAL' in opts.object_filter:
+            try:
+                read.slots, read.counts = _material_slots(sc, desc, table, max_path, dirs, opts.use_image_search)
+            except Exception as e:  # a material rule's bug costs the materials, never the scene
+                print("MaxDrop: materials of %s not converted:\n%s" % (name, traceback.format_exc()), end="")
+                read.failed.append(("materials", "not converted (%s: %s): the scene is imported without materials"
+                                    % (type(e).__name__, e)))
+        # light colors follow the swatch rule too; converted materials bring its note to the report
+        read.light_note = colors.of_scene(sc).note if desc.lights and read.counts is None else ""
+        del sc  # the Scene holds the inflated stream of a compressed file
+    if 'UV' not in opts.object_filter:
+        for md in desc.meshes.values():
+            md.uv_layers = []
+    read.desc = desc
+    return read
+
+
+def _quiet(_text, _fraction):
+    pass
+
+
+def _busy():
+    """Why an import cannot start now, "" when it can."""
+    if _ACTIVE:
+        return "An import is running: wait for it to finish, or press Esc to cancel it."
+    if any(w.is_alive() for w in _WORKERS):
+        return "A cancelled import is still reading its file: try again in a moment."
+    return ""
+
+
+def _store_last(source, wm):
+    """Keep source's settings as the import's last-used ones, which Blender keeps only for an operator that
+    returns FINISHED: the windowed import returns CANCELLED once maxdrop.import_progress has the run."""
+    last = wm.operator_properties_last(IMPORT_SCENE_OT_maxdrop.bl_idname)
+    for prop in last.bl_rna.properties:
+        name = prop.identifier
+        if name == "rna_type" or getattr(prop, "is_skip_save", True) or prop.is_readonly:
+            continue
+        try:
+            setattr(last, name, getattr(source, name))
+        except (AttributeError, TypeError, ValueError):
+            pass
+
+
+def _scene_steps(opts, scene, view_layer, max_path, pack=None, pack_name="", dirs=(), threaded=False,
+                 progress=_quiet, made=None):
+    """Step generator of one .max: read, describe and build it with its materials into a collection named after it
+    in view_layer's active collection, set scene's render size and camera, then publish its import report (console
+    and the text "MaxDrop Report"). pack: archive.unpack()'s result when the scene came from a scene pack, pack_name
+    the archive's file name. Returns ([(report level, line)], the convert.report.Report), the report's summary last;
+    raises one of _UNREADABLE when the file cannot be read. A build that fails or is closed early is removed again
+    (objects, collections, meshes, curves, lights, cameras, materials, images) before the exception goes on.
+    threaded: the reading in a worker thread (_in_thread), yielding _WAIT meanwhile; progress(text, fraction of the
+    scene) is told what it does; made: a list the scene's build.collections.Collections is appended to once built."""
+    from .build import cameras as build_cameras
+    from .build import collections as build_collections
+    from .build import materials as build_materials
+    from .build import modifiers as build_modifiers
+    from .build import objects as build_objects
+    from .build import report as build_report
+    from .convert import report as convert_report
+    name = os.path.basename(max_path)
+    materials = 'MATERIAL' in opts.object_filter
+    progress("reading " + name, 0.0)
+    if threaded:
+        read = yield from _in_thread(_read_scene, max_path, opts, dirs)
+    else:
+        read = _read_scene(max_path, opts, dirs)
+    desc, slots, counts, failed = read.desc, read.slots, read.counts, read.failed
+    before = {kind: {d.as_pointer() for d in getattr(bpy.data, kind)} for kind in _MADE}
+    cols = build_collections.make(desc, view_layer.active_layer_collection.collection, os.path.splitext(name)[0])
+    builder = build_materials.MaterialBuilder()
+    try:
+        steps = build_objects.build_steps(desc, cols.root, cols, view_layer, slots=slots,
+                                          material=builder.make if materials else None,
+                                          light_strength=opts.light_strength)
+        while True:
+            try:
+                done, total = next(steps)
+            except StopIteration as end:
+                built = end.value
+                break
+            progress("building %s: %d / %d" % (name, done, total), _READ_SHARE + (1.0 - _READ_SHARE) * done / total)
+            yield
+        settings_skipped = build_modifiers.add(desc, built)
+        kept = build_objects.track_targets(desc, built) if opts.keep_targets else []
+        build_collections.finish(cols, view_layer)
+        build_cameras.set_render(scene, desc, built)  # last: a failed build leaves the scene's alone
+    except BaseException:
+        _remove(cols, before)
+        raise
+    if made is not None:
+        made.append(cols)
+    del slots
+    rep = convert_report.gather(desc, source=name, objects_built=len(built.objects),
+                                meshes_built=len(built.meshes), curves_built=len(built.curves),
+                                lights_built=len(built.lights), cameras_built=len(built.cameras),
+                                dropped_uv_layers=built.dropped_uv_layers,
+                                pack=pack, pack_name=pack_name)
+    if settings_skipped:
+        rep.issues.append(("modifiers", "%d settings not on Blender %s, not set" % (settings_skipped,
+                                                                                   bpy.app.version_string)))
+    names = {node.index: node.name or "object %d" % node.index for node in desc.nodes}
+    rep.issues.extend((names[i], "Keep Targets: no Track To, the rotation stays fixed: %s" % reason)
+                      for i, reason in kept)
+    if read.light_note:
+        rep.issues.append(("color swatches", read.light_note))
+    if materials:
+        conv_stats, tex_stats, lookup, swatches = counts or (None, None, None, None)
+        made_materials = sum(m is not None for m in built.materials.values())
+        convert_report.add_materials(rep, made_materials, builder.classes, conv_stats=conv_stats,
+                                     tex_stats=tex_stats, lookup=lookup, sockets=builder.sockets_skipped,
+                                     blender=bpy.app.version_string, swatches=swatches,
+                                     build_issues=failed + builder.issues())
+    del desc
+    axis = axis_conversion(from_forward=opts.axis_forward, from_up=opts.axis_up).to_4x4()
+    if axis != Matrix.Identity(4):
+        for ob in built.roots():
+            ob.matrix_basis = axis @ ob.matrix_basis
+        # the target's own Z (use_target_z) turns with the scene; the world's does not, which matters only when
+        # the file's up does not stay Blender's Z
+        if tuple(axis.col[2][:3]) != (0.0, 0.0, 1.0) and any(
+                c.name == build_objects.TRACK_TO_NAME and not c.use_target_z
+                for ob in built.objects.values() for c in ob.constraints):
+            rep.issues.append(("Keep Targets", "Track To keeps Blender's Z up, not the converted axes' up"))
+    lines = [('WARNING', "%s %s" % (name, read.note))] if read.note else []
+    lines.append(build_report.publish(rep))
+    return lines, rep
+
+
+class _Run:
+    """One import of the files execute() was given, after its checks: the unpack of each pack, then each scene.
+
+        run = _Run(opts, paths, chosen, context)    # chosen: {archive path: its scene}
+        steps = run.steps(threaded)                 # a step generator; run.text, run.fraction: where it is
+        run.lines                                   # [(report level, line)] to report, each printed already
+
+    The steps raise _Stop with the message to report when the run ends without importing. Closing them early
+    (Esc) removes everything the run made in Blender (undo()): the scene being built, the scenes it finished, a
+    "MaxDrop Report" text it created; the scene camera and render size are put back. A pack folder it unpacked
+    stays."""
+
+    def __init__(self, opts, paths, chosen, context, import_scene=None):
+        self.opts, self.paths, self.chosen = opts, paths, chosen
+        self.scene, self.view_layer = context.scene, context.view_layer
+        self.dirs = prefs.texture_dirs(context)
+        self.parents = {}
+        for path in chosen:
+            try:
+                self.parents[path] = (prefs.pack_parent(path, context), None)
+            except ValueError as e:
+                self.parents[path] = (None, e)
+        # Synchronous: import_scene(max_path, unpack result, pack name) -> (lines, rep), the operator's own.
+        self.import_scene = import_scene
+        self.lines, self.text, self.fraction = [], "", 0.0
+        self._made, self._before, self._render = [], None, None
+        # The runner's close of its steps, for _stop_active; stopped once that closed them.
+        self.close, self.stopped = (lambda: None), False
+
+    def _say(self, level, line, printed=None):
+        self.lines.append((level, line))
+        print("MaxDrop: " + (line if printed is None else printed))
+
+    def _at(self, index):
+        """progress(text, fraction of the scene); fraction None: the text alone (an unpack, whose share of the run is
+        not known)."""
+        def progress(text, fraction):
+            self.text = text if len(self.paths) == 1 else "%s (%d of %d)" % (text, index + 1, len(self.paths))
+            if fraction is not None:
+                self.fraction = (index + fraction) / len(self.paths)
+        return progress
+
+    def steps(self, threaded=False):
+        """The step generator; threaded: the unpacks and the reading in a worker thread."""
+        archive = _archive()
+        self._before = {kind: {d.as_pointer() for d in getattr(bpy.data, kind)} for kind in _MADE + ("texts",)}
+        render = self.scene.render
+        self._render = (self.scene.camera, [getattr(render, name) for name in _RENDER])
+        try:
+            resolved, summaries, written = [], [], []  # resolved: [(.max path, unpack result, archive path)]
+            for index, path in enumerate(self.paths):
+                if path not in self.chosen:
+                    resolved.append((path, None, None))
+                    continue
+                result = yield from self._unpack(archive, index, path, written, threaded)
+                _TARGETS.pop(_norm(path), None)  # its previews are out of date now: the next invoke() makes new ones
+                if result.mode == "unpacked":
+                    written.append("%s into %s" % (os.path.basename(path), result.folder))
+                resolved.append((result.max_path, result, path))
+                summaries.append(_summary(path, result))
+                if result.guessed:
+                    print("MaxDrop: %s: %s stored without a known encoding, read as a guess"
+                          % (os.path.basename(path), _plural(len(result.guessed), "name")))
+            # Before the scenes: the status bar shows the last report, which is to be a scene's summary (or a failure).
+            for line in summaries:
+                self._say('INFO', line)
+            reports, failed = [], []
+            for index, (max_path, result, pack_path) in enumerate(resolved):
+                pack_name = os.path.basename(pack_path) if pack_path else ""
+                try:
+                    if self.import_scene is not None:
+                        lines, rep = self.import_scene(max_path, result, pack_name)
+                    else:
+                        lines, rep = yield from _scene_steps(
+                            self.opts, self.scene, self.view_layer, max_path, result, pack_name, self.dirs,
+                            threaded=threaded, progress=self._at(index), made=self._made)
+                except _UNREADABLE as e:
+                    failed.append("%s: %s" % (os.path.basename(max_path), _reason(e)))
+                    continue
+                reports.append(rep)
+                for level, line in lines:
+                    self._say(level, line)
+            if not reports:
+                raise _Stop("Nothing imported. " + "; ".join(failed))
+            if len(reports) > 1 or failed:
+                from .build import report as build_report
+                build_report.publish_run(reports, failed)
+            for line in failed:
+                self._say('WARNING', "Not imported: " + line, "not imported: " + line)
+        except GeneratorExit:
+            self.undo()
+            raise
+
+    def _unpack(self, archive, index, path, written, threaded):
+        """Step generator: archive.unpack() of the pack at path; _Stop when it fails."""
+        name = os.path.basename(path)
+        progress = self._at(index)
+        progress("unpacking " + name, None)
+        parent, problem = self.parents[path]
+        try:
+            if problem is not None:
+                raise problem
+            if not threaded:
+                return archive.unpack(path, self.chosen[path], parent, references=_referenced_maps)
+            stop = threading.Event()
+
+            def watch(n):
+                progress("unpacking %s: %.1f MiB" % (name, n / 1048576.0), None)
+                if stop.is_set():
+                    raise archive.Cancelled()
+
+            return (yield from _in_thread(archive.unpack, path, self.chosen[path], parent,
+                                          references=_referenced_maps, watch=watch, stop=stop))
+        except (archive.PackError, ValueError) as e:
+            if written:
+                raise _Stop("%s Nothing was imported. Already unpacked, and used again by the next import: %s."
+                            % (e, ", ".join(written))) from None
+            raise _Stop(str(e)) from None
+
+    def undo(self):
+        """Remove what the run made in Blender; a no-op before steps() started."""
+        if self._before is None:
+            return
+        for cols in self._made:
+            for ob in list(cols.root.all_objects):
+                bpy.data.objects.remove(ob)
+            for col in list(cols.layers.values()) + [cols.root]:
+                bpy.data.collections.remove(col)
+        self._made = []
+        for kind in _MADE:  # meshes and curves first: they free their materials, a removed material its images
+            blocks = getattr(bpy.data, kind)
+            for block in [b for b in blocks if b.as_pointer() not in self._before[kind] and not b.users]:
+                blocks.remove(block)
+        for text in [t for t in bpy.data.texts if t.as_pointer() not in self._before["texts"]]:
+            bpy.data.texts.remove(text)
+        camera, values = self._render
+        try:
+            self.scene.camera = camera
+        except ReferenceError:  # an object removed meanwhile: the scene keeps none
+            self.scene.camera = None
+        for name, value in zip(_RENDER, values):
+            setattr(self.scene.render, name, value)
 
 
 @orientation_helper(axis_forward='Y', axis_up='Z')
@@ -484,6 +907,13 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
         min=0.0, max=1000000.0,
         soft_min=0.0, soft_max=1000.0,
         default=LIGHT_STRENGTH,
+    )
+    text_encoding: EnumProperty(
+        name="Text Encoding",
+        description="How the names of a file saved by 3ds Max 2012 or older are read (they are in the code page "
+        "of the computer that saved it). Files of 3ds Max 2013 and later are Unicode and ignore it",
+        items=TEXT_ENCODINGS,
+        default='AUTO',
     )
     keep_targets: BoolProperty(
         name="Keep Targets",
@@ -561,157 +991,53 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
             return self._error("%s holds %d scenes: %s. Type one into the Scene field and import again."
                                % (os.path.basename(path), len(scenes), _scene_list(scenes)))
 
-        resolved, summaries, written = [], [], []  # resolved: [(.max path, unpack result, archive path)]
-        window = context.window
-        for path in paths:
-            if path not in chosen:
-                resolved.append((path, None, None))
-                continue
-            if window:
-                window.cursor_set('WAIT')
+        busy = _busy()
+        if busy:
+            return self._error(busy)
+        run = _Run(ImportOptions.of(self), paths, chosen, context)
+        # A window shows the progress and takes Esc; scripts (EXEC) and background runs stay synchronous.
+        if self.options.is_invoke and not bpy.app.background and context.window is not None:
+            key = "%x" % id(run)
+            _RUNS.clear()  # a run whose runner never started
+            _RUNS[key] = run
             try:
-                result = archive.unpack(path, chosen[path], prefs.pack_parent(path, context),
-                                        references=_referenced_maps)
-            except (archive.PackError, ValueError) as e:
-                if written:
-                    return self._error("%s Nothing was imported. Already unpacked, and used again by the next "
-                                       "import: %s." % (e, ", ".join(written)))
-                return self._error(str(e))
+                started = 'RUNNING_MODAL' in bpy.ops.maxdrop.import_progress('INVOKE_DEFAULT', run_key=key)
+            except RuntimeError as e:
+                print("MaxDrop: could not show the progress, importing at once (%s)" % e)
+                started = False
             finally:
-                if window:
-                    window.cursor_set('DEFAULT')
-            _TARGETS.pop(_norm(path), None)  # its previews are out of date now: the next invoke() makes new ones
-            if result.mode == "unpacked":
-                written.append("%s into %s" % (os.path.basename(path), result.folder))
-            resolved.append((result.max_path, result, path))
-            summaries.append(_summary(path, result))
-            if result.guessed:
-                print("MaxDrop: %s: %s stored without a known encoding, read as a guess"
-                      % (os.path.basename(path), _plural(len(result.guessed), "name")))
-
-        # Before the scenes: the status bar shows the last report, which is to be a scene's summary (or a failure).
-        for line in summaries:
-            self.report({'INFO'}, line)
-            print("MaxDrop: " + line)
-        reports, failed = [], []
+                _RUNS.pop(key, None)
+            if started:  # maxdrop.import_progress reports, and makes the undo step when it finishes
+                _store_last(self, context.window_manager)
+                return {'CANCELLED'}
+        run.import_scene = lambda max_path, result, pack_name: self._import_scene(context, max_path, result,
+                                                                                 pack_name)
+        window = context.window
         if window:
             window.cursor_set('WAIT')
         try:
-            for max_path, result, pack_path in resolved:
-                pack_name = os.path.basename(pack_path) if pack_path else ""
-                try:
-                    lines, rep = self._import_scene(context, max_path, result, pack_name)
-                except _UNREADABLE as e:
-                    failed.append("%s: %s" % (os.path.basename(max_path), e))
-                    continue
-                reports.append(rep)
-                for level, line in lines:
-                    self.report({level}, line)
-                    print("MaxDrop: " + line)
+            _drain(run.steps())
+        except _Stop as e:
+            self._report(run.lines)
+            return self._error(str(e))
+        except BaseException:
+            self._report(run.lines)  # the scenes imported before the error
+            raise
         finally:
             if window:
                 window.cursor_set('DEFAULT')
-        if not reports:
-            return self._error("Nothing imported. " + "; ".join(failed))
-        if len(reports) > 1 or failed:
-            from .build import report as build_report
-            build_report.publish_run(reports, failed)
-        for line in failed:
-            self.report({'WARNING'}, "Not imported: " + line)
-            print("MaxDrop: not imported: " + line)
+        self._report(run.lines)
         return {'FINISHED'}
 
+    def _report(self, lines):
+        for level, line in lines:
+            self.report({level}, line)
+
     def _import_scene(self, context, max_path, pack=None, pack_name=""):
-        """Read, describe and build one .max with its materials into a collection named after it in the active
-        collection, set the scene's render size and camera, then publish its import report (console and the text
-        "MaxDrop Report"). pack: archive.unpack()'s result when the scene came from a scene pack, pack_name the
-        archive's file name. ([(report level, line)], the convert.report.Report), the report's summary last; one of
-        _UNREADABLE when the file cannot be read. A build that fails is removed again (objects, collections, meshes,
-        curves, lights, cameras, materials, images) before the exception goes on."""
-        from .build import cameras as build_cameras
-        from .build import collections as build_collections
-        from .build import materials as build_materials
-        from .build import modifiers as build_modifiers
-        from .build import objects as build_objects
-        from .build import report as build_report
-        from .convert import cameras, colors
-        from .convert import report as convert_report
-        from .convert import scene as convert_scene
-        from .reader import assets, cfb, units
-        from .reader import scene as reader_scene
-        name = os.path.basename(max_path)
-        materials = 'MATERIAL' in self.object_filter
-        with cfb.CompoundFile(max_path) as cf:
-            sc = reader_scene.Scene.from_file(cf)
-            unit = units.system_unit(sc)
-            meters, note = _meters(self.units, unit, self.scale_objects)
-            table = assets.AssetTable.from_file(cf)
-            desc = convert_scene.describe(sc, meters, unit, convert_modifiers=self.modifiers == 'KEEP',
-                                          assets=table, views=cameras.saved_views(cf))
-            slots, counts, failed = None, None, []
-            if materials:
-                try:
-                    slots, counts = _material_slots(sc, desc, table, max_path, context, self.use_image_search)
-                except Exception as e:  # a material rule's bug costs the materials, never the scene
-                    print("MaxDrop: materials of %s not converted:\n%s" % (name, traceback.format_exc()), end="")
-                    failed.append(("materials", "not converted (%s: %s): the scene is imported without materials"
-                                   % (type(e).__name__, e)))
-            # light colors follow the swatch rule too; converted materials bring its note to the report
-            light_note = colors.of_scene(sc).note if desc.lights and counts is None else ""
-            del sc  # the Scene holds the inflated stream of a compressed file
-        if 'UV' not in self.object_filter:
-            for md in desc.meshes.values():
-                md.uv_layers = []
-        view_layer = context.view_layer
-        before = {kind: {d.as_pointer() for d in getattr(bpy.data, kind)} for kind in _MADE}
-        cols = build_collections.make(desc, view_layer.active_layer_collection.collection, os.path.splitext(name)[0])
-        builder = build_materials.MaterialBuilder()
-        try:
-            built = build_objects.build(desc, cols.root, cols, view_layer, slots=slots,
-                                        material=builder.make if materials else None,
-                                        light_strength=self.light_strength)
-            settings_skipped = build_modifiers.add(desc, built)
-            kept = build_objects.track_targets(desc, built) if self.keep_targets else []
-            build_collections.finish(cols, view_layer)
-            build_cameras.set_render(context.scene, desc, built)  # last: a failed build leaves the scene's alone
-        except BaseException:
-            _remove(cols, before)
-            raise
-        del slots
-        rep = convert_report.gather(desc, source=name, objects_built=len(built.objects),
-                                    meshes_built=len(built.meshes), curves_built=len(built.curves),
-                                    lights_built=len(built.lights), cameras_built=len(built.cameras),
-                                    dropped_uv_layers=built.dropped_uv_layers,
-                                    pack=pack, pack_name=pack_name)
-        if settings_skipped:
-            rep.issues.append(("modifiers", "%d settings not on Blender %s, not set" % (settings_skipped,
-                                                                                       bpy.app.version_string)))
-        names = {node.index: node.name or "object %d" % node.index for node in desc.nodes}
-        rep.issues.extend((names[i], "Keep Targets: no Track To, the rotation stays fixed: %s" % reason)
-                          for i, reason in kept)
-        if light_note:
-            rep.issues.append(("color swatches", light_note))
-        if materials:
-            conv_stats, tex_stats, lookup, swatches = counts or (None, None, None, None)
-            made = sum(m is not None for m in built.materials.values())
-            convert_report.add_materials(rep, made, builder.classes, conv_stats=conv_stats,
-                                         tex_stats=tex_stats, lookup=lookup, sockets=builder.sockets_skipped,
-                                         blender=bpy.app.version_string, swatches=swatches,
-                                         build_issues=failed + builder.issues())
-        del desc
-        axis = axis_conversion(from_forward=self.axis_forward, from_up=self.axis_up).to_4x4()
-        if axis != Matrix.Identity(4):
-            for ob in built.roots():
-                ob.matrix_basis = axis @ ob.matrix_basis
-            # the target's own Z (use_target_z) turns with the scene; the world's does not, which matters only when
-            # the file's up does not stay Blender's Z
-            if tuple(axis.col[2][:3]) != (0.0, 0.0, 1.0) and any(
-                    c.name == build_objects.TRACK_TO_NAME and not c.use_target_z
-                    for ob in built.objects.values() for c in ob.constraints):
-                rep.issues.append(("Keep Targets", "Track To keeps Blender's Z up, not the converted axes' up"))
-        lines = [('WARNING', "%s %s" % (name, note))] if note else []
-        lines.append(build_report.publish(rep))
-        return lines, rep
+        """One .max imported at once (_scene_steps): ([(report level, line)], the convert.report.Report); one of
+        _UNREADABLE when the file cannot be read."""
+        return _drain(_scene_steps(ImportOptions.of(self), context.scene, context.view_layer, max_path, pack,
+                                   pack_name, prefs.texture_dirs(context)))
 
     def invoke(self, context, event):
         # A filepath remembered from an earlier run is not "set": only a drop's or a caller's own path is listed.
@@ -744,6 +1070,141 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
                 if _norm(path) not in listed and os.path.isfile(path):
                     _remember_preflight(path)
         return self.invoke_popup(context)
+
+
+class MAXDROP_OT_import_progress(bpy.types.Operator):
+    """Run an import started from a window: progress in the status bar, Esc to cancel"""
+    bl_idname = "maxdrop.import_progress"
+    bl_label = "Import .max (MaxDrop)"
+    bl_options = {'UNDO', 'INTERNAL'}
+
+    run_key: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
+
+    def invoke(self, context, event):
+        run = _RUNS.pop(self.run_key, None)
+        if run is None or context.window is None or _busy():
+            return {'CANCELLED'}
+        self._run, self._steps, self._timer = run, run.steps(threaded=True), None
+        run.close = self._steps.close
+        wm = context.window_manager
+        try:
+            wm.progress_begin(0, _PROGRESS_STEPS)
+            self._show(context)
+            self._timer = wm.event_timer_add(_TICK, window=context.window)
+            _ACTIVE.append(run)
+            _guard(True)
+            wm.modal_handler_add(self)
+        except Exception:
+            traceback.print_exc()
+            self._teardown(context)
+            return {'CANCELLED'}
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        try:
+            if self._run.stopped:  # an undo, redo or file load in another window closed it (_stop_active)
+                return self._finish(context, cancelled=True)
+            if event.type == 'ESC' and event.value == 'PRESS':
+                return self._finish(context, cancelled=True)
+            if event.type != 'TIMER':
+                # Swallowed: an undo, a delete or a file load meanwhile would free the datablocks the run holds.
+                return {'RUNNING_MODAL'}
+            end = time.monotonic() + _SLICE
+            try:
+                while time.monotonic() < end:
+                    if next(self._steps) is _WAIT:
+                        break
+            except StopIteration:
+                return self._finish(context)
+            except _Stop as e:
+                return self._finish(context, error=str(e))
+            self._flush()
+            self._show(context)
+            return {'PASS_THROUGH'}  # other timers' events reach their owners
+        except Exception as e:
+            traceback.print_exc()
+            try:
+                self._steps.close()  # suspended mid-build when the error came from _flush() or _show()
+                self._run.undo()
+                kept = "nothing was kept"
+            except Exception:
+                traceback.print_exc()
+                kept = "not everything it made could be removed"
+            return self._finish(context, error="Import failed, %s (%s: %s)" % (kept, type(e).__name__, e))
+
+    def cancel(self, context):
+        # Blender ends the run (a window closed, a file loaded): nothing it made stays.
+        self._finish(context, cancelled=True)
+
+    def _show(self, context):
+        context.window_manager.progress_update(int(self._run.fraction * _PROGRESS_STEPS))
+        if context.workspace is not None:
+            context.workspace.status_text_set("MaxDrop: %s (Esc to cancel)" % (self._run.text or "importing"))
+
+    def _flush(self):
+        lines, self._run.lines = self._run.lines, []
+        for level, line in lines:
+            self.report({level}, line)
+
+    def _teardown(self, context):
+        """Idempotent. The run leaves _ACTIVE first: an error below must never block the next import."""
+        if self._run in _ACTIVE:
+            _ACTIVE.remove(self._run)
+        if not _ACTIVE:
+            _guard(False)
+        wm = context.window_manager
+        timer, self._timer = self._timer, None
+        workspace = context.workspace
+        for step in (lambda: timer is not None and wm.event_timer_remove(timer), wm.progress_end,
+                     lambda: workspace is not None and workspace.status_text_set(None)):
+            try:
+                step()
+            except Exception:
+                traceback.print_exc()
+
+    def _finish(self, context, cancelled=False, error=None):
+        self._teardown(context)
+        if cancelled:
+            try:
+                self._steps.close()
+                done = "nothing was kept"
+            except Exception:
+                traceback.print_exc()
+                done = "not everything it made could be removed (see the console)"
+            self._run.lines = []
+            self.report({'WARNING'}, "Import cancelled: " + done)
+            print("MaxDrop: import cancelled, " + done)
+            return {'CANCELLED'}
+        self._flush()
+        if error is not None:
+            self.report({'ERROR'}, error)
+            print("MaxDrop: " + error)
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+@bpy.app.handlers.persistent
+def _stop_active(*_args):
+    """undo_pre, redo_pre and load_pre while a run is active: the run removes what it made before the data it holds
+    is freed. The runner swallows the events of its own window only, not those of another window."""
+    for run in list(_ACTIVE):
+        run.stopped = True
+        try:
+            run.close()
+        except Exception:
+            traceback.print_exc()
+
+
+_GUARDED = ("undo_pre", "redo_pre", "load_pre")
+
+
+def _guard(on):
+    for name in _GUARDED:
+        handlers = getattr(bpy.app.handlers, name)
+        if on and _stop_active not in handlers:
+            handlers.append(_stop_active)
+        elif not on and _stop_active in handlers:
+            handlers.remove(_stop_active)
 
 
 def import_pack(layout, operator, packs):
@@ -825,6 +1286,7 @@ def import_include(layout, operator):
         layout.column().prop(operator, "object_filter")
         layout.prop(operator, "modifiers")
         layout.prop(operator, "light_strength")
+        layout.prop(operator, "text_encoding")
 
 
 def import_transform(layout, operator):
@@ -854,7 +1316,7 @@ def menu_func(self, context):
     self.layout.operator(IMPORT_SCENE_OT_maxdrop.bl_idname, text="MaxDrop (.max, .zip, .rar, .7z)")
 
 
-_classes = (IMPORT_SCENE_OT_maxdrop, IO_FH_maxdrop)
+_classes = (IMPORT_SCENE_OT_maxdrop, MAXDROP_OT_import_progress, IO_FH_maxdrop)
 
 
 def register():
@@ -864,6 +1326,7 @@ def register():
 
 
 def unregister():
+    _guard(False)
     bpy.types.TOPBAR_MT_file_import.remove(menu_func)
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)

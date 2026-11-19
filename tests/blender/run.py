@@ -62,18 +62,22 @@ Materials (build.materials through the operator): each face on its material's sl
 the 3ds Max material, its Principled inputs equal to the MaterialIR the same file converts to (values, or linked when
 a texture graph drives them), the render method, one Image Texture node per file; vray_maps' Mapping values by hand
 from its authoring script, texture nodes without an image and each missing file listed once by name; vray_maps,
-texmap_rules, corona_maps, corona_light and vray_texmaps copied beside generated PNGs load every image in its color
-space, one datablock per file and color space, the report counts every file as found; hand-made IRs check shared
-images, a missing file, the materials counted by class, Thin Wall (set on 5.x, counted on 4.x), a name clash,
-BLENDED / DITHERED and every node kind; a crop repeating per axis (wrap, ping-pong, clip), map channel 0 drawn on
+texmap_rules, corona_maps, corona_light, vray_texmaps and texmap_wrappers copied beside generated PNGs load every
+image in its color space, one datablock per file and color space, the report counts every file as found (and
+texmap_wrappers draws each wrapper with its nodes: Layer Weight, Fresnel, blend types, Separate / Combine Color);
+hand-made IRs check shared images, a missing file, the materials counted by class, Thin Wall (set on 5.x, counted on
+4.x), a name clash, BLENDED / DITHERED and every node kind, the wrappers' links and values (Facing, blend modes and
+masks, rewiring, Adjust, Tint); a crop repeating per axis (wrap, ping-pong, clip), map channel 0 drawn on
 channel 1 and reported, a texture file without image data reported, a material whose build raises removed and
 reported; a material conversion that raises leaves the scene imported without materials, the report says why.
 Images already in the file (an earlier import's) are reused by file and color space, unless modified, packed,
 generated or linked from a library; vray_maps imported twice with its textures adds no image the second time.
+The performance budget of one big mesh (tests/blender/bench.py) runs last, without file arguments.
 Prints `FIXTURES PASSED` (exit 0) or `FIXTURES FAILED` (exit 1).
 """
 import collections
 import glob
+import importlib.util
 import json
 import math
 import os
@@ -111,7 +115,11 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
     "stack_basic": ["UVMap"],  # FixtureTurbo's UVW Map writes channel 1; no other modifier is applied
     "stack_convert": ["UVMap"],  # the modifiers become Blender modifiers on the base meshes
     "standard_physical": ["UVMap"],
+    "saved_as_2017": ["UVMap"],
+    "saved_as_2018": ["UVMap"],
+    "saved_as_2019": ["UVMap"],
     "texmap_rules": ["UVMap"],
+    "texmap_wrappers": ["UVMap"],
     "units_cm": ["UVMap"],
     "units_in": ["UVMap"],
     "units_mm": ["UVMap"],
@@ -1024,13 +1032,20 @@ def _fold(n, present):
     if isinstance(n, tx.ColorCorrect):
         v = _fold(n.input, present)
         changes = n.hue % 1.0 != 0.0 or n.saturation != 1.0 or n.brightness or n.contrast or n.gain != 1.0 \
-            or n.gamma != 1.0
+            or n.gamma != 1.0 or tuple(n.rewire) != tx.REWIRE_NONE
         return v if v is LOST or not changes else MAP
+    if isinstance(n, (tx.Adjust, tx.Tint)):  # made only when they change something: nodes
+        v = _fold(n.input, present)
+        return LOST if v is LOST else MAP
+    if isinstance(n, tx.Facing):
+        return MAP
     if isinstance(n, tx.Composite):
-        layers = [(v, o) for v, o in ((_fold(layer, present), o) for layer, o in n.layers) if v is not LOST]
+        layers = [(v, la) for v, la in ((_fold(la.node, present), la) for la in n.layers) if v is not LOST]
         if not layers:
             return LOST
-        return layers[0][0] if len(layers) == 1 and layers[0][1] >= 1.0 else MAP
+        v, la = layers[0]
+        masked = la.mask is not None and _fold(la.mask, present) is not LOST
+        return v if len(layers) == 1 and la.opacity >= 1.0 and not masked else MAP
     image = tx.first_image(n)
     return _fold(image, present) if image is not None else LOST
 
@@ -1231,14 +1246,14 @@ def check_failed_build_cleanup(max_path):
     keep_material = bpy.data.materials.new("UserMaterial")
     keep_image = bpy.data.images.new("UserImage", 2, 2)
     before = ({m.as_pointer() for m in bpy.data.materials}, {i.as_pointer() for i in bpy.data.images})
-    original, made = build_objects.build, []
+    original, made = build_objects.build_steps, []
 
     def failing(*args, **kwargs):
-        built = original(*args, **kwargs)
+        built = yield from original(*args, **kwargs)
         made.append((len(built.materials), len(bpy.data.images)))
         raise RuntimeError("maxdrop test: build fails")
 
-    build_objects.build = failing
+    build_objects.build_steps = failing
     try:
         try:
             bpy.ops.import_scene.maxdrop(filepath=max_path)
@@ -1246,7 +1261,7 @@ def check_failed_build_cleanup(max_path):
         except RuntimeError:
             raised = True
     finally:
-        build_objects.build = original
+        build_objects.build_steps = original
     after = ({m.as_pointer() for m in bpy.data.materials}, {i.as_pointer() for i in bpy.data.images})
     check("failed build: materials and images were made before it failed",
           raised and made and made[0][0] > 0 and made[0][1] > len(before[1]), str(made))
@@ -1266,8 +1281,249 @@ def _write_png(path):
     bpy.data.images.remove(img)
 
 
+CANCEL_KINDS = ("objects", "meshes", "curves", "lights", "cameras", "materials", "images", "collections", "texts",
+                "node_groups")
+
+
+def _state():
+    """What a cancelled run must leave as it found it: the datablocks of each kind, the scene camera, render size."""
+    r = bpy.context.scene.render
+    return ({kind: sorted(b.as_pointer() for b in getattr(bpy.data, kind)) for kind in CANCEL_KINDS},
+            bpy.context.scene.camera, (r.resolution_x, r.resolution_y, r.resolution_percentage, r.pixel_aspect_x,
+                                       r.pixel_aspect_y))
+
+
+def _cancel_run(paths):
+    from maxdrop import ops
+    opts = ops.ImportOptions(units='AUTO', scale_objects=1.0, use_image_search=True, object_filter={'MATERIAL', 'UV'},
+                             modifiers='KEEP', light_strength=ops.LIGHT_STRENGTH, keep_targets=False,
+                             axis_forward='Y', axis_up='Z')
+    return ops._Run(opts, list(paths), {}, bpy.context)
+
+
+def _advance(steps, until, limit=100000):
+    """next() on steps until until() holds (a short sleep while a worker thread reads); whether it held before the
+    run ended."""
+    import time
+    from maxdrop import ops
+    for _ in range(limit):
+        if until():
+            return True
+        try:
+            if next(steps) is ops._WAIT:
+                time.sleep(0.005)
+        except StopIteration:
+            return False
+    return False
+
+
+def check_cancel(textured, other):
+    """The modal import's step generator (ops._Run.steps), driven without a window: closed early (Esc) it leaves
+    the datablocks, the scene camera and the render size as they were, the user's own material and image too. textured:
+    a .max whose textures are found (materials and images are made); other: a .max with a camera (it sets the scene
+    camera and render size)."""
+    empty_scene()
+    for img in list(bpy.data.images):
+        bpy.data.images.remove(img)
+    keep_material = bpy.data.materials.new("UserMaterial")
+    keep_image = bpy.data.images.new("UserImage", 2, 2)
+    before = _state()
+    images = len(bpy.data.images)
+
+    run = _cancel_run([textured])
+    steps = run.steps()
+    held = _advance(steps, lambda: len(bpy.data.images) > images)
+    made = len(bpy.data.objects), len(bpy.data.materials), len(bpy.data.images)
+    steps.close()
+    check("cancel: one file closed during its build, after materials and images were made", held, str(made))
+    check("cancel: one file: every datablock it made is removed, the user's stay", _state() == before,
+          "%s | %s" % (_state(), before))
+
+    run = _cancel_run([other, textured])
+    steps = run.steps()
+    held = _advance(steps, lambda: len(run._made) == 1 and len(bpy.data.images) > images)
+    camera = bpy.context.scene.camera
+    camera = camera is not None and camera.type == 'CAMERA'
+    steps.close()
+    check("cancel: two files closed in the second one's build, the first one finished with its camera",
+          held and camera)
+    check("cancel: two files: both removed, the report text too, the scene camera and render size put back",
+          _state() == before, "%s | %s" % (_state(), before))
+
+    run = _cancel_run([textured])
+    steps = run.steps(threaded=True)
+    from maxdrop import ops
+    waited = next(steps) is ops._WAIT
+    steps.close()
+    check("cancel: threaded, closed while the worker reads: nothing made", waited and _state() == before)
+    run = _cancel_run([other, textured])
+    steps = run.steps(threaded=True)
+    held = _advance(steps, lambda: len(run._made) == 1 and len(bpy.data.objects) > len(before[0]["objects"]) + 1)
+    steps.close()
+    check("cancel: threaded, two files closed in the second one's build: nothing left",
+          held and _state() == before, "%s | %s" % (_state(), before))
+
+    run = _cancel_run([other, textured])
+    steps = run.steps(threaded=True)
+    ended = not _advance(steps, lambda: False)
+    report = bpy.data.texts.get("MaxDrop Report")
+    check("cancel: threaded, run to its end: both files imported, the run's report written",
+          ended and len(run._made) == 2 and bpy.context.scene.camera is not None and report is not None
+          and report.as_string().count("MaxDrop import report: ") == 2,
+          "%s %d %s" % (ended, len(run._made), report and report.as_string()[:200]))
+    run.undo()
+    check("cancel: undo() after a finished run removes it", _state() == before, "%s | %s" % (_state(), before))
+    bpy.data.materials.remove(keep_material)
+    bpy.data.images.remove(keep_image)
+
+
+def check_run_guards(textured):
+    """The modal runner's safety nets without a window: an undo or file load elsewhere closes the active run
+    (ops._stop_active), the runner's teardown never leaves a run active even when the window manager raises, the
+    windowed import keeps its settings as the last-used ones (ops._store_last), and a cancelled read still running
+    keeps the next import waiting (ops._busy)."""
+    import threading
+    import types
+    from maxdrop import ops
+    empty_scene()
+    before = _state()
+    run = _cancel_run([textured])
+    steps = run.steps()
+    run.close = steps.close
+    held = _advance(steps, lambda: len(bpy.data.objects) > 0)
+    ops._ACTIVE.append(run)
+    ops._guard(True)
+    try:
+        guarded = all(ops._stop_active in getattr(bpy.app.handlers, n) for n in ops._GUARDED)
+        ops._stop_active()
+        check("guards: an undo or file load elsewhere closes the active run, nothing left",
+              held and guarded and run.stopped and _state() == before, "%s | %s" % (_state(), before))
+
+        def raising(*_args):
+            raise RuntimeError("maxdrop test: window manager fails")
+
+        wm = types.SimpleNamespace(event_timer_remove=raising, progress_end=raising)
+        context = types.SimpleNamespace(window_manager=wm, workspace=types.SimpleNamespace(status_text_set=raising))
+        runner = types.SimpleNamespace(_run=run, _timer=object())
+        ops.MAXDROP_OT_import_progress._teardown(runner, context)
+        check("guards: teardown with a failing window manager: no run active, the handlers removed",
+              not ops._ACTIVE and not any(ops._stop_active in getattr(bpy.app.handlers, n) for n in ops._GUARDED)
+              and runner._timer is None and not ops._busy())
+    finally:
+        ops._ACTIVE.clear()
+        ops._guard(False)
+
+    source = types.SimpleNamespace(units='CENTIMETERS', scale_objects=2.0, light_strength=2.5, keep_targets=True,
+                                   modifiers='IGNORE', object_filter={'UV'}, pack_scene="not kept")
+    ops._store_last(source, bpy.context.window_manager)
+    last = bpy.context.window_manager.operator_properties_last("import_scene.maxdrop")
+    check("guards: the windowed import's settings kept as the last-used ones (Scene is not)",
+          last.units == 'CENTIMETERS' and abs(last.scale_objects - 2.0) < 1e-6 and abs(last.light_strength - 2.5) < 1e-6
+          and last.keep_targets and last.modifiers == 'IGNORE' and set(last.object_filter) == {'UV'}
+          and last.pack_scene == "",
+          "%s %s %s %s %s %s %r" % (last.units, last.scale_objects, last.light_strength, last.keep_targets,
+                                    last.modifiers, set(last.object_filter), last.pack_scene))
+    for name in ("units", "scale_objects", "light_strength", "keep_targets", "modifiers", "object_filter"):
+        last.property_unset(name)
+
+    release = threading.Event()
+    steps = ops._in_thread(release.wait, 30)
+    waited = next(steps) is ops._WAIT
+    steps.close()
+    busy = ops._busy()
+    release.set()
+    for worker in list(ops._WORKERS):
+        worker.join(10)
+    check("guards: a cancelled read still running keeps the next import waiting, until it ends",
+          waited and "still reading" in busy and ops._busy() == "", busy)
+
+
+def check_worker_errors():
+    """ops._in_thread() hands the worker's outcome to the main thread: its value; an Exception unchanged; a SystemExit
+    as a RuntimeError caused by it, so that the modal runner's except Exception still tears the run down."""
+    from maxdrop import ops
+
+    def outcome(fn):
+        try:
+            return ops._drain(ops._in_thread(fn))
+        except BaseException as e:  # a SystemExit let through must fail this check, not end Blender
+            return e
+
+    def exits():
+        raise SystemExit(3)
+
+    def fails():
+        raise ValueError("maxdrop test: read fails")
+
+    got = outcome(lambda: 42)
+    check("worker errors: a worker's value is returned", got == 42, repr(got))
+    got = outcome(fails)
+    check("worker errors: a worker's ValueError is raised unchanged",
+          type(got) is ValueError and str(got) == "maxdrop test: read fails", repr(got))
+    got = outcome(exits)
+    check("worker errors: a worker's SystemExit is raised as a RuntimeError caused by it",
+          type(got) is RuntimeError and type(got.__cause__) is SystemExit and got.__cause__.code == 3,
+          "%r from %r" % (got, getattr(got, "__cause__", None)))
+
+
+def check_pack_cancel(fixture):
+    """The threaded unpack of a .zip pack as the run's first step: closed while it unpacks, no staging folder and no
+    pack folder are left; closed during the build after it, the finished pack folder stays and nothing in Blender;
+    run to its end, the unpack's summary is reported."""
+    import time
+    import zipfile
+    from maxdrop import ops
+    archive = ops._archive()
+    empty_scene()
+    before = _state()
+    scratch = tempfile.mkdtemp(prefix="maxdrop-pack-cancel-")
+    original = archive.unpack
+    try:
+        pack = os.path.join(scratch, "pack.zip")
+        with zipfile.ZipFile(pack, "w") as z:
+            z.write(fixture, "pack/" + os.path.basename(fixture))
+        scene = "pack/" + os.path.basename(fixture)
+
+        def slow(*args, watch=None, **kwargs):
+            def slowed(n):
+                time.sleep(0.3)  # the close below comes while the scene is being written
+                watch(n)
+            return original(*args, watch=slowed, **kwargs)
+
+        archive.unpack = slow
+        run = ops._Run(_cancel_run([pack]).opts, [pack], {pack: scene}, bpy.context)
+        steps = run.steps(threaded=True)
+        waited = next(steps) is ops._WAIT
+        steps.close()
+        archive.unpack = original
+        check("pack cancel: closed while it unpacks: only the archive is left, nothing in Blender",
+              waited and os.listdir(scratch) == ["pack.zip"] and _state() == before,
+              "%s %s" % (os.listdir(scratch), run.text))
+
+        run = ops._Run(_cancel_run([pack]).opts, [pack], {pack: scene}, bpy.context)
+        steps = run.steps(threaded=True)
+        held = _advance(steps, lambda: len(bpy.data.objects) > 0)
+        steps.close()
+        folder = os.path.join(scratch, "pack")
+        check("pack cancel: closed during the build: the finished pack folder stays, nothing in Blender",
+              held and os.path.isfile(os.path.join(folder, os.path.basename(fixture)))
+              and os.path.isfile(os.path.join(folder, archive.MARKER)) and _state() == before,
+              "%s %s" % (sorted(os.listdir(scratch)), held))
+
+        run = ops._Run(_cancel_run([pack]).opts, [pack], {pack: scene}, bpy.context)
+        ended = not _advance(run.steps(threaded=True), lambda: False)
+        check("pack cancel: run to its end: the unpack's summary reported, the scene imported",
+              ended and any(level == 'INFO' and line.startswith("pack.zip: ") for level, line in run.lines)
+              and len(run._made) == 1, str(run.lines[:2]))
+        run.undo()
+    finally:
+        archive.unpack = original
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def check_found_textures():
-    """vray_maps, texmap_rules, corona_maps, corona_light and vray_texmaps copied beside a PNG for each texture name:
+    """vray_maps, texmap_rules, corona_maps, corona_light, vray_texmaps and texmap_wrappers copied beside a PNG for
+    each texture name:
     every Image Texture node gets its file, in the color space the IR asks for, one datablock per file and color
     space; the report lists no texture."""
     from maxdrop.convert import texmaps as tx
@@ -1275,7 +1531,7 @@ def check_found_textures():
     scratch = tempfile.mkdtemp(prefix="maxdrop-textures-")
     linear = []  # the images the IR puts in Linear Rec.709, over every fixture
     try:
-        for name in ("vray_maps", "texmap_rules", "corona_maps", "corona_light", "vray_texmaps"):
+        for name in ("vray_maps", "texmap_rules", "corona_maps", "corona_light", "vray_texmaps", "texmap_wrappers"):
             empty_scene()
             for ob in list(bpy.data.images):
                 bpy.data.images.remove(ob)
@@ -1326,6 +1582,9 @@ def check_found_textures():
                 for img in list(bpy.data.images):
                     bpy.data.images.remove(img)
                 check_failed_build_cleanup(dst)
+                check_cancel(dst, os.path.join(fixtures, "cameras.max"))
+                check_run_guards(dst)
+                check_pack_cancel(os.path.join(fixtures, "cameras.max"))
             if name == "texmap_rules":
                 m = bpy.data.materials["FixtureTexPlace"]
                 cropped = next(n for n in m.node_tree.nodes if n.bl_idname == "ShaderNodeTexImage"
@@ -1346,6 +1605,8 @@ def check_found_textures():
                 kinds = {n.bl_idname for n in keep.node_tree.nodes}
                 check("texmap_rules: Mix with a mask, Multiply, Color Correction as nodes",
                       {"ShaderNodeMix", "ShaderNodeHueSaturation", "ShaderNodeGamma"} <= kinds, str(sorted(kinds)))
+            if name == "texmap_wrappers":
+                check_wrapper_nodes()
         check("found textures: a linear color image (VRayBitmap transfer function None) imported in Linear Rec.709",
               "vtx_linear.png" in linear, str(linear))
     finally:
@@ -1393,7 +1654,8 @@ def check_builder():
         b = cm.MaterialIR(11, "Clash", "test", alpha=cm.Input(1.0, cm.MapRef(2)),
                           emission_color=cm.Input((1.0, 0.5, 0.0), cm.MapRef(3)), emission_strength=2.0)
         b.textures = {"alpha": graph(lost, tx.DATA),
-                      "emission_color": graph(tx.ColorCorrect(tx.Composite(((placed, 1.0), (gamma, 0.5))),
+                      "emission_color": graph(tx.ColorCorrect(tx.Composite((tx.CompositeLayer(placed, 1.0),
+                                                                             tx.CompositeLayer(gamma, 0.5))),
                                                               hue=0.25, saturation=1.5, brightness=0.1,
                                                               contrast=0.2, gain=1.2, gamma=1.1), tx.COLOR),
                       "normal": graph(tx.NormalMap(data, 0.7, flip_red=True, flip_green=True, swap=True,
@@ -1446,6 +1708,7 @@ def check_builder():
               and close(list(dot.inputs[1].default_value), [1 / 6.0] * 3, 1e-6))
         check("builder: the viewport color is the base color", close(list(ma.diffuse_color)[:3], [0.5] * 3, 1e-6))
         check_builder_wiring(ma, mb, builder, cm, tx, srgb, data, lost, gamma)
+        check_wrapper_wiring(builder, cm, tx, srgb, data)
     finally:
         empty_scene()
         for img in list(bpy.data.images):
@@ -1932,11 +2195,11 @@ def check_builder_wiring(ma, mb, builder, cm, tx, srgb, data, lost, gamma):
     uv = _from(place.inputs["Vector"])
     from maxdrop.build import materials as build_materials
     want = build_materials.uv_transform(tx.Mapping(tiling=(2.0, 1.0), angle=(0.0, 0.0, 0.5)))
-    check("wiring: Output: inverted, times 2 plus 0.1, times 0.5",
+    check("wiring: Output: inverted, times 2 minus 0.1 (3ds Max's offset under an invert), times 0.5",
           amount.operation == 'SCALE' and abs(_input(amount, "Scale").default_value - 0.5) < 1e-6
           and level.operation == 'MULTIPLY_ADD' and close(list(_input(level, "Vector_001").default_value), [2.0] * 3,
                                                           1e-6)
-          and close(list(_input(level, "Vector_002").default_value), [0.1] * 3, 1e-6)
+          and close(list(_input(level, "Vector_002").default_value), [-0.1] * 3, 1e-6)
           and out_inv.bl_idname == "ShaderNodeInvert")
     check("wiring: a placed crop mirrored both ways: UVChannel_2 -> placement -> ping-pong per axis -> Mapping "
           "TEXTURE at (0.1, 0.3) x 0.5",
@@ -1981,6 +2244,154 @@ def check_builder_wiring(ma, mb, builder, cm, tx, srgb, data, lost, gamma):
           and close(list(pd.inputs["Base Color"].default_value)[:3], [0.1, 0.2, 0.3], 1e-6)
           and not any(o.is_linked for n in md.node_tree.nodes if n.bl_idname == "ShaderNodeTexImage" for o in n.outputs)
           and len([n for n in md.node_tree.nodes if n.bl_idname == "ShaderNodeTexImage"]) == 1)
+
+
+def _node_kinds(material):
+    """{bl_idname, and bl_idname:operation or :blend_type where a node has one} of a material's nodes."""
+    out = set()
+    for n in material.node_tree.nodes:
+        out.add(n.bl_idname)
+        for attr in ("operation", "blend_type"):
+            if hasattr(n, attr):
+                out.add("%s:%s" % (n.bl_idname, getattr(n, attr)))
+    return out
+
+
+def check_wrapper_nodes():
+    """texmap_wrappers imported with its textures found: the node types and links each wrapper is drawn with."""
+    wants = {
+        "FixtureWrapFalloff": {"ShaderNodeLayerWeight", "ShaderNodeFresnel", "ShaderNodeNewGeometry",
+                               "ShaderNodeVectorMath:DOT_PRODUCT", "ShaderNodeMath:MULTIPLY_ADD", "ShaderNodeMix:MIX"},
+        "FixtureWrapComposite": {"ShaderNodeMix:MULTIPLY", "ShaderNodeMix:OVERLAY", "ShaderNodeMix:SCREEN",
+                                 "ShaderNodeMix:ADD", "ShaderNodeLayerWeight", "ShaderNodeMath:MULTIPLY"},
+        "FixtureWrapColor": {"ShaderNodeInvert", "ShaderNodeSeparateColor", "ShaderNodeCombineColor",
+                             "ShaderNodeVectorMath:DOT_PRODUCT", "ShaderNodeMath:SUBTRACT", "ShaderNodeBrightContrast"},
+        "FixtureWrapOutput": {"ShaderNodeVectorMath:MULTIPLY_ADD", "ShaderNodeVectorMath:SCALE",
+                              "ShaderNodeVectorMath:ADD", "ShaderNodeSeparateColor", "ShaderNodeInvert"},
+    }
+    for name, want in wants.items():
+        m = bpy.data.materials.get(name)
+        kinds = _node_kinds(m) if m is not None else set()
+        check("texmap_wrappers/%s: its wrappers' nodes" % name, want <= kinds, str(sorted(want - kinds)))
+    p = _principled(bpy.data.materials["FixtureWrapFalloff"])
+    mix = _from(p.inputs["Base Color"])
+    side = _from(_input(mix, "A_Color"))
+    check("texmap_wrappers: the Falloff's side 1 is lerp(color 1, its map, 0.6), by Layer Weight Facing",
+          _from(_input(mix, "Factor_Float")).bl_idname == "ShaderNodeLayerWeight" and side.bl_idname == "ShaderNodeMix"
+          and abs(_input(side, "Factor_Float").default_value - 0.6) < 1e-6
+          and _from(_input(side, "B_Color")).bl_idname == "ShaderNodeTexImage")
+    p = _principled(bpy.data.materials["FixtureWrapComposite"])
+    top = _from(p.inputs["Base Color"])
+    screen = _from(_input(top, "B_Color"))
+    check("texmap_wrappers: the Composite's top layer: Screen, then a clamped Mix by 0.7 times its image's alpha",
+          screen.blend_type == 'SCREEN' and top.clamp_result
+          and _from(_input(top, "Factor_Float")).operation == 'MULTIPLY'
+          and abs(_from(_input(top, "Factor_Float")).inputs[1].default_value - 0.7) < 1e-6)
+
+
+def check_wrapper_wiring(builder, cm, tx, srgb, data):
+    """The nodes of the wrappers maxdrop-3gc.3 draws (Falloff's Facing, Composite blend modes and masks, Color
+    Correction rewiring, Adjust, Tint) on a hand-made IR, against the measured 3ds Max rules."""
+    L = tx.CompositeLayer
+    tinted = tx.Tint(srgb, (1.0, 0.5, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    adjusted = tx.Adjust(srgb, tx.TexOutput(level=2.0, offset=0.1))
+    custom = tx.ColorCorrect(srgb, rewire=(2, 4, tx.RW_MONO))
+    comp = tx.Composite((L(srgb), L(tinted, 0.5, tx.SCREEN, data), L(adjusted, 1.0, tx.SPOTLIGHT_BLEND),
+                         L(custom, 0.25, tx.HARD_LIGHT)))
+    w = cm.MaterialIR(14, "Wrappers", "test", base_color=cm.Input((0.5,) * 3, cm.MapRef(1)),
+                      roughness=cm.Input(0.4, cm.MapRef(1)), metallic=cm.Input(0.0, cm.MapRef(1)),
+                      emission_color=cm.Input((0.0,) * 3, cm.MapRef(1)), specular=cm.Input(0.5, cm.MapRef(1)),
+                      transmission=cm.Input(0.0, cm.MapRef(1)))
+    w.textures = {
+        "base_color": tx.TextureGraphIR(tx.Mix(tx.Constant((0.0,) * 3), srgb, 0.0, tx.Facing(tx.PERPENDICULAR)),
+                                        tx.COLOR),
+        "roughness": tx.TextureGraphIR(tx.Mix(tx.Constant(0.2), tx.Constant(0.8), 0.0, tx.Facing(tx.FRESNEL, 1.45)),
+                                       tx.DATA),
+        "metallic": tx.TextureGraphIR(tx.Mix(tx.Constant(0.0), tx.Constant(1.0), 0.0, tx.Facing(tx.TOWARDS)),
+                                      tx.DATA),
+        "emission_color": tx.TextureGraphIR(comp, tx.COLOR),
+        "specular": tx.TextureGraphIR(tx.ColorCorrect(srgb, rewire=tx.REWIRE_MONO), tx.COLOR),
+        "transmission": tx.TextureGraphIR(tx.ColorCorrect(srgb, rewire=tx.REWIRE_INVERT), tx.COLOR)}
+    mw = builder.make(w)
+    check("wrappers: material built", mw is not None)
+    if mw is None:
+        return
+    p = _principled(mw)
+    mix = _from(p.inputs["Base Color"])
+    lw = _from(_input(mix, "Factor_Float"))
+    check("wrappers: Falloff perpendicular / parallel: a Mix by Layer Weight Facing at blend 0.5",
+          mix.bl_idname == "ShaderNodeMix" and lw.bl_idname == "ShaderNodeLayerWeight"
+          and _input(mix, "Factor_Float").links[0].from_socket.identifier == "Facing"
+          and abs(_input(lw, "Blend").default_value - 0.5) < 1e-6
+          and _from(_input(mix, "B_Color")).bl_idname == "ShaderNodeTexImage")
+    mix = _from(p.inputs["Roughness"])
+    fr = _from(_input(mix, "Factor_Float"))
+    check("wrappers: Falloff Fresnel: a float Mix by the Fresnel node at IOR 1.45",
+          mix.bl_idname == "ShaderNodeMix" and mix.data_type == 'FLOAT' and fr.bl_idname == "ShaderNodeFresnel"
+          and abs(_input(fr, "IOR").default_value - 1.45) < 1e-6
+          and abs(_input(mix, "A_Float").default_value - 0.2) < 1e-6)
+    mix = _from(p.inputs["Metallic"])
+    ma = _from(_input(mix, "Factor_Float"))
+    dot = _from(ma.inputs[0]) if ma is not None else None
+    geo = {link.from_socket.identifier for s in dot.inputs for link in s.links} if dot is not None else set()
+    check("wrappers: Falloff towards / away: (1 - Normal . Incoming) / 2 of the Geometry node",
+          ma.bl_idname == "ShaderNodeMath" and ma.operation == 'MULTIPLY_ADD'
+          and (ma.inputs[1].default_value, ma.inputs[2].default_value) == (-0.5, 0.5)
+          and dot.operation == 'DOT_PRODUCT' and geo == {"Normal", "Incoming"})
+    dot = _from(_from(p.inputs["Specular IOR Level"]).inputs[0])
+    check("wrappers: Color Correction monochrome: the mean of the channels",
+          dot.bl_idname == "ShaderNodeVectorMath" and dot.operation == 'DOT_PRODUCT'
+          and close(list(_input(dot, "Vector_001").default_value), [1 / 3.0] * 3, 1e-6)
+          and _from(_input(dot, "Vector")).bl_idname == "ShaderNodeTexImage")
+    inv = _from(_from(p.inputs["Transmission Weight"]).inputs[0])
+    check("wrappers: Color Correction invert: an Invert node", inv.bl_idname == "ShaderNodeInvert")
+    top = _from(p.inputs["Emission Color"])
+    hard = _from(_input(top, "B_Color"))
+    comb = _from(_input(hard, "A_Color"))
+    third = _from(_input(hard, "B_Color"))
+    check("wrappers: Composite hard light at 25 %: Overlay with the layer as A over the result as B, then a clamped "
+          "Mix by 0.25",
+          top.blend_type == 'MIX' and top.clamp_result and abs(_input(top, "Factor_Float").default_value - 0.25) < 1e-6
+          and hard.blend_type == 'OVERLAY' and abs(_input(hard, "Factor_Float").default_value - 1.0) < 1e-6
+          and comb.bl_idname == "ShaderNodeCombineColor" and _from(_input(top, "A_Color")) == third)
+    red, green, blue = (_input(comb, k).links[0] for k in ("Red", "Green", "Blue"))
+    check("wrappers: Color Correction custom (B, 1 - R, mono): Separate / Combine Color",
+          red.from_socket.identifier == "Blue" and red.from_node.bl_idname == "ShaderNodeSeparateColor"
+          and green.from_node.operation == 'SUBTRACT' and green.from_node.inputs[1].links[0].from_socket.identifier
+          == "Red" and blue.from_node.operation == 'DOT_PRODUCT')
+    add = _from(_input(third, "B_Color"))
+    mul = _from(_input(add, "B_Color"))
+    adj = _from(_input(mul, "B_Color"))
+    second = _from(_input(third, "A_Color"))
+    check("wrappers: Composite spotlight blend: below + below x layer; the layer's Output times 2 plus 0.1",
+          third.clamp_result and abs(_input(third, "Factor_Float").default_value - 1.0) < 1e-6
+          and add.blend_type == 'ADD' and mul.blend_type == 'MULTIPLY' and _from(_input(add, "A_Color")) == second
+          and _from(_input(mul, "A_Color")) == second and adj.operation == 'MULTIPLY_ADD'
+          and close(list(_input(adj, "Vector_002").default_value), [0.1] * 3, 1e-6))
+    screen = _from(_input(second, "B_Color"))
+    factor = _from(_input(second, "Factor_Float"))
+    tint = _from(_input(screen, "B_Color"))
+    scales = [n for n in mw.node_tree.nodes if n.bl_idname == "ShaderNodeVectorMath" and n.operation == 'SCALE']
+    mean = _from(factor.inputs[0])
+    check("wrappers: Composite screen at 50 % with a mask: Screen of the Tint, Mix by mean(mask) x 0.5; Tint as "
+          "three scales and two adds",
+          screen.blend_type == 'SCREEN' and factor.operation == 'MULTIPLY'
+          and abs(factor.inputs[1].default_value - 0.5) < 1e-6 and getattr(mean, "operation", None) == 'DOT_PRODUCT'
+          and close(list(_input(mean, "Vector_001").default_value), [1 / 3.0] * 3, 1e-6)
+          and _from(_input(mean, "Vector")).image.colorspace_settings.name == "Non-Color"
+          and tint.operation == 'ADD' and len(scales) == 3
+          and any(close(list(_input(n, "Vector").default_value), [1.0, 0.5, 0.0], 1e-6) for n in scales)
+          and _from(_input(second, "A_Color")).bl_idname == "ShaderNodeTexImage")
+    missing = tx.Image(9, "nothere.png", "nothere.png", "", None, colorspace=tx.NON_COLOR)
+    lone = tx.Composite((L(tx.Constant(0.3)), L(missing, 1.0, tx.MULTIPLY_BLEND)))
+    f = cm.MaterialIR(15, "LoneLayer", "test", roughness=cm.Input(0.4, cm.MapRef(1)))
+    f.textures = {"roughness": tx.TextureGraphIR(tx.Invert(lone), tx.DATA)}
+    mf = builder.make(f)
+    rough = _principled(mf).inputs["Roughness"] if mf is not None else None
+    check("wrappers: a blended Composite left with one constant layer in a float input (a glossiness map under an "
+          "Invert) is that constant: 1 - 0.3",
+          rough is not None and not rough.is_linked and abs(rough.default_value - 0.7) < 1e-6,
+          "%s %s" % (mf, builder.issues()[-1:]))
 
 
 def check_layer_flags(modules):
@@ -2158,6 +2569,14 @@ def check_material_slots(modules):
           and all(v == [0] * 6 for v in faces.values()), "%s %s" % (got, faces))
 
 
+def _bench():
+    """tests/blender/bench.py, the performance budget of one big mesh (its own docstring says what it checks)."""
+    spec = importlib.util.spec_from_file_location("maxdrop_bench", os.path.join(ROOT, "tests", "blender", "bench.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def main():
     print("Blender " + bpy.app.version_string)
     sys.path.insert(0, ROOT)
@@ -2199,12 +2618,14 @@ def main():
                                  ("found textures", check_found_textures), ("builder", check_builder),
                                  ("builder debt", check_builder_debt), ("linear fallback", check_linear_fallback),
                                  ("image reuse", check_image_reuse), ("double import", check_double_import),
+                                 ("worker errors", check_worker_errors),
                                  ("conversion failure", lambda: check_conversion_failure(
                                      os.path.join(ROOT, "tests", "fixtures", "vray_maps.max"))),
                                  ("light note on failure", lambda: check_light_note_on_failure(
                                      os.path.join(ROOT, "tests", "fixtures", "vray_lights.max"))),
                                  ("asset table once", lambda: check_asset_table_once(
-                                     os.path.join(ROOT, "tests", "fixtures", "vray_lights.max")))):
+                                     os.path.join(ROOT, "tests", "fixtures", "vray_lights.max"))),
+                                 ("benchmark", lambda: _bench().run(check))):
             try:
                 run_check()
             except Exception:

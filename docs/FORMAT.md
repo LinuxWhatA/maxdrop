@@ -3,7 +3,8 @@
 What MaxDrop's reader (`maxdrop/reader/`) relies on, written down only once a committed fixture shows it. Each fact
 names the fixture (`tests/fixtures/<name>.max`, whose 3ds Max oracle is `<name>.oracle.json`, see
 [ORACLE.md](ORACLE.md)); the tests named here keep the facts true. Every fixture was saved by 3ds Max 2020 (file
-version 22000). What only other files have shown is listed under [Open](#open), not here.
+version 22000), in its own format but saved_as_2017, saved_as_2018 and saved_as_2019 (formats 19000, 20000,
+21000). What only other files have shown is listed under [Open](#open), not here.
 
 ## Chunks
 
@@ -11,7 +12,8 @@ version 22000). What only other files have shown is listed under [Open](#open), 
   whose payload is more chunks. Every chunked stream of every fixture (`Scene`, `ClassDirectory3`,
   `DllDirectory`, `Config`, `ClassData`, `VideoPostQueue`) indexes to the bottom with this rule
   (`tests/unit/test_chunks.py`).
-- Strings are UTF-16LE without a terminator (node names: `0x0962`, below).
+- Strings are UTF-16LE without a terminator (node names: `0x0962`, below). A file of 3ds Max 2012 or older
+  writes the same chunks as 8-bit text: see [Strings of older files](#strings-of-older-files).
 
 ## Class directory
 
@@ -24,10 +26,14 @@ version 22000). What only other files have shown is listed under [Open](#open), 
 
 ## Scene stream: the object index
 
-- The `Scene` stream is one top-level container, id `0x2025` in every fixture. Its children are the objects of
+- The `Scene` stream is one top-level container, id `0x2025` in every fixture of the 2020 format (the others:
+  below). Its children are the objects of
   the scene: the **object index** is a child's position, the child's chunk id is its **class index** into the
   class directory. Every child id of every fixture is a valid class index (`test_classdir.py`,
   `tests/unit/test_scene.py`).
+- The root container's id follows the format the file was saved in: `0x2022` saved_as_2017, `0x2023`
+  saved_as_2018 and saved_as_2019, `0x2025` 3ds Max 2020 (the oracle's `file_version`; `tests/unit/test_census.py`).
+  The children read the same way under all three (every check of `test_scene.py` runs on the saved_as fixtures).
 - Most objects are containers. Two per fixture are empty leaf chunks (TVNode and Reaction Manager in
   hierarchy): they hold no references.
 
@@ -989,7 +995,7 @@ The maps of texmap_rules (block 0 each; `convert/texmaps.py`):
 | Class (ClassID) | Parameters |
 |---|---|
 | Bitmap `(0x240, 0)` | 6 apply (cropping / placement on), 9 monoOutput (1 alpha), 10 rgbOutput (1 alpha as gray), 11 alphaSource |
-| Falloff `(0x6EC3730C, 0)` | 0 color1, 1 map1Amount, 2 map1, 3 map1On, 4 color2, 5 map2Amount, 6 map2, 7 map2On, 8 type, 9 direction |
+| Falloff `(0x6EC3730C, 0)` | 0 color1, 1 map1Amount, 2 map1, 3 map1On, 4 color2, 5 map2Amount, 6 map2, 7 map2On, 8 type (0 towards / away, 1 perpendicular / parallel, the default, 2 Fresnel, 3 shadow / light, 4 distance blend), 9 direction (0 viewing), 10 node, 11 mtlIOROverride, 12 ior, 13 extrapolateOn, 14 nearDistance, 15 farDistance (texmap_wrappers); its Output part; the MixCurve is a Curve Control reference, not in the block |
 | VRayDirt `(0x2F567899, 0x090D5EA4)` | 12 occluded_color, 13 unoccluded_color, 17 texmap_unoccluded_color, 18 its on, 19 its multiplier |
 | VRayColor2Bump `(0x31E15D1D, 0x7D7E2810)` | 0 map, 1 height (world units), 2 bump delta scale |
 | VRayColor `(0x58F82B74, 0x73B75D7F)` (vray_texmaps) | 9 color_mode (0 RGB, 1 temperature: V-Ray writes the temperature's color into color), 8 temperature, 0 / 1 / 2 red / green / blue (color again), 4 rgb_multiplier, 3 alpha, 5 color, 10 color_gamma (applied after the multiplier), 11 rgb_primaries; block 1 (6 gamma_correction, 7 gamma_value) is transient |
@@ -997,8 +1003,8 @@ The maps of texmap_rules (block 0 each; `convert/texmaps.py`):
 | RGB Tint `(0x224, 0)` | 0 red, 1 green, 2 blue, 3 map1, 4 map1Enabled |
 | Mix `(0x230, 0)` | 0 mixAmount (fraction), 1 lower, 2 upper, 3 useCurve, 4 color1, 5 color2, 6 map1, 7 map2, 8 mask, 9 / 10 / 11 their switches |
 | RGB Multiply `(0x290, 0)` | 0 color1, 1 color2, 2 map1, 3 map2, 4 / 5 their switches, 6 alphaFrom |
-| Color Correction `(0x2D0, 0)` | 0 color, 1 map, 2 rewireMode, 7 hueShift (degrees), 8 saturation (%), 10 tintStrength, 11 lightnessMode (1 advanced), 12 brightness, 13 contrast, 18 gainRGB (%), 22 gammaRGB |
-| Composite `(0x280, 0)` | tables: 1 mapEnabled, 3 maskEnabled, 5 blendMode (0 normal), 6 layerName, 8 opacity (%), 9 mapList, 10 mask; 0, 2 and 4 have no name and are empty tables, not saved. Its `name` is the layer names: the fixture's Composite keeps its default name |
+| Color Correction `(0x2D0, 0)` | 0 color, 1 map, 2 rewireMode (0 normal, 1 monochrome, 2 invert, 3 custom), 3..6 rewireR, G, B, A (0..2 R, G, B, 3 A, 4..7 their inverse, 8 monochrome, 9 one, 10 zero; modes 1 and 2 store (8, 8, 8, 3) and (4, 5, 6, 3): texmap_wrappers), 7 hueShift (degrees), 8 saturation (%), 9 tint, 10 tintStrength, 11 lightnessMode (1 advanced), 12 brightness, 13 contrast, 14 exposureMode, 15..17 enableR, G, B, 18 gainRGB (%), 22 gammaRGB |
+| Composite `(0x280, 0)` | tables: 1 mapEnabled, 3 maskEnabled, 5 blendMode (0 normal, 1 average, 2 addition, 3 subtract, 4 darken, 5 multiply, 6 color burn, 7 linear burn, 8 lighten, 9 screen, 10 color dodge, 11 linear dodge, 12 spotlight, 13 spotlight blend, 14 overlay, 15 soft light, 16 hard light, 17 pin light, 18 hard mix, 19 difference, 20 exclusion, 21 hue, 22 saturation, 23 color, 24 value: measured with renderMap), 6 layerName, 8 opacity (%), 9 mapList, 10 mask; 0, 2 and 4 have no name and are empty tables, not saved. As a constructor keyword `name` is the layer names; assigned afterwards it is the map's name (texmap_wrappers names its three) |
 | Normal Bump `(0x243E22C6, 0x63F6A014)` | 0 mult_spin, 1 bump_spin, 2 normal_map, 3 bump_map, 4 / 5 their switches, 6 method (0 tangent), 7 flipred, 8 flipgreen, 9 swap_rg |
 | CoronaNormal `(0x2870CEAA, 0xCC18437C)` | 500 normalMap, 501 multiplier, 502 addGamma, 503 flipRed, 504 flipGreen, 505 swapRedGreen, 507 additionalBump, 508 additionalBumpStrength, 509 additionalBumpOn |
 
@@ -1052,6 +1058,27 @@ Bitmap's).
   types above); its `fileName` (16) is transient and not stored. The id's record holds the file name 3ds Max
   reports as `fileName` (oracle) for every Bitmap of vray_maps and standard_physical.
 
+## Strings of older files
+
+`maxdrop/reader/strings.py`; `tests/unit/test_strings.py`.
+
+- saved_as_2017, saved_as_2018 and saved_as_2019 (3ds Max 2020, Save As 2017, 2018, 2019) hold their node,
+  material and layer names with U+00F6, U+00E4 and U+4E2D as every 3ds Max 2020 file does: `0x0962` and `0x4001`
+  UTF-16LE, the layer's `0x1010` UTF-8. Their summary says `3ds Max Version: 22.00` and `Saved As Version` 19.00,
+  20.00, 21.00; both summary streams record code page 65001.
+- Corpus scene A (3ds Max 2015 saving in the 2012 format) has UTF-16 names too (every `0x0962`, `0x2042` and DLL
+  name has a zero in each odd byte), and the root container `0x2014`: the saved-as version and the root id do not
+  tell an 8-bit file, the version that wrote it does.
+- The reader decides by the writer's `3ds Max Version`: 15 (3ds Max 2013, the first Unicode version) or more is
+  UTF-16, whatever the names look like. Below 15, or without a version, the DLL file names (`0x2037`) and class
+  names (`0x2042`) vote: an 8-bit name ends with its only NUL, an ASCII name in UTF-16 has a 0 second byte and an
+  even size, any other name (not ASCII, one letter) abstains. Below 15 the file is 8-bit unless the names say
+  UTF-16; without a version, UTF-16 unless they say 8-bit.
+- An 8-bit string is cut at its first NUL and decoded with the code page the summary records (property 1 of
+  DocumentSummaryInformation, else SummaryInformation) when it is a Windows ANSI code page, else as UTF-8 when it
+  is valid UTF-8, else as cp1252; the import option Text Encoding overrides it. The layer name and the ParamBlock2
+  string values follow the same rule in an 8-bit file.
+
 ## Open
 
 Not shown by any fixture yet, so not stated above:
@@ -1076,8 +1103,13 @@ Not shown by any fixture yet, so not stated above:
   - not known: the first `u32` of `0x0009`, the fourth `u32` of an entry, the third `u16` of a `0x0013` record,
     `0x0005` and `0x0004` of the old ParamBlock, and the value layout of the types no file has shown (matrix3,
     and the others the reader keeps as raw bytes).
-- Other root container ids: `0x2014` and `0x2023` occur in older files, and the 64-bit chunk header (size 0,
-  then a `u64`) in large ones.
+- Other root container ids: `0x2014` (the 2012 format, corpus scene A) occurs in the corpus, and the 64-bit
+  chunk header (size 0, then a `u64`) in large ones.
+- Files of 3ds Max 2012 and older: no such file has been read. Taken from the 3ds Max SDK of those versions and
+  checked only on synthetic chunks: the 8-bit strings and their NUL, the ParamBlock2 string as a byte count then
+  8-bit text, the code page the summary records (the machine's ANSI code page is assumed), the layer name in the
+  same code page. Their FileAssetMetaData strings are still read as UTF-16, and an older `ClassDirectory` stream
+  as `ClassDirectory3`.
 - Of shapes ([Shapes](#shapes)): NGon's corner radius and Ellipse's outline (no fixture sets them: drawn without,
   an issue), an Arc whose `from` equals `to` (taken as a full turn), the order of a reversed pie's knots (the center
   last), a Rectangle whose corner radius is more than half a side (its knots cross; 3ds Max's handling is not

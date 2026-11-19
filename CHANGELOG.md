@@ -8,8 +8,36 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
 
 ## [Unreleased]
 
+### Added
+
+- Import: started from a window (a drop, or File > Import), an import runs in steps: the status bar shows what it
+  does (unpacking with the bytes written, reading, building with the count) and Blender keeps drawing. Esc
+  cancels it and removes everything that import made (objects, meshes, materials, images, collections, the report
+  text it created; the scene camera and render size are put back), also the scenes of the run it had finished; an
+  unpack is stopped and its staging folder removed, a finished pack folder stays. A finished import is one undo step.
+  An undo or a file load from another window during the import cancels it the same way.
+  Imports from scripts (`bpy.ops.import_scene.maxdrop(filepath=...)`) and without a window stay synchronous.
+
+- Materials: the map wrappers that were simplified to their first bitmap are drawn as nodes, from what 3ds Max
+  2020 renders (measured): a Falloff (Perpendicular / Parallel, Fresnel, Towards / Away in the viewing direction)
+  as its two sides mixed by Layer Weight, Fresnel or the facing ratio, each side mixed with its color by the map
+  amount; a Composite with its blend modes (all but linear burn, soft light, pin light and hard mix) and layer
+  masks; Color Correction's rewiring; an Output map's levels; an RGB Tint's channel mix. Other Falloff types and
+  directions and the four blend modes left out are simplified as before.
+
+- Import: files of 3ds Max 2012 and older, whose names are 8-bit text in the code page of the computer that saved
+  them, are read with their names: in the code page the file records, else as UTF-8, else Western (1252). The new
+  option **Text Encoding** picks another code page (Central European, Cyrillic, Greek, Turkish, Japanese,
+  Simplified and Traditional Chinese, Korean, UTF-8); Unicode files of 3ds Max 2013 and later ignore it. The File
+  line of the popup says which code page Auto reads such a file in. No file of those versions has been imported
+  yet: checked on made-up data.
+- Tests: files saved by 3ds Max 2020 in the 2017, 2018 and 2019 formats, with accented and Chinese names; docs/
+  SUPPORT.md lists which 3ds Max versions are tested, expected to work or not supported.
+
 ### Changed
 
+- Materials: an inverted Output (of a Bitmap or an Output map) with an RGB offset subtracts the offset, as 3ds Max
+  renders it (it was added).
 - Report: a scene saved with a view through no camera active (common) names its scene camera, the first camera, in
   the render line instead of raising a warning; a damaged Config stream is named as such, not as "no saved view".
 - Materials: an Output, RGB Tint or VRayColor2Bump map without a map of its own (or an Output or RGB Tint with it
@@ -21,6 +49,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
   None, a gamma override other than 2.2) is loaded in the Linear Rec.709 color space instead of Non-Color, so its
   colors keep their primaries in a scene whose working space is not Linear Rec.709 (Non-Color where Blender's color
   management config lacks it). Data maps stay Non-Color.
+- Import: a scene with more than 1,048,576 objects is refused, and a mesh with more than 67,108,864 vertices (or map
+  vertices in one channel) or 134,217,728 face corners is skipped with an issue naming the counts, instead of
+  running Blender out of memory. A file whose reading runs out of memory or recursion depth ends in "Not imported"
+  with a reason, like any other damaged file.
+- Scene packs: `.7z` and `.rar` need 7-Zip 26.02 or newer (was 25.01) or bsdtar 3.8.8 or newer (was 3.7.4), the
+  first versions with the vendors' fixes of overflows in their RAR and 7-Zip readers; UnRAR stays at 7.23. On
+  Windows this applies to its own `tar.exe` too: an older one is not used (install WinRAR or 7-Zip instead).
 
 ### Fixed
 

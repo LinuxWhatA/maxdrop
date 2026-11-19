@@ -127,11 +127,15 @@ sRGB either way, EXR and HDR files linear (or what their own gamma says). Turn m
 | CoronaColor | **Imported** as a color: RGB, HDR, temperature (an approximate curve) or hex, times its multiplier |
 | VRayColor | **Imported** as a color: RGB or temperature, times its RGB multiplier, with its color gamma. Its alpha and RGB primaries are not converted |
 | CoronaMix | **Imported** as nodes for the Mix and Multiply operations (with the mix map as mask); the other operations are **simplified** to the first bitmap below; layer multipliers and offsets are not converted; the blend is linear (Corona's "mix in sRGB" is not read) |
-| Mix, RGB Multiply, Color Correction, Composite (normal blend mode, no masks) | **Imported** as nodes (Mix, Hue/Saturation, Bright/Contrast, Gamma). A Mix curve, the rewiring, tint, pivot and lift of Color Correction are not converted |
-| A map MaxDrop cannot convert below a map that wraps it | Named in the report. Never drawn as the wrapper's own color for that map: under a Color Correction, Falloff, VRayDirt, Output, RGB Tint or VRayColor2Bump the material keeps its own color or value. A Mix or CoronaMix whose amount hides that map is imported as it is; one whose amount shows only that map leaves the material its own color; otherwise it is **simplified** to its other map (or the material keeps its own), as an RGB Multiply always is. A mask it cannot convert leaves the mix amount, a Composite layer is left out, a normal map class keeps its other map |
+| Mix, RGB Multiply, Color Correction | **Imported** as nodes (Mix, Hue/Saturation, Bright/Contrast, Gamma), Color Correction's rewiring too (monochrome, invert, custom channels; an alpha source is drawn as opaque). A Mix curve and the tint, pivot and lift of Color Correction are not converted |
+| Composite | **Imported** as nodes: each layer's blend mode drawn at full strength, then mixed in by its opacity times its mask (the mean of the mask's color), as 3ds Max renders it. Linear burn, soft light, pin light and hard mix are not drawn: such a Composite is **simplified** to the first bitmap below |
+| Falloff | **Imported** as nodes for the types Perpendicular / Parallel (Layer Weight, Facing), Fresnel (a Fresnel node at its IOR; 3ds Max's ramp is up to 0.025 darker facing the camera) and Towards / Away in the viewing direction, each side its color, its map, or the two mixed by the map amount; its own Output too. Its mix curve is not read (drawn linear). Other types (Shadow / Light, Distance Blend) and directions are **simplified** to map 1, or color 1 without it |
+| Output, RGB Tint | **Imported** as nodes: the Output's invert, level, offset and amount (its clamp and color map curve are not read); the RGB Tint's three colors as a channel mix |
+| A map MaxDrop cannot convert below a map that wraps it | Named in the report. Never drawn as the wrapper's own color for that map: under a Color Correction, VRayDirt, Output, RGB Tint or VRayColor2Bump the material keeps its own color or value; a Falloff, whose sides show at every angle, is **simplified** to its other map (or the material keeps its own). A Mix or CoronaMix whose amount hides that map is imported as it is; one whose amount shows only that map leaves the material its own color; otherwise it is **simplified** to its other map (or the material keeps its own), as an RGB Multiply always is. A mask it cannot convert leaves the mix amount, a Composite layer is left out, a normal map class keeps its other map |
 | VRayNormalMap, Normal Bump, CoronaNormal | **Imported**: a Normal Map node with its strength and flips, its additional bump map as a Bump node |
 | Bump (height) maps | **Imported** as a Bump node |
-| Falloff, VRayDirt, Output, RGB Tint, VRayColor2Bump | **Simplified** to the map below them (Falloff and VRayDirt without a map: their color; Output, RGB Tint and VRayColor2Bump without a map, or an Output or RGB Tint with it off: named in the report, and the material keeps its own color or value; below a Mix or another map, as a map MaxDrop cannot convert, see above) |
+| VRayDirt, VRayColor2Bump | **Simplified** to the map below them (VRayDirt without a map: its color; VRayColor2Bump without a map: named in the report, and the material keeps its own value) |
+| Output, RGB Tint without a map, or with it off | Named in the report; the material keeps its own color or value |
 | Every other map (noise, gradient, procedural maps…) | **Simplified** to the first Bitmap, CoronaBitmap or VRayBitmap below it, or not converted |
 | Environment and planar (object or world XYZ) mapping, real-world scale | Drawn with the UVs |
 | Displacement | Not yet |
@@ -167,10 +171,20 @@ the scene in the archive is kept.
 ## Files
 
 - `.max` files as 3ds Max writes them (OLE compound files), also streams 3ds Max compressed.
-- MaxDrop's test files come from 3ds Max 2020; scenes of 3ds Max 2015 and 2020 have been imported. Other versions
-  are not verified one by one yet.
+- The 3ds Max version of the file:
+
+  | The file | This version |
+  |---|---|
+  | Saved by 3ds Max 2020 | Tested: every test file. |
+  | Saved by 3ds Max 2020 in the 2017, 2018 or 2019 format (Save As) | Tested: a test file in each format, names with accents and Chinese characters included. |
+  | Saved by 3ds Max 2013 to 2019, 2021 or later, in any format they offer | Expected to work: the same layout as far as seen. Imported whole: a scene saved by 3ds Max 2015 in the 2012 format and one saved by 3ds Max 2020 in the 2018 format. |
+  | Saved by 3ds Max 2012 or older | Not verified: no such file has been imported yet. Names are read in the code page the file records, else as UTF-8, else Western (1252); **Text Encoding** (Include) picks another code page (Central European, Cyrillic, Greek, Turkish, Japanese, Chinese, Korean). Checked only on made-up data. |
+  | A file with the older `ClassDirectory` stream instead of `ClassDirectory3` | Not supported: it is read as the newer layout, which no file has confirmed; what comes out is not known. |
+
+  Text Encoding changes nothing for a file of 3ds Max 2013 or later: its names are Unicode.
 - When a `.max` is dropped, the options popup shows a **File** line: the 3ds Max version, the renderer, the
-  number of objects and the unit, read in a fraction of a second even from a large scene.
+  number of objects and the unit, read in a fraction of a second even from a large scene; for a file with 8-bit
+  names (3ds Max 2012 or older), the code page Auto reads them in.
 - A very large scene works but needs time and memory: see [BASELINE.md](BASELINE.md) (version 0.1.0 next to
   0.0.5, 0.0.4, 0.0.3 and the engine they replaced).
 - **Scene packs**: a `.zip`, `.rar` or `.7z` holding the scene, chosen in *File › Import*; a `.rar` or `.7z` can
@@ -182,15 +196,14 @@ the scene in the archive is kept.
   Deflate64 or archives split into parts. File names without the UTF-8 flag are decoded as UTF-8, then GBK,
   Shift-JIS, cp1252, cp437.
 - `.rar` (RAR 5; RAR 4 through UnRAR or 7-Zip only) and `.7z` need a program already installed: UnRAR 7.23 or
-  newer, 7-Zip 25.01 or newer, or bsdtar 3.7.4 or newer (the `tar` of the system on macOS and Linux is taken
+  newer, 7-Zip 26.02 or newer, or bsdtar 3.8.8 or newer (the `tar` of the system on macOS and Linux is taken
   whatever version it prints). Not readable: password-protected archives and archives split into volumes.
 - Limits for one pack: 20,000 entries listed, 5,000 files and 16 GiB written, 4 GiB per file, 15 minutes, and
   512 MiB left free on the disk.
 
 ## What comes next
 
-Toward 1.0: an import with a progress bar that Esc cancels, a time and memory budget for large scenes, node graphs
-for the map wrappers that are still simplified (Color Correction, Falloff, Mix, Composite), files of older 3ds Max
-versions, and limits and fuzz tests against hostile files. Not scheduled yet: Corona lights, V-Ray mesh and dome
+Toward 1.0: an import with a progress bar that Esc cancels, a time and memory budget for large scenes, limits and
+fuzz tests against hostile files, and a file of 3ds Max 2012 or older to check its names against. Not scheduled yet: Corona lights, V-Ray mesh and dome
 lights, IES distributions, the sky and Skylight as the World, camera exposure, and the modifiers that still leave an
 object as its base object (Edit Poly, Edit Mesh, FFD…).

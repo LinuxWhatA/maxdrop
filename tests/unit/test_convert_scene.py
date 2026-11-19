@@ -67,7 +67,11 @@ UV_LAYERS = {
     "stack_basic": ["UVMap"],  # FixtureTurbo's UVW Map writes channel 1; no other modifier is applied
     "stack_convert": ["UVMap"],  # its modifiers become Blender modifiers: the base meshes are built
     "standard_physical": ["UVMap"],
+    "saved_as_2017": ["UVMap"],
+    "saved_as_2018": ["UVMap"],
+    "saved_as_2019": ["UVMap"],
     "texmap_rules": ["UVMap"],
+    "texmap_wrappers": ["UVMap"],
     "units_cm": ["UVMap"],
     "units_in": ["UVMap"],
     "units_mm": ["UVMap"],
@@ -249,6 +253,78 @@ class HostileEdges(unittest.TestCase):
         self.assertEqual(len(conv.sharp_edges(*self.fan(few))), 0)
 
 
+def _sharp_edges_by_unique(lv, starts, totals, groups):
+    """sharp_edges as it was before it found the runs of the sorted keys itself (numpy.unique), for the comparison."""
+    lv, starts, totals = (numpy.asarray(x, dtype=numpy.int64) for x in (lv, starts, totals))
+    face = numpy.repeat(numpy.arange(len(starts)), totals)
+    following = numpy.arange(1, len(lv) + 1)
+    following[starts + totals - 1] = starts
+    lo, hi = numpy.minimum(lv, lv[following]), numpy.maximum(lv, lv[following])
+    key = lo * (int(lv.max()) + 1) + hi
+    order = numpy.argsort(key, kind="stable")
+    key, face = key[order], face[order]
+    groups = numpy.asarray(groups, dtype=numpy.uint32)
+    _keys, first, counts = numpy.unique(key, return_index=True, return_counts=True)
+    two = first[counts == 2]
+    sharp = two[(groups[face[two]] & groups[face[two + 1]]) == 0]
+    more = [s for s, n in zip(first[counts > 2], counts[counts > 2]) if conv._disjoint(groups[face[s:s + n]])]
+    if more:
+        sharp = numpy.sort(numpy.concatenate((sharp, numpy.asarray(more, dtype=sharp.dtype))))
+    src = order[sharp]
+    return numpy.stack((lo[src], hi[src]), axis=1).astype(numpy.int32)
+
+
+def _valid_faces_by_unique(lv, starts, totals):
+    """valid_faces as it was before it found doubled faces with a lexsort (numpy.unique(axis=0))."""
+    lv, starts, totals = (numpy.asarray(x, dtype=numpy.int64) for x in (lv, starts, totals))
+    keep = numpy.ones(len(starts), dtype=bool)
+    for total in numpy.unique(totals):
+        faces = numpy.flatnonzero(totals == total)
+        rows = numpy.sort(lv[starts[faces][:, None] + numpy.arange(total)], axis=1)
+        repeated = (numpy.diff(rows, axis=1) == 0).any(axis=1)
+        keep[faces[repeated]] = False
+        good = faces[~repeated]
+        if not len(good):
+            continue
+        _rows, first = numpy.unique(rows[~repeated], axis=0, return_index=True)
+        doubled = numpy.ones(len(good), dtype=bool)
+        doubled[first] = False
+        keep[good[doubled]] = False
+    return keep
+
+
+@unittest.skipIf(numpy is None, "numpy missing")
+class SameAsUnique(unittest.TestCase):
+    """sharp_edges and valid_faces give what their numpy.unique versions gave, on random meshes full of shared
+    edges, doubled faces, repeated vertices and edges with many faces."""
+
+    def meshes(self):
+        rng = numpy.random.default_rng(7)
+        for _ in range(200):
+            nv = int(rng.integers(3, 12))
+            totals = rng.integers(3, 6, size=int(rng.integers(1, 40)))
+            starts = numpy.concatenate(([0], numpy.cumsum(totals)[:-1]))
+            lv = rng.integers(0, nv, size=int(totals.sum())).astype(numpy.int32)
+            groups = (rng.integers(0, 4, size=len(totals)) * rng.integers(0, 2, size=len(totals))).astype(numpy.uint32)
+            yield lv, starts.astype(numpy.int32), totals.astype(numpy.int32), groups
+
+    def test_valid_faces(self):
+        for lv, starts, totals, _groups in self.meshes():
+            self.assertEqual(conv.valid_faces(lv, starts, totals).tolist(),
+                             _valid_faces_by_unique(lv, starts, totals).tolist())
+
+    def test_sharp_edges_of_the_valid_faces(self):
+        for lv, starts, totals, groups in self.meshes():
+            keep = conv.valid_faces(lv, starts, totals)
+            loops = numpy.repeat(keep, totals)
+            lv, totals, groups = lv[loops], totals[keep], groups[keep]
+            starts = numpy.concatenate(([0], numpy.cumsum(totals)[:-1])).astype(numpy.int32)
+            if not len(totals):
+                continue
+            self.assertEqual(conv.sharp_edges(lv, starts, totals, groups).tolist(),
+                             _sharp_edges_by_unique(lv, starts, totals, groups).tolist())
+
+
 @unittest.skipIf(numpy is None, "numpy missing")
 class InvalidFaces(unittest.TestCase):
     def test_repeated_vertex_and_doubled_faces_are_refused(self):
@@ -256,6 +332,16 @@ class InvalidFaces(unittest.TestCase):
         lv = [0, 1, 2, 3, 3, 4, 2, 0, 1, 0, 1, 5, 4, 1, 5, 6, 5]
         keep = conv.valid_faces(lv, [0, 3, 6, 9, 13], [3, 3, 3, 4, 4])
         self.assertEqual(keep.tolist(), [True, False, False, True, False])
+
+    def test_the_earliest_of_doubled_faces_is_kept(self):
+        # 0: quad; 1: triangle; 2: face 0 turned; 3: face 1 reversed; 4: face 0 again, reversed
+        lv = [4, 5, 6, 7, 0, 1, 2, 5, 6, 7, 4, 2, 1, 0, 7, 6, 5, 4]
+        keep = conv.valid_faces(lv, [0, 4, 7, 11, 14], [4, 3, 4, 3, 4])
+        self.assertEqual(keep.tolist(), [True, True, False, False, False])
+
+    def test_faces_of_fewer_than_three_vertices_are_refused(self):
+        keep = conv.valid_faces([0, 1, 2, 3, 3, 4], [0, 3, 3, 4], [3, 0, 1, 2])
+        self.assertEqual(keep.tolist(), [True, False, False, False])
 
     def test_dropped_faces_keep_uvs_materials_and_groups_aligned(self):
         lv = numpy.asarray([0, 1, 2, 2, 2, 3, 1, 3, 2], dtype=numpy.int32)
