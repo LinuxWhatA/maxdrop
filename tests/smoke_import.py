@@ -37,7 +37,8 @@ only things listed are on the material side: wrappers and maps approximated, map
 Blender 4, Principled inputs that Blender lacks; and the modifiers not applied, as many as the oracle lists, in a
 fixture whose oracle lists some (modifier_pivot; the ones converted to Blender modifiers are not counted), the
 issues a fixture is made to raise (uvwmap, stack_convert, vray_lights) and the placeholders of classes not built
-yet (lookat's Point helper). Two scenes in one run: the text holds both reports; a file
+yet (lookat's Point helper). lookat, saved with a Perspective viewport active, names its first camera as the scene
+camera in the report's render line, not as an issue. Two scenes in one run: the text holds both reports; a file
 that was not imported is named after them.
 Prints `IMPORT PASSED` (exit 0) or `IMPORT FAILED` (exit 1).
 """
@@ -71,7 +72,7 @@ FIXTURE = {"modifiers": 0, "issues": 0, "placeholders": 0, "lights_only": False}
 # What the oracle does not tell: a UVW Map of a type MaxDrop does not evaluate (shrink-wrap), and the issues each
 # fixture is made to raise (ISSUES in tests/unit/test_convert_scene.py)
 NOT_EVALUATED = {"FixtureUVWShrink"}
-FIXTURE_ISSUES = {"uvwmap.max": 2, "stack_convert.max": 1, "vray_lights.max": 4, "lookat.max": 2,
+FIXTURE_ISSUES = {"uvwmap.max": 2, "stack_convert.max": 1, "vray_lights.max": 4, "lookat.max": 1,
                   "lights_standard.max": 17, "lights_photometric.max": 9, "cameras.max": 6}
 # placeholders of classes MaxDrop does not build yet: lookat's Point
 FIXTURE_PLACEHOLDERS = {"lookat.max": 1}
@@ -173,6 +174,9 @@ def check_report(name, max_name, pack_name=None):
             and (not held or all("; %d placeholder%s" % (held, "" if held == 1 else "s") in m for _k, m in summaries))
         check("%s: the operator reported INFO, nothing left out (or only the known gaps of the fixtures)" % name,
               clean or missing, str(summaries))
+        if max_name == "lookat.max":  # saved with a Perspective viewport active: a note, no issue
+            check("%s: the render line names the first camera as the scene camera" % name,
+                  "; scene camera: FixtureCam, the first camera: " in body)
 
 
 def _block_heads(lines, title):
@@ -330,8 +334,10 @@ def two_scenes(max_path, scratch, ops):
     check("two scenes in a .zip, none named: the message names both",
           ("a/" + name) in message and ("b/" + SECOND) in message, message.strip())
     check("two scenes in a .zip, none named: nothing unpacked", not os.path.exists(os.path.join(folder, "two")))
+    no_free_folder(ops, zip_path, folder, "a/" + name)
+    parent_problem(ops, zip_path)
     # What invoke() stores (it needs a window): the popup then previews whichever scene the Scene field names.
-    ops._TARGETS[ops._norm(zip_path)] = (folder, None, {})
+    remember_target(ops, zip_path, folder)
     first = os.path.join(folder, "two", os.path.splitext(name)[0])
     labels = pack_panel(ops, zip_path, "a/" + name)
     check("Scene Pack panel: names the folder of the scene chosen", labels[-2:] == ["Unpacks into", first],
@@ -346,13 +352,78 @@ def two_scenes(max_path, scratch, ops):
     check("two scenes in a .zip: the named scene is unpacked into its own folder",
           os.path.isfile(os.path.join(folder, "two", "second", SECOND)))
     check("two scenes in a .zip: the unpack drops the popup's previews", ops._norm(zip_path) not in ops._TARGETS)
-    ops._TARGETS[ops._norm(zip_path)] = (folder, None, {})
+    remember_target(ops, zip_path, folder)
     labels = pack_panel(ops, zip_path, SECOND)
     check("Scene Pack panel: the scene unpacked before is read from its folder",
           labels[-2:] == ["Unpacked before: imports from", second], str(labels))
     labels = pack_panel(ops, zip_path, "a/" + name)
     check("Scene Pack panel: the other scene unpacks beside it", labels[-2:] == ["Unpacks into", first], str(labels))
+    make_zip(zip_path, [("a/" + name, max_path), ("b/" + SECOND, max_path), ("b/notes.txt", max_path)])
+    labels = pack_panel(ops, zip_path, SECOND)
+    check("Scene Pack panel: a pack replaced at the same path since invoke() keeps none of the old previews",
+          labels[-1] == "Unpacks into a folder named after the archive", str(labels))
     ops._TARGETS.pop(ops._norm(zip_path), None)
+
+
+def remember_target(ops, zip_path, folder):
+    ops._TARGETS[ops._norm(zip_path)] = (ops._key(zip_path), folder, None, {})
+
+
+def no_free_folder(ops, zip_path, folder, scene):
+    """Every name the pack folder could take is someone else's folder: the panel says so, as the unpack would."""
+    archive = ops._archive()
+    taken = os.path.join(folder, "two")
+    os.makedirs(taken)
+    with open(os.path.join(taken, "notes.txt"), "wb"):
+        pass
+    remember_target(ops, zip_path, folder)
+    saved, archive._CANDIDATES = archive._CANDIDATES, 1
+    # The preview's message is no .max path: it must never be read as one (ops._ON_DISK gates both reads).
+    asked = []
+    remember, preflight_of = ops._remember_preflight, ops._preflight_of
+    ops._remember_preflight = lambda path: asked.append(path) or remember(path)
+    ops._preflight_of = lambda path: asked.append(path) or preflight_of(path)
+    try:
+        layout = FakeLayout()
+        operator = FakeOperator(zip_path, scene)
+        ops.import_pack(layout, operator, [(zip_path, ops._listing(zip_path))])
+        ops.import_files(FakeLayout(), operator)
+        preview = ops._target_of(zip_path)[2].get(scene)
+    finally:
+        ops._remember_preflight, ops._preflight_of = remember, preflight_of
+        archive._CANDIDATES = saved
+        ops._TARGETS.pop(ops._norm(zip_path), None)
+        shutil.rmtree(taken)
+    check("Scene Pack panel: no free folder name is said, with an error icon, the folder on its own line",
+          layout.labels[-3:] == ["No free folder for two.zip in", folder, "Too many folders of that name exist."]
+          and layout.icons[-3:] == ['ERROR', 'NONE', 'NONE'],
+          str(list(zip(layout.labels, layout.icons))))
+    check("Scene Pack panel: a preview with no free folder never reaches the pre-flight read",
+          preview is not None and preview[0] == "none" and asked == [zip_path], "%s, asked %s" % (preview, asked))
+
+
+def parent_problem(ops, zip_path):
+    """The archive's folder cannot be written and no other is chosen: the panel says so, the folder on its own
+    line."""
+    prefs = ops.prefs
+    saved, prefs.writable = prefs.writable, lambda folder: False
+    try:
+        parent, problem = ops._target(zip_path, bpy.context)
+    finally:
+        prefs.writable = saved
+    beside = os.path.dirname(os.path.abspath(zip_path))
+    check("a folder that cannot be written: no parent, the reason as labels",
+          parent is None and problem == ("Cannot write into", beside) + prefs._CHOOSE_LINES,
+          "%s %s" % (parent, problem))
+    ops._TARGETS[ops._norm(zip_path)] = (ops._key(zip_path), parent, problem, {})
+    try:
+        layout = FakeLayout()
+        ops.import_pack(layout, FakeOperator(zip_path), [(zip_path, ops._listing(zip_path))])
+    finally:
+        ops._TARGETS.pop(ops._norm(zip_path), None)
+    check("Scene Pack panel: a folder that cannot be written is said line by line, the first with an error icon",
+          layout.labels[-4:] == list(problem) and layout.icons[-4:] == ['ERROR', 'NONE', 'NONE', 'NONE'],
+          str(list(zip(layout.labels, layout.icons))))
 
 
 def selections(max_path, scratch):
@@ -413,13 +484,14 @@ class FakeLayout:
     """Records the labels a draw function puts into a panel (no window in the background)."""
 
     def __init__(self):
-        self.labels = []
+        self.labels, self.icons = [], []
 
     def panel(self, idname, default_closed=False):
         return self, self
 
     def label(self, text="", icon='NONE'):
         self.labels.append(text)
+        self.icons.append(icon)
 
     def prop(self, data, name):
         pass

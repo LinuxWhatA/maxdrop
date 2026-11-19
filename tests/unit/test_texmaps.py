@@ -417,8 +417,9 @@ class Synthetic(Checks):
     def test_colorspace(self):
         self.assertEqual(tx.colorspace(tx.COLOR, None), tx.SRGB)
         self.assertEqual(tx.colorspace(tx.COLOR, 2.2), tx.SRGB)
-        self.assertEqual(tx.colorspace(tx.COLOR, 1.0), tx.NON_COLOR)  # linear: the builder applies no gamma
-        self.assertEqual(tx.colorspace(tx.COLOR, 1.8), tx.NON_COLOR)  # the builder applies 1.8
+        self.assertEqual(tx.colorspace(tx.COLOR, 1.0), tx.LINEAR)  # linear: the builder applies no gamma
+        self.assertEqual(tx.colorspace(tx.COLOR, 1.8), tx.LINEAR)  # the builder applies 1.8
+        self.assertEqual(tx.LINEAR, "Linear Rec.709")  # a Blender color space name: the builder sets it
         for kind in (tx.DATA, tx.NORMAL, tx.BUMP):
             self.assertEqual(tx.colorspace(kind, None), tx.NON_COLOR)
             self.assertEqual(tx.colorspace(kind, 2.2), tx.NON_COLOR)
@@ -435,11 +436,11 @@ class Synthetic(Checks):
         for path in ("maps\\sky.EXR", "maps\\sky.hdr"):
             table = assets.AssetTable([assets.AssetEntry(G1, "Bitmap", path, "")])
             g = _tex(_bitmap(1), table=table).convert(mat.MapRef(1), tx.COLOR)
-            self.assertEqual((g.root.gamma, g.root.colorspace), (1.0, tx.NON_COLOR), path)
+            self.assertEqual((g.root.gamma, g.root.colorspace), (1.0, tx.LINEAR), path)
         table = assets.AssetTable([assets.AssetEntry(G1, "Bitmap", "maps\\sky.exr", "")])
-        for info, gamma, space in ((_info(2.2, 5), 2.2, tx.SRGB), (_info(1.8, 5), 1.8, tx.NON_COLOR),
-                                   (_info(2.2, 4), 1.0, tx.NON_COLOR),  # an override is kept; no flag: automatic
-                                   (_info(50.0, 5), 1.0, tx.NON_COLOR)):  # out of range: automatic
+        for info, gamma, space in ((_info(2.2, 5), 2.2, tx.SRGB), (_info(1.8, 5), 1.8, tx.LINEAR),
+                                   (_info(2.2, 4), 1.0, tx.LINEAR),  # an override is kept; no flag: automatic
+                                   (_info(50.0, 5), 1.0, tx.LINEAR)):  # out of range: automatic
             b, chunk_map = _placed(info=info)
             g = tx.TexmapConverter(FakeGraph(b, chunk_map=chunk_map), table).convert(mat.MapRef(1), tx.COLOR)
             self.close(g.root.gamma, gamma)
@@ -769,7 +770,7 @@ class CoronaSynthetic(Checks):
         table = assets.AssetTable([assets.AssetEntry(G1, "Bitmap", "maps\\sky.HDR", "")])
         for params in ({}, {"p125": -1.0}, {"p125": 50.0}):  # automatic: -1 or outside 0.1 to 10
             g = _tex(_cbitmap(1, **params), table=table).convert(mat.MapRef(1), tx.COLOR)
-            self.assertEqual((g.root.gamma, g.root.colorspace), (1.0, tx.NON_COLOR), params)
+            self.assertEqual((g.root.gamma, g.root.colorspace), (1.0, tx.LINEAR), params)
         g = _tex(_cbitmap(1, p125=2.2), table=table).convert(mat.MapRef(1), tx.COLOR)
         self.close(g.root.gamma, 2.2)
         self.assertEqual(g.root.colorspace, tx.SRGB, "an override is kept")
@@ -818,7 +819,7 @@ class Guards(Checks):
         self.assertTrue(any("real-world" in r for r in g.issues))
 
     def test_gamma(self):
-        cases = ((_info(1.8, 5), 1.8, tx.NON_COLOR), (_info(2.2, 5), 2.2, tx.SRGB), (_info(1.0, 20), None, tx.SRGB),
+        cases = ((_info(1.8, 5), 1.8, tx.LINEAR), (_info(2.2, 5), 2.2, tx.SRGB), (_info(1.0, 20), None, tx.SRGB),
                  (_info(float("nan"), 5), None, tx.SRGB), (_info(50.0, 5), None, tx.SRGB), (b"\x05" * 10, None, tx.SRGB))
         for info, gamma, space in cases:
             with self.subTest(info=info.hex()):
@@ -932,9 +933,9 @@ class VRayTexmaps(Checks):
 
     def test_transfer_functions(self):
         t = self.f.irs["FixtureVBPlace"].textures
-        self.image(t["specular"].root, "vtx_linear.png", tx.NON_COLOR)  # None: linear
+        self.image(t["specular"].root, "vtx_linear.png", tx.LINEAR)  # None: linear
         self.close(t["specular"].root.gamma, 1.0)
-        self.image(t["transmission"].root, "vtx_invgamma.png", tx.NON_COLOR)  # inverse gamma 2: pixel ^ 0.5
+        self.image(t["transmission"].root, "vtx_invgamma.png", tx.LINEAR)  # inverse gamma 2: pixel ^ 0.5
         self.close(t["transmission"].root.gamma, 0.5)
         self.assertIsInstance(t["roughness"].root, tx.Invert)
         self.image(t["roughness"].root.input, "vtx_gloss.png", tx.NON_COLOR)  # sRGB, but a data input
@@ -1036,7 +1037,7 @@ class VRayBitmapSynthetic(Checks):
         self.assertIsNone(tex.convert(mat.MapRef(1), tx.COLOR))
 
     def test_transfer_functions(self):
-        for params, gamma, space in (({"p25": 0}, 1.0, tx.NON_COLOR), ({"p25": 1, "p8": 2.0}, 0.5, tx.NON_COLOR),
+        for params, gamma, space in (({"p25": 0}, 1.0, tx.LINEAR), ({"p25": 1, "p8": 2.0}, 0.5, tx.LINEAR),
                                      ({"p25": 1, "p8": 0.4545}, 2.2002, tx.SRGB), ({"p25": 2}, None, tx.SRGB),
                                      ({"p25": 3}, None, tx.SRGB), ({"p25": 4}, None, tx.SRGB)):
             _t, g = _vb(**params)
@@ -1055,7 +1056,7 @@ class VRayBitmapSynthetic(Checks):
                               ({"p25": 1, "p8": 2.0}, 0.5)):
             g = _tex(_vbitmap(1, **params), table=table).convert(mat.MapRef(1), tx.COLOR)
             self.assertEqual(g.root.gamma, gamma, params)
-            self.assertEqual(g.root.colorspace, tx.SRGB if gamma is None else tx.NON_COLOR, params)
+            self.assertEqual(g.root.colorspace, tx.SRGB if gamma is None else tx.LINEAR, params)
 
     def test_unusable_transfer_function(self):
         for params in ({"p25": 1, "p8": 0.0}, {"p25": 1, "p8": float("nan")}, {"p25": 9}, {"p25": "x"}):
@@ -1319,6 +1320,7 @@ class LostMaps(Checks):
             self.lost_issue(tex, cls)
             self.assertEqual(tex.stats.peeled, collections.Counter(), "%s drew nothing: not a peel" % cls)
             self.assertEqual(tex.stats.unsupported, collections.Counter({"Noise": 1}), "the lost map only")
+            self.assertEqual(len(tex.stats.issues), 2, "the Noise and the lost map: %s" % tex.stats.issues)
         tex = _tex(_falloff(1, color1=(1.0, 0.0, 0.0)))
         self.close(tex.convert(mat.MapRef(1), tx.COLOR).root.value, (1.0, 0.0, 0.0), "no map: color 1")
         self.assertEqual(tex.stats.peeled, collections.Counter({"Falloff": 1}))
@@ -1326,6 +1328,71 @@ class LostMaps(Checks):
                    _noise(2))
         self.close(tex.convert(mat.MapRef(1), tx.COLOR).root.value, (1.0, 0.0, 0.0), "map off: its color")
         self.assertEqual(tex.stats.peeled, collections.Counter({"VRayDirt": 1}))
+
+    # (class, class name, map pid, switch pid or None): the wrappers that have no color of their own
+    EMPTY_WRAPPERS = ((tx.OUTPUT, "Output", 0, 1), (tx.RGB_TINT, "RGB Tint", 3, 4),
+                      (tx.VRAY_COLOR2BUMP, "VRayColor2Bump", 0, None))
+
+    def empty_issue(self, tex, wrapper):
+        issues = [r for _i, r in tex.stats.issues if "no map" in r]
+        self.assertEqual(len(issues), 1, tex.stats.issues)
+        self.assertTrue(issues[0].startswith(wrapper), issues[0])
+
+    def test_empty_wrappers_are_named(self):
+        for class_id, cls, pid, on in self.EMPTY_WRAPPERS:
+            cases = [("map unset", _tex(FakeMap(1, class_id, {pid: Ref(None)}, cls=cls, name="w")))]
+            if on is not None:  # map off: the bitmap below is not used
+                cases.append(("map off", _tex(FakeMap(1, class_id, {pid: Ref(2), on: 0}, [2], cls=cls, name="w"),
+                                              _bitmap(2))))
+            for case, tex in cases:
+                with self.subTest(cls=cls, case=case):
+                    self.assertIsNone(tex.convert(mat.MapRef(1), tx.COLOR))
+                    self.assertEqual(len(tex.stats.issues), 1, tex.stats.issues)
+                    self.empty_issue(tex, "%s 'w'" % cls)
+                    self.assertEqual(tex.stats.peeled, collections.Counter())
+                    self.assertEqual(tex.stats.unsupported, collections.Counter())
+                    self.assertIsNone(tex.convert(mat.MapRef(1), tx.DATA))
+                    self.assertEqual(len(tex.stats.issues), 1, "named once: %s" % tex.stats.issues)
+
+    def test_empty_wrapper_below_a_mix(self):
+        empty = FakeMap(2, tx.OUTPUT, {0: Ref(None)}, cls="Output", name="out")
+        tex = _tex(FakeMap(1, tx.MIX, {0: 0.5, 6: Ref(2), 7: Ref(3)}, [2, 3], cls="Mix", name="mx"), empty,
+                   _bitmap(3))
+        g = tex.convert(mat.MapRef(1), tx.COLOR)
+        self.assertEqual(g.root.name, "a.png")
+        self.assertTrue(g.approximated)
+        self.empty_issue(tex, "Output 'out'")
+        self.lost_issue_of(tex, "Mix 'mx'", "Output 'out'")
+        tex = _tex(FakeMap(1, tx.MIX, {0: 1.0, 6: Ref(2), 7: Ref(3)}, [2, 3], cls="Mix", name="mx"), empty,
+                   _bitmap(3))
+        g = tex.convert(mat.MapRef(1), tx.COLOR)
+        self.assertIsInstance(g.root, tx.Mix, "amount 1: map 1 does not show")
+        self.assertFalse(g.approximated)
+        self.empty_issue(tex, "Output 'out'")
+
+    def test_empty_wrapper_elsewhere(self):
+        tint = FakeMap(2, tx.RGB_TINT, {3: Ref(None)}, cls="RGB Tint", name="t")
+        tex = _tex(FakeMap(1, tx.COMPOSITE, {9: [Ref(3), Ref(2)]}, [3, 2], cls="Composite", name="cp"), tint,
+                   _bitmap(3))
+        g = tex.convert(mat.MapRef(1), tx.COLOR)
+        self.assertEqual(g.root.name, "a.png", "the empty layer is left out")
+        self.empty_issue(tex, "RGB Tint 't'")
+        self.lost_issue_of(tex, "Composite 'cp'", "RGB Tint 't'")
+        c2b = FakeMap(1, tx.VRAY_COLOR2BUMP, {0: Ref(None)}, cls="VRayColor2Bump", name="c2b")
+        tex = _tex(c2b)
+        self.assertIsNone(tex.convert(mat.MapRef(1), tx.BUMP))
+        self.assertEqual([r for _i, r in tex.stats.issues], ["VRayColor2Bump 'c2b': no map, not drawn"])
+        tex = _tex(FakeMap(1, tx.OUTPUT, {0: Ref(2)}, [2], cls="Output", name="out"), tint)
+        self.assertIsNone(tex.convert(mat.MapRef(1), tx.COLOR))
+        self.empty_issue(tex, "RGB Tint 't'")
+        self.lost_issue_of(tex, "Output 'out'", "RGB Tint 't'")
+        self.assertEqual(tex.stats.peeled, collections.Counter())
+
+    def lost_issue_of(self, tex, wrapper, lost):
+        issues = [r for _i, r in tex.stats.issues if "converts to nothing" in r]
+        self.assertEqual(len(issues), 1, tex.stats.issues)
+        self.assertTrue(issues[0].startswith(wrapper), issues[0])
+        self.assertIn(lost, issues[0])
 
     def test_hidden_peeled_wrapper_is_exact(self):
         # mix amount 1: map 1 (a Falloff over a lost map) does not show and is drawn as color 1

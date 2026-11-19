@@ -8,6 +8,31 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
 
 ## [Unreleased]
 
+### Changed
+
+- Report: a scene saved with a view through no camera active (common) names its scene camera, the first camera, in
+  the render line instead of raising a warning; a damaged Config stream is named as such, not as "no saved view".
+- Materials: an Output, RGB Tint or VRayColor2Bump map without a map of its own (or an Output or RGB Tint with it
+  switched off) is named in the report; it is drawn as before (directly in a slot, the material keeps its own color
+  or value), but no longer silently.
+- Report: a VRaySky as the environment map is named under "environment" instead of "object N" (the number was the
+  map's, not an object's).
+- Materials: a color map read as linear (an EXR or HDR file under automatic gamma, a VRayBitmap transfer function
+  None, a gamma override other than 2.2) is loaded in the Linear Rec.709 color space instead of Non-Color, so its
+  colors keep their primaries in a scene whose working space is not Linear Rec.709 (Non-Color where Blender's color
+  management config lacks it). Data maps stay Non-Color.
+
+### Fixed
+
+- Scene pack popup: when every name the pack folder could take is already someone else's folder, the popup says so
+  (what the import would stop with) instead of "Unpacks into a folder named after the archive"; a pack replaced at
+  the same path while the popup is open no longer shows the folder of the old one. "No free folder" and "Cannot
+  write into" put the folder on a line of its own, so a long path no longer cuts off the end of the message.
+- Primitives: a standard primitive whose Real-World Map Size data is damaged is built with that option off instead
+  of as a placeholder.
+- Scene packs: Blender closing at the moment an unpack creates its folder (or the folder of a pack with several
+  scenes) no longer leaves an empty folder behind that makes the next unpack use `<name> (2)`.
+
 ## [0.1.0] - 2026-11-19
 
 ### Added

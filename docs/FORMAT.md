@@ -398,6 +398,9 @@ against the extrude fixture's oracle) keeps its parameters in an old ParamBlock 
 Real-World Map Size is not in the block: the modifier's own chunk holds `0x2150 {0x0100 u32 1, 0x0110 {0x0120: 20
 bytes naming the class, 0x0130 u32}}`, and that `u32` is 1 on FixtureExtAdaptive, 0 on the others. `0x2150` can hold
 several `0x0110` entries: the flag is the one whose `0x0120` names Extrude's ClassID (another class's entry is not it).
+`maxdrop/reader/realworld.py` reads it for Extrude, UVW Map and the primitives alike. A damaged one is off, never an
+error (the flag only changes UVs): a chunk or a `0x2150` whose children do not parse, or a `0x0130` shorter
+than a `u32`; an entry that does not parse or whose `0x0120` is shorter than a ClassID is skipped.
 
 What 3ds Max 2020 makes of it (`snapshotAsMesh`, probed on scratch scenes and checked on the fixture: the oracle's
 `eval_verts`, `eval_faces` and `bbox_*`; `tests/unit/test_extrude.py` holds the counts):
@@ -447,7 +450,8 @@ references
 
 Real-World Map Size is not in the block: as on Extrude, `0x2150` holds `0x0110` entries, each a `0x0120` naming a
 class (the first 8 bytes its ClassID) and a `0x0130` `u32`; the entry naming the modifier's own class holds the flag
-(1 on FixtureUVWRealWorld). An instanced UVW Map (FixtureUVWSharedA/B) holds three entries.
+(1 on FixtureUVWRealWorld). An instanced UVW Map (FixtureUVWSharedA/B) holds three entries. Read by
+`maxdrop/reader/realworld.py`.
 
 What 3ds Max 2020 computes (fitted to `meshop.getMapVert` on scratch scenes, then checked on the fixture: U and V
 within 1e-4 for planar and box, 1e-3 for the round types):
@@ -535,7 +539,8 @@ the primitives fixture and its `primitives.mesh.jsonl`). Lengths in file units, 
 | Torus `(0x20, 0)` | 0 radius 1, 1 radius 2, 2 rotation, 3 twist, 4 segments, 5 sides, 6 smooth (0 none, 1 groups alternating by side, 2 all, 3 alternating by segment), 7 slice, 8 and 9 its angles, 10 mapping |
 
 Real-World Map Size is not in the block: `0x2150{0x0100 u32 1, 0x0110{0x0120 the class (classA, classB,
-superclass, 4), 0x0130 u32 flag}}` in the object's chunk; there is no `0x2150` while mapping is off.
+superclass, 4), 0x0130 u32 flag}}` in the object's chunk; there is no `0x2150` while mapping is off. Read by
+`maxdrop/reader/realworld.py`, as on Extrude and UVW Map.
 
 What 3ds Max builds (the TriMesh; MaxDrop merges two triangles that share an edge hidden in both, each with only that
 edge hidden, into the quad 3ds Max shows, and keeps every other triangle, so a cap's fan stays triangles around its
@@ -779,6 +784,9 @@ camera view looks through), `0x2820` i32 the active viewport (−1 on a tab that
 locked one, else the active viewport; the cameras fixture locks it on viewport 2 (CamTarget) while viewport 1
 (CamFree) is active, and the oracle's `render.camera` (3ds Max's `viewport.getCamera`) is CamTarget. Both corpus
 scenes are saved looking through their one camera; their cameras' fields of view equal 3ds Max's (EvalCameraState).
+A view through no camera (a Perspective viewport active, the render view unlocked: the lookat fixture) makes the
+first camera the scene camera, a note of the report's render line; no Config stream or layout, a damaged one,
+no view index in range, an unreadable viewport record or a view through a camera not built is an issue.
 
 ## System unit
 

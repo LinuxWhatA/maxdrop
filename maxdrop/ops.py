@@ -51,6 +51,12 @@
 # its cameras.
 # Modified for MaxDrop, 2026-11-19 (jsiovn). The light colors' swatch note is reported also when the material
 # conversion fails; the Keep Targets note on the axis conversion only when the file's up does not stay Blender's Z.
+# Modified for MaxDrop, 2026-11-19 (jsiovn). An import reads the file's asset table once, for the scene description
+# and the material conversion.
+# Modified for MaxDrop, 2026-11-19 (jsiovn). The Scene Pack panel says when no pack folder name is free, and its
+# previews are dropped when the archive at that path changed since invoke().
+# Modified for MaxDrop, 2026-11-19 (jsiovn). The Scene Pack panel puts the folder of its error lines on a label of
+# its own, and invoke() keeps no folder of a pack it cannot look at.
 
 
 __author__ = "Sebastian Sille <nrgsille@gmail.com>"
@@ -83,8 +89,11 @@ _ARCHIVE_EXTENSIONS = (".zip", ".rar", ".7z")
 # Listings of the packs a drop or a script named, for the popup and the Scene search. Keyed by path, size and
 # modification time, so that a changed archive is listed again.
 _LISTINGS = {}
-# Per pack of the popup, by normalized path: (parent folder, the reason there is none, {scene: archive.preview()}).
+# Per pack of the popup, by normalized path: (_key() of the archive, parent folder, the reason there is none as
+# popup labels, {scene: _preview()}). An archive replaced at that path since invoke() keeps none of it (_target_of).
 _TARGETS = {}
+# The previews that name a .max already on disk.
+_ON_DISK = ("reused", "in_place")
 _CACHE_MAX = 16
 _SHOWN_SCENES = 10
 # Pre-flight lines of the .max files a drop or a script named, by normalized path.
@@ -218,13 +227,13 @@ def _choose(path, scenes, text):
 
 
 def _target(path, context):
-    """(the folder the pack folder will be made in, None), or (None, the reason there is none). The pack folder's
-    own name is archive.unpack()'s choice (a free name, an earlier unpack, a copy extracted by hand), which
-    archive.preview() tells beforehand."""
+    """(the folder the pack folder will be made in, None), or (None, the reason there is none as popup labels). The
+    pack folder's own name is archive.unpack()'s choice (a free name, an earlier unpack, a copy extracted by hand),
+    which archive.preview() tells beforehand."""
     try:
         return prefs.pack_parent(path, context), None
     except ValueError as e:
-        return None, str(e)
+        return None, getattr(e, "lines", None) or (str(e),)
 
 
 def _referenced_maps(max_path):
@@ -249,11 +258,25 @@ def _referenced_maps(max_path):
     return {e.name for e in table if e.name}
 
 
-def _preview(path, scenes, text):
-    """archive.preview() of the scene text chooses, ("unpacked" | "reused" | "in_place", .max path), computed once
-    per pack and scene since invoke() and kept in _TARGETS; None when there is no parent folder, the scene is not
-    chosen yet, its name matches none, or there is no free folder. A .max on disk gets its pre-flight line read."""
+def _target_of(path):
+    """(parent folder, the reason there is none, previews) invoke() stored for the pack; None when it stored none or
+    the archive at that path is not the one it looked at (replaced, changed or gone since)."""
     found = _TARGETS.get(_norm(path))
+    if found is None:
+        return None
+    try:
+        key = _key(path)
+    except OSError:
+        return None
+    return found[1:] if found[0] == key else None
+
+
+def _preview(path, scenes, text):
+    """archive.preview() of the scene text chooses, ("unpacked" | "reused" | "in_place", .max path), or ("none",
+    message) when no folder name is free; computed once per pack and scene since invoke() and kept in _TARGETS.
+    None when there is no parent folder, the scene is not chosen yet or its name matches none. A .max on disk gets
+    its pre-flight line read."""
+    found = _target_of(path)
     if found is None or found[0] is None:
         return None
     parent, _problem, previews = found
@@ -269,10 +292,12 @@ def _preview(path, scenes, text):
             previews.clear()
         try:
             previews[scene] = archive.preview(path, scene, len(scenes) > 1, parent, references=_referenced_maps)
+        except archive.PackError as e:  # no folder name is free: unpack() would refuse with this message
+            previews[scene] = ("none", str(e))
         except Exception as e:  # cached as None: draw() runs on every redraw
             print("MaxDrop: could not preview the pack folder of %s (%s)" % (os.path.basename(path), e))
             previews[scene] = None
-        if previews[scene] and previews[scene][0] != "unpacked":
+        if previews[scene] and previews[scene][0] in _ON_DISK:
             _remember_preflight(previews[scene][1])
     return previews[scene]
 
@@ -361,21 +386,20 @@ def _preflight_of(path):
         return None
 
 
-def _material_slots(cf, sc, desc, max_path, context, image_search):
+def _material_slots(sc, desc, table, max_path, context, image_search):
     """(the material slots of desc's meshes {mesh key: MeshSlots}, (the material converter's, the texture-map
     converter's and the texture lookup's counters, the scene's swatch rule) for the import report): every material
-    converted, its texture files looked up. cf / sc: the open file and its reader Scene, which the converters read;
-    the counters hold no reference to them."""
+    converted, its texture files looked up. sc: the reader Scene, which the converters read; table: the file's
+    reader.assets.AssetTable (the one the scene description got); the counters hold no reference to either."""
     from .convert import colors as convert_colors
     from .convert import materials as convert_materials
     from .convert import texmaps as convert_texmaps
     from .convert import textures as convert_textures
-    from .reader import assets
     from .reader import materials as reader_materials
     graph = reader_materials.MaterialGraph(sc)
     index = convert_textures.TextureIndex(max_path, prefs.texture_dirs(context), scene_subfolders=image_search)
     swatches = convert_colors.of_scene(sc)
-    tex = convert_texmaps.TexmapConverter(graph, assets.AssetTable.from_file(cf), textures=index, swatches=swatches)
+    tex = convert_texmaps.TexmapConverter(graph, table, textures=index, swatches=swatches)
     conv = convert_materials.MaterialConverter(graph, texmaps=tex, swatches=swatches)
     slots = convert_materials.assign(desc, convert_materials.node_materials(sc, desc), conv)
     return slots, (conv.stats, tex.stats, index.report, swatches)
@@ -621,12 +645,13 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
             sc = reader_scene.Scene.from_file(cf)
             unit = units.system_unit(sc)
             meters, note = _meters(self.units, unit, self.scale_objects)
+            table = assets.AssetTable.from_file(cf)
             desc = convert_scene.describe(sc, meters, unit, convert_modifiers=self.modifiers == 'KEEP',
-                                          assets=assets.AssetTable.from_file(cf), views=cameras.saved_views(cf))
+                                          assets=table, views=cameras.saved_views(cf))
             slots, counts, failed = None, None, []
             if materials:
                 try:
-                    slots, counts = _material_slots(cf, sc, desc, max_path, context, self.use_image_search)
+                    slots, counts = _material_slots(sc, desc, table, max_path, context, self.use_image_search)
                 except Exception as e:  # a material rule's bug costs the materials, never the scene
                     print("MaxDrop: materials of %s not converted:\n%s" % (name, traceback.format_exc()), end="")
                     failed.append(("materials", "not converted (%s: %s): the scene is imported without materials"
@@ -708,7 +733,11 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
             # known now is previewed here too; draw() previews another one the Scene field names (read only).
             for path, found in packs:
                 parent, problem = _target(path, context)
-                _TARGETS[_norm(path)] = (parent, problem, {})
+                try:
+                    _TARGETS[_norm(path)] = (_key(path), parent, problem, {})
+                except OSError:  # gone since it was listed: the popup shows no folder for it
+                    _TARGETS.pop(_norm(path), None)
+                    continue
                 _preview(path, found.scenes, self.pack_scene)  # a pack is never unpacked here
             listed = {_norm(path) for path, _found in packs}
             for path in _paths(self)[:_SHOWN_FILES]:
@@ -737,10 +766,16 @@ def import_pack(layout, operator, packs):
         else:
             body.label(text="Scene: " + _base(listing.scenes[0]))
         body.label(text=_plural(listing.assets, "texture file"))
-        parent, problem, _previews = _TARGETS.get(_norm(path), (None, None, None))
+        parent, problem, _previews = _target_of(path) or (None, None, None)
         found = None if problem else _drawn_preview(operator, path, listing)
         if problem:
-            body.label(text=problem, icon='ERROR')
+            body.label(text=problem[0], icon='ERROR')
+            for line in problem[1:]:
+                body.label(text=line)
+        elif found and found[0] == "none":  # found[1], the message execute() would stop with, split into labels
+            body.label(text="No free folder for %s in" % os.path.basename(path), icon='ERROR')
+            body.label(text=parent)
+            body.label(text="Too many folders of that name exist.")
         elif found:
             mode, max_path = found
             if mode == "unpacked":
@@ -763,7 +798,7 @@ def import_files(layout, operator):
     for path in _paths(operator):
         listing = _cached(path)
         found = _drawn_preview(operator, path, listing) if listing is not None else None
-        target = found[1] if found and found[0] != "unpacked" else path
+        target = found[1] if found and found[0] in _ON_DISK else path
         line = _preflight_of(target)
         if line is not None:
             rows.append((os.path.basename(target), line))

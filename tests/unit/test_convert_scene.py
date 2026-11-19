@@ -120,9 +120,7 @@ NO_DECAY = "light: no decay: Blender's light falls off with the square of the di
 ISSUES = {"uvwmap": ["uvw map: a UVW Map above Bend is not evaluated",
                      "uvw map: shrink-wrap mapping is not evaluated: the stored channel stays"],
           "stack_convert": ["modifiers: TurboSmooth above Bend is not converted"],
-          "lookat": [  # its target spot; it was saved with a Perspective viewport active
-              "camera: the view 3ds Max renders (viewport 4) looks through no camera: the first camera, FixtureCam, is "
-              "the scene camera", NO_DECAY],
+          "lookat": [NO_DECAY],  # its target spot (its Perspective viewport is a note of the report, no issue)
           "cameras": ["camera: depth of field is not imported"] * 2 + [
               "camera: its exposure is not imported: Blender renders as if the camera had none"] * 3 + [
               "camera: its tilt correction (0, 5) is not imported: Blender has no keystone correction"],
@@ -507,6 +505,22 @@ def _run_py_table(name):
     raise AssertionError("no %s in tests/blender/run.py" % name)
 
 
+def _uv_layers(fixture, mesh):
+    """UV_LAYERS of one mesh: a fixture's list, or its table per mesh (a mesh not in a plain dict has none)."""
+    want = UV_LAYERS[fixture]
+    if isinstance(want, collections.defaultdict):
+        return want[mesh]
+    return want.get(mesh, []) if isinstance(want, dict) else want
+
+
+def _extruded_nodes():
+    """(fixture, node name) of every oracle node tests/blender/run.py's check_extruded runs on: a shape under an
+    Extrude (an Extrude that is off leaves no eval_verts; test_counts_equal_the_oracle holds that rule to the node
+    kinds). The tables are keyed by node name: an extruded object with instances would need its mesh's name."""
+    return [(_name(p), o["name"]) for p in FIXTURES for o in _oracle(p)["nodes"]
+            if o["shape"] is not None and o["eval_verts"] is not None]
+
+
 class LookAt(unittest.TestCase):
     def test_track_to_of_each_look_at(self):
         look_at = importlib.import_module(_PKG + ".reader.controllers").LookAt
@@ -524,6 +538,7 @@ class LookAt(unittest.TestCase):
                              (look_at(7, 2, False, 0.1, False), conv.NO_TRACK_ROLL)):
             self.assertEqual(describe(look), conv.LookAtDescription(7, None, None, False, reason))
 
+    @unittest.skipIf(numpy is None, "numpy missing")  # lookat.max has boxes: their meshes are built with numpy
     def test_lookat_fixture(self):
         desc = conv.read(os.path.join(ROOT, "tests", "fixtures", "lookat.max"))
         index = {n.index: n.name for n in desc.nodes}
@@ -542,8 +557,9 @@ class LookAt(unittest.TestCase):
 
 
 class FixtureTables(unittest.TestCase):
-    """Every committed fixture has an entry in the per-fixture tables, here and in tests/blender/run.py, so a new
-    fixture fails the plain suite instead of only the Blender run."""
+    """Every committed fixture has an entry in the per-fixture tables, here and in tests/blender/run.py, and every
+    extruded object one in run.py's per-object extrude tables, so a new fixture or object fails the plain suite
+    instead of only the Blender run."""
 
     def _same_names(self, table, where):
         names = {_name(p) for p in FIXTURES}
@@ -556,6 +572,26 @@ class FixtureTables(unittest.TestCase):
 
     def test_blender_run_uv_layers_lists_every_fixture(self):
         self._same_names(_run_py_table("UV_LAYERS"), "UV_LAYERS of tests/blender/run.py")
+
+    def test_blender_run_extrude_tables_list_every_extruded_object(self):
+        nodes = _extruded_nodes()
+        names = {n for _f, n in nodes}
+        self.assertTrue(names)
+        self.assertEqual(len(names), len(nodes), "extruded node names repeat across fixtures: " + str(nodes))
+        for table in ("EXTRUDE_EULER", "EXTRUDE_SHARP_EDGES"):  # indexed by check_extruded
+            keys = set(_run_py_table(table))
+            self.assertEqual(sorted(names - keys), [], "extruded objects without an entry in %s of "
+                             "tests/blender/run.py" % table)
+            self.assertEqual(sorted(keys - names), [], "entries without an extruded object in %s of "
+                             "tests/blender/run.py" % table)
+        self.assertEqual(_run_py_table("EXTRUDE_SHARP_EDGES"), SHARP_EDGES_EXTRUDE,
+                         "EXTRUDE_SHARP_EDGES of tests/blender/run.py differs from SHARP_EDGES_EXTRUDE")
+        uv = _run_py_table("EXTRUDE_UV_LAYERS")  # read with .get(name, []): no entry is no UV layer
+        self.assertEqual(sorted(set(uv) - names), [], "entries without an extruded object in EXTRUDE_UV_LAYERS "
+                         "of tests/blender/run.py")
+        for fixture, name in nodes:
+            self.assertEqual(uv.get(name, []), _uv_layers(fixture, name),
+                             "%s: EXTRUDE_UV_LAYERS of tests/blender/run.py differs from UV_LAYERS" % name)
 
 
 @unittest.skipIf(numpy is None, "numpy missing")
@@ -685,11 +721,7 @@ class Fixtures(unittest.TestCase):
     def test_uv_layers_follow_the_map_channels(self):
         for name, desc, _o in self.cases:
             for md in desc.meshes.values():
-                want = UV_LAYERS[name]
-                if isinstance(want, collections.defaultdict):
-                    want = want[md.name]
-                elif isinstance(want, dict):
-                    want = want.get(md.name, [])
+                want = _uv_layers(name, md.name)
                 self.assertEqual([n for n, _uv in md.uv_layers], want, name)
                 for _n, uv in md.uv_layers:
                     self.assertEqual(uv.shape, (len(md.loop_vertices), 2))

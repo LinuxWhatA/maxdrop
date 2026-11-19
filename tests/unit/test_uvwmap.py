@@ -333,9 +333,14 @@ class FakeBlock:
         return self.values.get(i, default)
 
 
+# An object chunk 0x0001 holding a 0x2150 whose children do not parse (a cut-short chunk header): Real-World Map
+# Size off (reader.realworld), the rest of the object read.
+DAMAGED_REAL_WORLD = bytes.fromhex("01000f000080" "502109000080" "300107")
+
+
 class FakeScene:
     def chunk(self, i):
-        raise uvwmap.ChunkError("no chunk %d" % i)
+        return uvwmap.chunks.index(DAMAGED_REAL_WORLD)[0]
 
 
 def _modifier(values):
@@ -357,6 +362,18 @@ class Parameters(unittest.TestCase):
                        {11: 0.0}, {13: 100}, {13: -1}, {9: float("inf")}):
             with self.assertRaises(uvwmap.UVWMapError, msg=repr(values)):
                 uvwmap.read_params(FakeScene(), _modifier(values))
+
+    def test_real_world_is_read_from_its_own_chunk_and_class(self):
+        """Real-World Map Size comes from reader.realworld (tests/unit/test_realworld.py has its cases), asked
+        for the modifier's own chunk and the UVW Map class; a damaged 0x2150 is off."""
+        own = object()
+        scene = types.SimpleNamespace(chunk=lambda i: own if i == 1 else None)
+        with mock.patch.object(uvwmap.realworld, "flag", return_value=True) as flag:
+            p, _issues = uvwmap.read_params(scene, _modifier({}))
+        self.assertTrue(p.real_world)
+        flag.assert_called_once_with(own, classids.UVW_MAP)
+        p, _issues = uvwmap.read_params(FakeScene(), _modifier({}))
+        self.assertFalse(p.real_world)
 
     def test_an_unknown_alignment_is_made_as_z(self):
         p, issues = uvwmap.read_params(FakeScene(), _modifier({12: 7}))

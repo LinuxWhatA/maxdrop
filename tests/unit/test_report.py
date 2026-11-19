@@ -165,6 +165,17 @@ class TestSynthetic(unittest.TestCase):
         self.assertEqual(lines[1], "Units: not stated in the file, 1 m per unit")
         self.assertEqual(lines[-1], "Nothing was left out.")
 
+    def test_scene_camera_note_is_no_issue(self):
+        desc = conv.SceneDescription(1.0)
+        desc.nodes = [node(1, "Box"), node(2, "Cam", conv.CAMERA)]
+        desc.meshes = {(1, None): None}
+        desc.camera, desc.camera_note = 2, "the first camera: the view 3ds Max renders (viewport 4) looks through " \
+            "no camera"
+        rep = report.gather(desc, source="room.max")
+        self.assertEqual(rep.summary()[0], report.LEVEL_INFO)
+        self.assertIn("Render size: not stored, Blender's kept; scene camera: Cam, the first camera: the view 3ds Max "
+                      "renders (viewport 4) looks through no camera", rep.text().split("\n"))
+
     def test_curves_are_counted(self):
         desc = conv.SceneDescription(1.0)
         desc.nodes = [node(1, "Box"), node(2, "Outline", conv.CURVE)]
@@ -389,6 +400,13 @@ class TestSceneIssues(unittest.TestCase):
         rep = report.gather(desc, source="a.max")
         self.assertIn(("scene", "render: the render size 3 x 450 is out of Blender's range: Blender's is kept"),
                       rep.issues)
+
+    def test_a_scene_level_issue_keeps_its_own_label(self):
+        desc = box()
+        desc.issues.append((conv.ENVIRONMENT, "light: the environment map is a VRaySky"))
+        rep = report.gather(desc, source="a.max")
+        self.assertIn(("environment", "light: the environment map is a VRaySky"), rep.issues)
+        self.assertFalse([label for label, _r in rep.issues if label.startswith("object ")], rep.issues)
 
 
 class TestSwatches(unittest.TestCase):

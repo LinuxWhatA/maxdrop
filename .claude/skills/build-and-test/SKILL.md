@@ -114,10 +114,15 @@ Pass: one line `## [<version>] - <date>`.
 
 ```powershell
 python -I -m unittest discover tests
+python -I tools/lint.py
 ```
 
 Pass: exit 0, last line `OK` or `OK (skipped=N)`. A skip is a real-tool case whose tool this machine lacks
-(the test prints why); a skip that is new for the change is reported.
+(the test prints why); a skip that is new for the change is reported. Then ruff, the check CI's Ruff step runs:
+exit 0 and `All checks passed!`. The version is `required-version` in `pyproject.toml`; `tools/lint.py` uses
+`ruff` on PATH at that version, else `uvx --offline ruff@<version>`. Exit 3 = no ruff of that version here: fetch
+it once (`uvx ruff@<version> --version`, network) and rerun, or report the lint as skipped. Exit 1 = findings: fix
+them, never commit past them. Exit 2 = ruff's own error (a bad argument, a config error).
 
 ## 2. Build
 
@@ -327,8 +332,8 @@ stay in `S`, and only counts and measurements are compared with `docs/BASELINE.m
 objects, meshes, materials, placeholders). `counts.nodes` is the number of nodes MaxDrop's reader walks in the
 file (`tools/baseline_import.py`; the importer builds one object per node), `null` only when the reader cannot
 index the file. `import_report` holds the counts of the operator's `Imported ...` line (objects, meshes,
-curves, materials, placeholders, modifiers not applied, textures missing, approximated, issues), `null` when the
-log has no such line.
+curves, materials, placeholders, modifiers not applied, textures missing, approximated, material problems,
+issues), `null` when the log has no such line.
 
 ## Evidence and report
 

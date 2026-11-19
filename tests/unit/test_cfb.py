@@ -15,24 +15,26 @@ import os
 import struct
 import sys
 import tempfile
+import types
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _load(name, path, package_dir=None):
-    kw = {"submodule_search_locations": [package_dir]} if package_dir else {}
-    spec = importlib.util.spec_from_file_location(name, path, **kw)
+def _load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
 
-# By path, as a package of its own: `import maxdrop` would pull bpy.
-_READER = os.path.join(ROOT, "maxdrop", "reader")
-_load("maxdrop_reader", os.path.join(_READER, "__init__.py"), _READER)
-cfb = _load("maxdrop_reader.cfb", os.path.join(_READER, "cfb.py"))
+_PKG = "maxdrop_convert_test"  # the package the convert tests make: maxdrop/__init__.py (bpy) never runs
+if _PKG not in sys.modules:
+    _pkg = types.ModuleType(_PKG)
+    _pkg.__path__ = [os.path.join(ROOT, "maxdrop")]
+    sys.modules[_PKG] = _pkg
+cfb = importlib.import_module(_PKG + ".reader.cfb")
 tools_cfb = _load("maxdrop_tools_cfb", os.path.join(ROOT, "tools", "cfb.py"))
 
 CfbError = cfb.CfbError

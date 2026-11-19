@@ -10,6 +10,7 @@ No package manager. Build = Blender's extension CLI; tests = plain Python for th
 
 ```powershell
 python -I -m unittest discover tests                  # tools/, the landing page, the license files: no Blender
+python -I tools/lint.py                               # ruff at pyproject's required-version (CI's); exit 3 = none found
 powershell -ExecutionPolicy Bypass -File build.ps1    # dist\ (git-ignored): zip, index.json, index.html
 ```
 
@@ -65,8 +66,8 @@ powershell -ExecutionPolicy Bypass -File build.ps1    # dist\ (git-ignored): zip
   device names): the one module outside those packages they may import (`from .. import pathnames`), bpy-free
   like them and importing nothing of the add-on (`tests/unit/test_reader_no_bpy.py` scans it). A test of a
   module that imports it (directly or through another module) must load that module under a package of its own
-  whose path is `maxdrop/` (`maxdrop/__init__.py`, which imports bpy, never runs): the one-level
-  `maxdrop_reader` loaders of some reader tests and tools cannot resolve `..`.
+  whose path is `maxdrop/` (`maxdrop/__init__.py`, which imports bpy, never runs), as the `maxdrop_convert_test`
+  stub of the tests and `maxdrop_tool` of the tools do: a package rooted at `maxdrop/reader/` cannot resolve `..`.
 - `site/index.html` + `tools/make_site.py`: the landing page, filled from `dist/index.json` (`{{token}}`
   values). Self-contained: no third-party requests. The install link keeps the form Blender's own generator
   emits (`./maxdrop-<version>.zip?repository=.%2Findex.json&blender_version_min=4.2.0`).
@@ -106,7 +107,10 @@ powershell -ExecutionPolicy Bypass -File build.ps1    # dist\ (git-ignored): zip
   from a pack is executed or imported as code. Never `extract()` / `extractall()`: stream each entry and count
   the bytes really written against the limits (`Limits`). Unpack into a staging folder beside the destination,
   rename at the end, remove staging on any failure, and remove only folders this code created. A folder without
-  the `.maxdrop-pack.json` marker is never written into.
+  the `.maxdrop-pack.json` marker is never written into. The one exception, and only to remove it: a real folder
+  (not a link) a crash left mid-move (an hour-old `.maxdrop-reserved.json` naming the same pack, nothing but the
+  maps it lists, no `.max`) is first renamed to staging (one unpack wins), judged again and cleared, file by
+  file; the new unpack takes the name with a folder of its own.
 - **Install from the repository, not from disk:** Blender only upgrades an extension inside the repository it
   came from.
 - English only for UI strings, comments and docs; comment only non-obvious *why*.
