@@ -80,14 +80,16 @@ Reference slots of a node, checked on every node of every fixture (`test_scene.p
 
 Flags in `0x0960` seen so far: `0x800` on most nodes, `0` on the three instances and the copy in instances (the
 source has `0x800`) and on the two references in modifier_pivot, `0x100800` on the hidden node of layers_flags,
-`0x40` on its group head and `0x900` on the two group members (`test_scene.py`, `test_flags_and_pair_heads`,
-which also checks the first `0x2035` values above). Decoded from layers_flags:
+`0x40` on its group head, `0x900` on the two group members and `0x4800` on the six nodes of lookat a Look At
+controller aims at (`test_scene.py`, `test_flags_and_pair_heads`, which also checks the first `0x2035` values
+above). Decoded from layers_flags and lookat:
 
 | Bit | Meaning |
 |---|---|
 | `0x100000` | hidden (FixtureHidden; that node also has an empty `0x0975` chunk) |
 | `0x40` | group head (FixtureGroup, a Dummy whose children are the members) |
 | `0x100` | group member (FixtureGroupA and FixtureGroupB) |
+| `0x4000` | the target of a Look At controller (the five Target objects and FixtureAim; not on a node only a LookAt Constraint aims at). Not read: the controller names its target |
 
 `0x800` is not decoded. Renderable is not in `0x0960` (FixtureNoRender has `0x800`) but in `0x099C`, a `u32` on
 every node of every fixture: `0x0F00D600` on each node, `0x0F005600` on FixtureNoRender, so bit `0x8000` is
@@ -175,7 +177,8 @@ names, order and flags of every fixture's layers against the oracle).
 
 - Matrices are in Max's row-vector convention: a point times the matrix, row 4 = translation, `A * B` applies `A`
   first; this is the oracle's 12-float layout.
-- Every fixture node's controller is a Position/Rotation/Scale `(0x2005, 0)` with reference slots 0 = Position XYZ
+- Every fixture node's controller is a Position/Rotation/Scale `(0x2005, 0)` (but lookat's, see
+  [Look At](#look-at)) with reference slots 0 = Position XYZ
   `(0x118F7E02, 0xFFEE238A)`, 1 = Euler XYZ `(0x2012, 0)`, 2 = Bezier Scale `(0x2010, 0)`. Position XYZ and Euler
   XYZ reference three Bezier Float `(0x2007, 0)` in slots 0, 1, 2 (x, y, z).
 - A Bezier Float's value is an `f32` in `0x2501`, inside a `0x7127` container in every fixture.
@@ -192,6 +195,79 @@ names, order and flags of every fixture's layers against the oracle).
   modifier_pivot's FixtureBent (pivot alone turned +30° about Z) stores `[0, 0, 0.258819, 0.965926]`, a -30° turn
   read as row 1 = `[0.866025, -0.5, 0]` (`controllers.quat_matrix`), and offset * world is then the identity
   rotation of the oracle's `object_transform`.
+
+## Look At
+
+lookat (`tools/fixtures/lookat.ms`): target cameras (one rolled 30°, one straight above its target, one under a
+Dummy turned 40° and scaled 1.5), a target spot, boxes with a Look At controller (X axis flipped with the target as
+up node and a scale of its own; Y axis rolled 15°) and boxes with a LookAt Constraint (two weighted targets and the
+Y axis flipped with a scale of its own; an up node looked at; an up node's X axis aligned with, under the Dummy).
+Every node's world and object transform equals the oracle within 1e-4 (`test_controllers.py`). The frames were
+found on scratch files saved by 3ds Max 2020 (one setting changed per file, compared with `tools/maxdiff.py`, and
+`node.transform` read in MAXScript); `look_frame` and `constraint_frame` are tested against those numbers.
+
+**Look At controller** `(0x2006, 0)`, superclass `0x9008`, a target camera's or light's transform controller (and a
+node's whose controller is set to `lookat()`):
+
+| Reference slot | Content |
+|---|---|
+| 0 | the target node (empty: none) |
+| 1 | the position controller (Position XYZ) |
+| 2 | the roll: a Bezier Float, radians (FixtureCamRoll: `0.523599`) |
+| 3 | the scale controller (Bezier Scale) |
+
+| Chunk | Content |
+|---|---|
+| `0x0100` | `u32` axis: 0 X, 1 Y, 2 Z (2 on every camera and light) |
+| `0x0110` | present: flip |
+| `0x0201` | `u8` 1: the target's Z axis is the up direction (FixtureLooker) |
+
+The world position `P` is the position controller's value times the parent's world matrix; the parent's rotation and
+scale do not reach the frame (FixtureCamChild's rows have unit length under a Dummy scaled 1.5, its own scale
+stored 1). With `n` the unit vector from `P` to the target's world position (the world origin without a target):
+`z = -n`, `x = normalize(up x z)`, `y = z x x`, `up` = world Z or the target's world Z axis. Then flip turns the
+frame half round `y` (`x, z -> -x, -z`), roll turns it about `z` (`x' = cos r x + sin r y`, `y' = -sin r x +
+cos r y`), and the axis picks the rows: Z `(x, y, z)`, X `(z, y, -x)`, Y `(x, z, -y)`. So `-Z` (or `-X`, `-Y`)
+looks at the target, `+` when flipped. Degenerate, as 3ds Max computes it: `z` along `up` gives `x = +X`
+(FixtureCamDown, straight above its target, has the identity rotation); on the target `z = +X`. World matrix =
+scale (along its axis) * frame * translation(`P`); the local matrix is that times the parent's inverse.
+
+**LookAt Constraint** `(0x2021, 0)`, superclass `0x900C`, in a Position/Rotation/Scale's rotation slot. Its one
+reference is a ParamBlock2:
+
+| Id | Parameter (MAXScript) | Type |
+|---|---|---|
+| 0 | `weight` | float table, one per target |
+| 1 | targets (`appendTarget`) | node table, no value: the block's reference slots |
+| 2 | `relative` (Keep Initial Offset) | bool |
+| 3 | `lookat_vector_length` | float (display) |
+| 4 | `set_orientation` | bool |
+| 5 | `target_axis` (0 X, 1 Y, 2 Z) | int |
+| 6 | `target_axisFlip` | bool |
+| 7 | `upnode_axis` | int |
+| 8 | `upnode_world` | bool |
+| 9 | `pickUpNode` | node, no value: the next reference slot |
+| 10 | `StoUP_axis` (the source's up axis) | int |
+| 11 | `StoUP_axisFlip` | bool |
+| 12 | `viewline_length_abs` | bool (display) |
+| 13 | `upnode_ctrl`: 0 look at, 1 axis alignment | int |
+
+The ids were matched by the values of the three constraints and by saves that set `relative` or `set_orientation`
+alone. The constraint's own chunks `0x1001`-`0x1004` (4 x `f32`) and `0x1005` (`u32`) are not decoded (the offsets of
+`relative` and `set_orientation`, presumably: an issue when either is on). The target point is the weighted average
+of the targets' world positions. Row `target_axis` = `n` (`-n` flipped). The up vector: axis alignment = row
+`upnode_axis` of the up node's world matrix (the world's: that unit axis); look at = from `P` to the up node's world
+position (the world's: the origin). Row `StoUP_axis` = the up vector without its part along `n`, normalized
+(negated when flipped); the third row completes a right-handed frame (`row[t] = row[t+1] x row[t+2]`). Unlike the
+controller's, the scale is relative: world = own scale * the lengths of the parent's rows (a probe: a Dummy scaled
+`[1, 2, 3]` and turned gives rows of length 1, 2, 3) * frame * translation(`P`). FixtureConstrainedAxis (own scale
+stored `0.6667` under the Dummy scaled 1.5) has unit rows.
+
+Look-ats that depend on one another in a cycle (3ds Max refuses such a loop) are all damaged, whichever is asked
+for first: each node of the cycle (one aimed at itself is a cycle of one) gets identity and an issue; a look-at
+outside the cycle that aims at one of them aims at its identity. The node at which a chain waits on more than 64
+others gets identity and an issue too. A constraint outside a Position/Rotation/Scale's rotation slot is an unknown
+class; a damaged constraint block uses the defaults of what it cannot read (an issue).
 
 ## Geometry
 
@@ -509,6 +585,201 @@ and a Sphere's or GeoSphere's hemisphere. Plane's render scale and density act a
 viewport size, a line in the report). Teapot is not built. A primitive past 2^21 face corners (`MAX_CORNERS`) is
 refused: a file can ask for any number of segments.
 
+## VRayLight
+
+VRayLight `(0x3C5575A1, 0x5FD602DF)`, superclass `0x30` (light), V-Ray 5.2 in 3ds Max 2020 (`convert/lights.py`;
+ids read through the SDK's .NET wrapper on a scratch scene, then the vray_lights fixture read back by the reader).
+Reference 0 is a ParamBlock2 (block id 0), reference 2 the viewport icon object. Parameter ids, lengths in file
+units:
+
+| Id | Parameter |
+|---|---|
+| 0, 1 | on; type: 0 plane, 1 dome, 2 sphere, 3 mesh, 4 disc |
+| 2, 3, 4 | size0, size1, size2: a plane's HALF length along its local X and half width along local Y (a V-Ray render of size0 10, size1 30 from below is 20 by 60); a disc's and a sphere's radius in size0 |
+| 7, 8, 12 | color; multiplier; units (`normalizeColor`): 0 default (image), 1 lm, 2 lm/m²/sr, 3 W, 4 W/m²/sr |
+| 9, 10 | double-sided; invisible |
+| 18, 19 | texmap (a map reference), texmap on |
+| 25, 26, 30 | affect diffuse, affect specular, affect reflections |
+| 36 | directional (`lightDistribution`) |
+| 38, 39 | color temperature (K); color mode: 0 color, 1 temperature |
+| 43 | targeted (the node has a Look At controller and a Target, [Look At](#look-at)) |
+| 53, 54 | diffuse contribution, specular contribution |
+
+In temperature mode V-Ray also stores its own color of that temperature in 7 (3500 K: 1.0, 0.584, 0.256); MaxDrop
+takes the curve of the rules source instead (3500 K: 255, 192.5, 140.8 as an sRGB swatch). `on:false` given to the
+MAXScript constructor does not stick (the fixture script sets it afterwards), and `targeted:true` there makes no
+target.
+
+**Power.** The rules source's watts (its `ocbaby_exsVrayLightWatts`): emitting area `a` = plane 2 size0 × 2 size1,
+disc π size0², sphere 4π size0² (m², doubled for a double-sided plane or disc); 1 lm: `m / 683`, 2 lm/m²/sr:
+`π m a / 683`, 3 W: `m`, 4 W/m²/sr: `π m a`, default: `m a · 1500 / 683`. Compared with V-Ray 5.2 renders (below),
+one change: in lm/m²/sr and W/m²/sr V-Ray lights a disc as if `a` were (2 size0)², 4/π more than its area; in the
+default units it does not. Blender's area light shines on one side: a double-sided plane or disc gets half.
+
+**A scaled node.** V-Ray grows the emitting area with the node's scale; in the units that follow the area (default,
+lm/m²/sr, W/m²/sr) the flux grows with it, in lm and W it does not. Measured on lights scaled 2, 1.5, 1 (the scratch
+scene below): plane and disc 3 × the unscaled flux (X × Y scale), sphere 4 × (its largest scale squared; X and the
+largest are the same there). Blender scales an area light's size with its object and keeps its power, so the power
+takes that factor (`area_scale`), and instances of one light with different scales get a light each. The
+vray_lights fixture's FixtureDiscScaled is such an instance.
+
+**Calibration of Light Strength (1.43).** A scratch scene (not committed): a white Lambert floor (VRayMtl diffuse
+255, no reflection; in Blender a Diffuse BSDF of 1.0), an invisible VRayLight 1 m above it, plane, disc and sphere
+of 100 mm size0 in each of the five units modes, each rendered alone through an orthographic camera looking down at
+the floor below it, V-Ray 5.2 with color mapping linear, gamma 1, no clamp, no GI, 3ds Max's gamma off, into a float
+bitmap, and the same `.max` imported by MaxDrop (Light Strength 1) and rendered in Cycles (512 samples, Standard view
+transform): the mean of the 8 × 8 pixels at the center, V-Ray / Cycles, is 1.4313 to 1.4319 for every plane and disc
+in every units mode (with the disc rule above; 1.822 without it in lm/m²/sr and W/m²/sr) and 1.4456 for the spheres.
+The vray_lights fixture's own lights the same way, 0.05 to 0.09 m above the floor: 1.430 to 1.433 for its planes and
+discs, 1.448 and 1.470 for its two small spheres. The default Light Strength is 1.43. Cycles ignores a light's
+diffuse and specular factors (EEVEE uses them): the fixture's disc with diffuse contribution 0.5 is half as bright in
+V-Ray as in Cycles.
+
+## Standard and photometric lights
+
+`convert/lights.py`, 3ds Max 2020 + V-Ray 5.2; ids read through the SDK's .NET wrapper (ParamBlock2 descriptors) and
+by changing one setting at a time on scratch scenes, then the lights_standard and lights_photometric fixtures read
+back by the reader. All superclass `0x30`; every one shines along its local -Z.
+
+**Standard lights.** Omni `(0x1011, 0)`, Target Spot `(0x1012, 0)`, Free Direct `(0x1013, 0)`, Free Spot `(0x1014,
+0)`, Target Direct `(0x1015, 0)`. Reference 0 is an old ParamBlock, by index (colors 0..1): Omni 0 color, 1
+multiplier, 2 contrast, 3 soften diffuse edge, 4 to 7 near and far attenuation start and end, 8 decay start; Spot
+and Direct 0 color, 1 multiplier, 2, 3 the same, 4 hotspot, 5 falloff (a Spot's in degrees, a Direct's a radius in
+world units), 6 aspect, 7 to 10 attenuation, 11 decay start. Reference 3 is the shadow generator, 4 an old
+ParamBlock of shadow settings. The light object's own chunks:
+
+| Chunk | Meaning |
+|---|---|
+| `0x2580` u16 | on |
+| `0x25D0` u16 | decay: 0 none, 1 inverse, 2 inverse square (absent: none) |
+| `0x2573` u16 | cone shape (Spot, Direct): 1 circle, 0 rectangle |
+| `0x2575` (empty) | overshoot |
+| `0x25B0`, `0x25B1` (empty) | affect diffuse off, affect specular off |
+| `0x2600` (empty) | ambient only |
+
+**Photometric lights.** One class per shape (MAXScript's `type` changes the class): Free Light (point)
+`(0x32375FCC, 0x0B025CF0)`, Free Line `(0x78207401, 0x357F1D58)`, Free Rectangle `(0x36507D92, 0x105A1A47)`, Free
+Disc `(0x5BCC6D42, 0x0C4F430E)`, Free Sphere `(0x7CA93582, 0x1ABB6B32)`, Free Cylinder `(0x46F634E3, 0x0A327AAF)`;
+Target Light (point) `(0x658D4F97, 0x72CD4259)`, Target Line `(0x45076885, 0x40791449)`, Target Rectangle
+`(0x71794F9D, 0x70AE52F2)`, Target Disc `(0x38732348, 0x201758B3)`, Target Sphere `(0x33FC7AE9, 0x54433DC5)`,
+Target Cylinder `(0x7C8B5B10, 0x4BD33E86)`. ParamBlock2s by block id (references 0, 1, 2, 3, 5; 4 is the shadow
+generator):
+
+| Block | Parameters |
+|---|---|
+| 0 | 1 distribution (0 isotropic, 1 spotlight, 2 uniform diffuse, 3 photometric web), 2 on, 3 cast shadows, 5 filter color, 6 intensity (always cd, whatever the units the panel shows: 2000 lm is stored as 159.15), 8 Kelvin, 10 use Kelvin, 13 intensity at (lux distance), 14 units shown, 18 use dimmer, 19 dimmer (%), 21 use far attenuation, 23 / 24 far start / end |
+| 1 | shadows (atmosphere, color, ...) |
+| 2 | 0 hotspot, 1 falloff (degrees) |
+| 3 | 0 web file (an asset of type `Photometric`), 1 to 3 its X, Y, Z rotation |
+| 4 | 4 affect diffuse, 5 affect specular, 6 ambient only, 11 length (a line and a rectangle along local Y, a cylinder), 12 width (a rectangle, along local X), 13 radius (disc, sphere, cylinder) |
+
+The lamp color without Kelvin is a preset MAXScript does not reach and the fixtures do not store: white is taken.
+3ds Max 2020 refuses a spotlight distribution on a cylinder.
+
+**VRaySun** `(0x732C0383, 0x7D993776)`, block 0: 0 enabled, 1 turbidity, 2 intensity multiplier, 3 size multiplier,
+5 ozone, 9 invisible, 12 sky model, 14 / 19 affect diffuse / its contribution, 15 / 20 affect specular / its
+contribution, 17 filter color, 18 color mode (0 filter, 1 direct, 2 override). A targeted VRaySun is a Look At
+node. **VRayIES** `(0x2EAF2F07, 0x7EC44F31)`, block 0: 0 enabled, 1 IES file (an asset of type `Photometric`), 7
+color temperature, 8 color, 9 color mode (1 temperature), 10 power, 11 targeted, 14 / 30 affect diffuse /
+contribution, 15 / 31 affect specular / contribution, 32 intensity type (0 lm, 1 cd), 34 override intensity. With
+the intensity overridden, 10 holds the override's value in its unit; 33 (`intensity_value`) is stored stale (0).
+Reference 1 is a Target Light object of its own (no node). **Skylight** `(0x7BF61478, 0x522E4705)`: not built.
+**VRaySky** `(0x48480B4E, 0x62FF5A90)` (superclass Texmap): the environment map is RenderEnvironment's reference 5
+(the lights_standard fixture).
+
+**Power, measured.** The calibration scene of [VRayLight](#vraylight) (a white VRayMtl floor, one light 1 m above it
+pointing down, V-Ray linear, gamma off, no GI, the mean of the 8 × 8 center pixels): V-Ray's pixel is the floor's
+illuminance in lx / 1500 for every class: a 1 W VRayLight sphere 0.0362 (683 / 4π lx); a Free Light of 1000 cd,
+isotropic, spotlight or uniform diffuse, 0.667; a Free Rectangle 100 × 100 mm of 1000 cd 0.651; a VRayIES of 1000
+lm with an isotropic IES file 0.0531; an Omni, a Free Spot and a Direct of multiplier 1 without decay 1.0 (the same
+at any distance), an Omni with inverse-square decay from 1 m 1.0, from 0.5 m 0.25, with inverse decay from 0.5 m
+0.5; a VRaySun of multiplier 1 at the zenith 68.5 (102.7 klx). Cycles (Blender 5.2, a Diffuse BSDF of 1.0): a
+point or spot light of 1 W at 1 m 0.02526 (1 / 4π²), a disk area light of 1 W 0.1010 (1 / π² on its axis), a sun
+of strength 1 0.3176 (1 / π). So Light Strength 1.43 is π · 683 / 1500 (1.4305), and with it these powers render
+as bright as V-Ray:
+
+- a point or spot light of on-axis intensity I cd: 4π I / 683 W (the rules source's for photometric lights); a
+  uniform diffuse one: π I / 683 W on an area light;
+- a standard Omni or Spot of multiplier m: I = 1500 m d², d the decay start with inverse-square decay (exact past
+  it) or inverse decay (exact at it), 1 m without decay;
+- a standard Direct: a sun of 1500 m / 683 W/m²; a VRaySun: 146.4 m W/m² (the rules source's 100 klx / 683);
+- a VRayIES: its lumens / 683 W, on a spot of 170° and hotspot 100° (the rules source's wide spot), as a
+  photometric web.
+
+**Spot cones.** Blender's spot size is the falloff; its blend is set so that full intensity ends at the hotspot, as in
+3ds Max: Blender blends in cosine space (full intensity where cos θ ≥ cos(size / 2) + (1 − cos(size / 2)) · blend),
+so blend = (cos(hotspot / 2) − cos(falloff / 2)) / (1 − cos(falloff / 2)), 0.636 for 30° in 50°.
+
+## Cameras
+
+`convert/cameras.py`, 3ds Max 2020 + V-Ray 5.2; ids read through the SDK's .NET wrapper and by changing one setting at
+a time on scratch scenes (maxdiff), the field of view from 3ds Max's own camera state (`EvalCameraState`, the oracle's
+`camera`), and lens shift, orthographic width and V-Ray's focus from renders of a marker scene (small self-lit spheres
+at known points, their image centroids). Superclass `0x20`; every camera looks down its local -Z with +Y up, as
+Blender's: the node transform stays (the cameras fixture: -Z and +Y of each camera object equal the oracle's).
+
+**Free** `(0x1001, 0)` and **Target** `(0x1002, 0)` (its class directory names it "Target", like the Target object).
+Reference 0 is an old ParamBlock, by index: 0 FOV (radians, horizontal, whatever FOV type the panel shows), 1 target
+distance (a Free camera's; 0 on a Target camera), 2 near clip, 3 far clip, 4 / 5 near / far environment range, 6
+multi-pass effect on, 7 effect per pass, 8 FOV type (0 horizontal, 1 vertical, 2 diagonal: shown only). The camera
+object's own chunks: `0x268C` (empty) orthographic, `0x2686` (empty) clip manually, `0x2684` (empty) show cone.
+Orthographic (render): the view is 2 · tdist · tan(FOV / 2) wide at any depth, tdist a Free camera's target distance
+or a Target camera's distance to its target.
+
+**Physical** `(0x46697218, 0x28E8008D)`, ParamBlock2 block 0 at reference 0: 0 targeted, 8 target distance (world), 4
+film width (mm), 5 focal length (mm), 19 specify FOV, 20 FOV (degrees), 7 zoom, 54 lens breathing, 10 specify focus,
+9 focus distance (world), 11 use depth of field, 39 / 40 horizontal / vertical shift (a fraction of the film width;
+the panel shows percent), 41 / 42 horizontal / vertical tilt correction, 44 distortion type, 47 clip on, 48 / 49
+near / far clip (world).
+
+**VRayPhysicalCamera** `(0x405E3FEE, 0x4F6513BE)`, ParamBlock2 block 0 at reference 0: 8 targeted, 5 target distance,
+0 film gate (mm), 1 focal length (mm), 3 zoom, 47 specify FOV, 48 FOV (degrees), 7 specify focus, 6 focus distance,
+25 use depth of field, 41 / 42 horizontal / vertical shift (a fraction of the film width), 18 / 40 vertical /
+horizontal tilt, 4 distortion, 10 exposure (0 off), 32 clip on, 33 / 34 near / far clip (world). The film gate and
+focal length are typed as world units but stay millimeters in a centimeter scene (probed).
+
+**The field of view they render with.** Free / Target: the FOV parameter. Physical with a specified FOV: that FOV
+(neither zoom nor breathing; 74.9996° for 75° at zoom 1.25). Otherwise a thin lens focused at d, the focus distance
+when specified, else the target distance, in millimeters through the system unit (100 cm and 1000 mm give the same):
+v = 1 / (1/f − 1/d), effective focal length zoom · (f + breathing · (v − f)), FOV = 2 atan(film / (2 · f_eff)) (40
+mm, 36 mm film at 5000 mm: 48.112°; breathing 0.5: 48.2832°; at 1000 mm 46.7287°, with zoom 1.5 32.1328°).
+VRayPhysicalCamera: the same with a breathing of 1 (its default 200 mm target distance gives 39.598°, not the
+48.455° of 2 atan(film / (2 f · zoom)) the 3ds Max to FBX rules source computes), a specified FOV without the zoom.
+A targeted Physical or V-Ray camera focuses at its distance to its target node, whatever its stored target distance
+(2376.92 stored, 2922.33 used in the fixture). A lens shift moves the image by that fraction of its width (20 % up:
+the image content 0.2 widths up) and leaves the rendered FOV as it is, but changes the FOV of `EvalCameraState`
+(73.29° renders, the state says 71.39°): the oracle reads the state with the shift at 0. The tilt corrections warp
+the image (keystone): Blender has nothing like it.
+
+**Blender.** sensor_fit HORIZONTAL, so Blender's horizontal FOV is 2 atan(sensor / (2 · lens)) at any render aspect;
+sensor 36 mm for Free and Target (3ds Max's render aperture width), the film width for the others; lens = sensor /
+(2 tan(FOV / 2)). shift_x / shift_y = minus the shift fractions (Blender moves the frame, both in image widths with
+a horizontal fit). Clipping when 3ds Max clips. Depth of field, distortion, tilt, a multi-pass effect and V-Ray's
+exposure are lines in the report. The render size and pixel aspect go to the Blender scene, with the scene camera,
+only for a file that has a camera (build/cameras.py).
+
+## Render settings and saved views
+
+**Render settings** live in the RenderEnvironment object `(0xEE448B23, 0)`, chunk `0x0110` / `0x2000` (maxdiff of
+saves that change one setting):
+
+| Chunk | Meaning |
+|---|---|
+| `0x0190` i32 | render width (pixels) |
+| `0x0200` i32 | render height |
+| `0x0210` f32 | pixel aspect |
+| `0x05F0` i32 | present when the render view is locked (`rendUseActiveView` off): the 0-based viewport index it renders |
+
+**Saved views** are in the `Config` stream, `0x2080` / `0x8200`: `0x8210` i32 the current layout tab, its position
+among the `0x8220` layouts that follow, each after an `0x8240` i32 (0, 1, 2, 3 in the fixtures, 0 on every tab of
+corpus scene B, whose current tab is the fifth: not the tab's index). A layout: `0x2800` the layout type, `0x2810` + k
+viewport k (80 bytes: u32 at byte 4 the view type, 8 = a camera view; i32 at byte 76 the object index of the node a
+camera view looks through), `0x2820` i32 the active viewport (−1 on a tab that is not current). In a file saved as
+3ds Max 2012 (corpus scene A) `0x2080` holds the layout itself, without `0x8200`. The view 3ds Max renders is the
+locked one, else the active viewport; the cameras fixture locks it on viewport 2 (CamTarget) while viewport 1
+(CamFree) is active, and the oracle's `render.camera` (3ds Max's `viewport.getCamera`) is CamTarget. Both corpus
+scenes are saved looking through their one camera; their cameras' fields of view equal 3ds Max's (EvalCameraState).
+
 ## System unit
 
 `maxdrop/reader/units.py` reads it; `tests/unit/test_units.py` checks every fixture against the oracle's
@@ -777,6 +1048,12 @@ Bitmap's).
 
 Not shown by any fixture yet, so not stated above:
 
+- Of VRayLight ([VRayLight](#vraylight)): a mesh light's mesh (parameter 34, a node; none picked in the fixture),
+  the dome's parameters, size2, the texmap's use, the light units of a scene unit other than millimeters (the rules
+  scale lengths by the unit; the fixture is in millimeters), an animated parameter (its default is taken); a sphere
+  scaled with Y or Z larger than X (taken as the largest scale), and whether a scaled sphere's radius in Blender
+  follows the object's scale as V-Ray's does.
+
 - Asset metadata seen only in the corpus (`assets.py` relies on it): scene A (saved as 3ds Max 2012) has
   `FileAssetMetaData2` instead, its records without the third string (155 records: `Bitmap` and `Photometric`);
   in scene B's `FileAssetMetaData3` the third string is the absolute path 3ds Max found the file at when saving
@@ -843,7 +1120,8 @@ Not shown by any fixture yet, so not stated above:
   - Position List `(0x4B4B1002, 0)` and Rotation List `(0x4B4B1003, 0)`: `0x1010` = entry count, `0x1020` = active
     entry, entries at reference slots 0..n-1, a ParamBlock2 at a later slot whose reference slots 0..n-1 are the
     weights (Bezier Float); only weights 1 and 0 occur, so how entries combine is not pinned down;
-  - Look At `(0x2006, 0)` on the camera nodes: not evaluated (identity and an issue) until M4.
+  - Look At `(0x2006, 0)` on a camera and a light of each scene: evaluated as [Look At](#look-at) says, their
+    world matrices equal the oracle's (all 662 nodes without modifiers of scene A, all 2,042 of scene B).
 - Controllers taken from the 3ds Max SDK without any file showing them: Linear Position, Rotation and Scale
   (`0x2002`, `0x2003`, `0x2004`), Bezier Position and Rotation (`0x2008`, `0x2009`), TCB Position, Rotation and
   Scale (`0x442312`, `0x442313`, `0x442315`), their value chunks (`0x2503` point, `0x2504` quaternion, `0x2505`

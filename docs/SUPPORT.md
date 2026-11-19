@@ -1,18 +1,20 @@
 # What MaxDrop imports
 
-**This page describes version 0.0.5.** Nodes, meshes, transforms, hierarchy, instances, layers, scene units and
+**This page describes version 0.1.0.** Nodes, meshes, transforms, hierarchy, instances, layers, scene units and
 materials are read by MaxDrop's own reader; the engine of [io_scene_max](https://github.com/nrgsille76/io_scene_max)
 1.9.2 that 0.0.3 still used for materials is gone. From 0.0.5 the room shell arrives too (shapes, Extrude, UVW
-Map), as do nine of the standard primitives and TurboSmooth, MeshSmooth, Shell and Symmetry as Blender modifiers. A
-scene pack (`.zip`, `.rar`, `.7z`) is unpacked and its `.max`
+Map), as do nine of the standard primitives and TurboSmooth, MeshSmooth, Shell and Symmetry as Blender modifiers.
+From 0.1.0 the lights (V-Ray, standard, photometric, VRaySun, VRayIES) and the cameras arrive, and a file with a
+camera sets the scene camera and the render size: a dropped interior scene can be looked at through its own camera,
+lit by its own lights. A scene pack (`.zip`, `.rar`, `.7z`) is unpacked and its `.max`
 imported (see [Files](#files)), and several `.max` files chosen at once are imported one after the other.
 
 How far to trust the list: MaxDrop's test files (`tests/fixtures/`, saved by 3ds Max 2020) are compared with what
 3ds Max itself reports for every node: world matrix, bounding box, vertex and face counts, parents, instances,
 layers and the hidden, frozen and renderable flags. Two commercial interior scenes (3ds Max 2015 and 2020) import
-without an error, and 99.7 % and 99.9 % of their objects without modifiers get the world matrix and bounding box
-3ds Max reports (the rest are a camera and a light per scene aimed by a Look At controller; see
-[BASELINE.md](BASELINE.md)). Materials are checked on the test files (VRayMtl, its wrappers, Multi/Sub-Object,
+without an error, and all their objects without modifiers get the world matrix and bounding box 3ds Max
+reports, the camera and the light aimed by a Look At controller in each included ([BASELINE.md](BASELINE.md) has
+the measurement of version 0.0.3: 99.7 % and 99.9 %, before Look At was evaluated). Materials are checked on the test files (VRayMtl, its wrappers, Multi/Sub-Object,
 Standard, Physical Material and the texture maps below): the parameters MaxDrop reads are compared with what 3ds Max
 reports, and the Blender material with those parameters, on Blender 4.2, 4.5 and 5.2. In the two commercial scenes,
 the conversion of 214 of 214 and 220 of 220 materials (100 %) gives what the same rules give from the
@@ -23,7 +25,12 @@ weld aside, see its row), and UVW Map coordinates equal 3ds Max's. In the scene 
 (3ds Max 2015), all 20 extruded shapes of the room get 3ds Max's vertex and triangle counts, and the 16 whose
 stack MaxDrop evaluates in full its bounding box (the other 4 have an Edit Mesh or an FFD above the Extrude, which
 MaxDrop does not apply); in both scenes every object whose modifiers are all applied or converted gets 3ds Max's
-vertex count (57 and 150 objects). The page is updated with every version.
+vertex count (57 and 150 objects). Lights are checked against what V-Ray 5.2 renders (their brightness measured) and
+cameras against the field of view 3ds Max computes, on the test files and on both scenes' cameras. Dropped on
+Blender 4.2 and 5.2 with the default options, both scenes open, through their own camera, as a closed, textured
+room at its real height (3.4 m and 3.3 m floor to ceiling), lit by their own lights, with no missing texture and a
+report that accounts for every light, camera and modifier of the file (the *first open* in
+[BASELINE.md](BASELINE.md)). The page is updated with every version.
 
 "Not yet" means the importer does not convert it: the node arrives as an empty (a *placeholder*) at its place in
 the hierarchy, with its 3ds Max class name in the custom property `maxdrop_class`.
@@ -57,15 +64,24 @@ your computer.
 | Boolean compound object, Biped | Not yet: placeholder |
 | Line, Editable Spline, Rectangle, Circle, Ellipse, Arc, NGon | **Imported** as curve objects: each spline with its knots and handles as 3ds Max draws them (straight segments stay straight), open or closed, the interpolation steps as the resolution. A shape that renders in 3ds Max (Enable In Renderer) gets a round bevel of its thickness; a rectangular section is drawn round, an NGon's corner radius and an Ellipse's outline are left out (each a line in the report). With modifiers other than an Extrude the shape arrives as the curve |
 | Star, Text, Helix, Donut, Section, NURBS curves and surfaces | Not yet: placeholder |
-| Standard lights, V-Ray lights, sky | Not yet: placeholder |
-| Cameras and their targets | Not yet: placeholder |
+| V-Ray lights: plane, disc, sphere | **Imported**: plane as a rectangular area light, disc as a disk area light, sphere as a point light with its radius, where 3ds Max has them (a plane shines along its -Z in both). Power in watts from each units mode (default, lm, lm/m²/sr, W, W/m²/sr) by the rules of a 3ds Max to FBX exporter, times the import option **Light Strength** (default 1.43: Cycles then renders them as bright as V-Ray 5.2, measured), color or color temperature, on / off (off: hidden in viewport and render), invisible (not seen by the camera), affect diffuse, specular and reflections (Cycles: the light hidden from diffuse or glossy rays; a contribution below 1 only in EEVEE, a line in the report). A scaled light is as bright as V-Ray makes it (its area grows with the scale). Instances share one light. A double-sided plane or disc shines on one side with half the power; a light's texture and directional spread are left out (each a line in the report) |
+| V-Ray mesh and dome lights | Not yet: an empty, a line in the report |
+| Standard lights: Omni, Free / Target Spot, Free / Target Direct | **Imported**: Omni as a point light, Spot as a spot light (cone from falloff, full intensity out to the hotspot), Direct as a sun, with color, on / off and affect diffuse / specular. Power as bright as V-Ray 5.2 lights them (measured), times **Light Strength**: with inverse-square decay as bright at every distance past the decay start; without decay or with inverse decay as bright at 1 m or at the decay start only (Blender's lights fall off with the square of the distance; a line in the report); decay from a start of 0 gives 0 W (a line in the report). A Direct's beam, a rectangular cone, overshoot and ambient only are left out (a line each) |
+| Photometric lights (Free / Target Light, every shape) | **Imported**: isotropic as a point light, spotlight as a spot light with its cone, uniform diffuse as an area light of its rectangle or disc (a point a small disc; a line, sphere or cylinder the nearest area light, a line in the report), photometric web as a wide spot (the web file named in the report); intensity in cd with the dimmer, Kelvin and filter color, on / off, affect diffuse / specular; disc, sphere and cylinder radius on point and spot lights. Power as bright as V-Ray 5.2, times **Light Strength** |
+| VRaySun | **Imported** as a sun: strength from the intensity multiplier (100 klx per unit, V-Ray's at the zenith), angle from the size multiplier, its filter color (the sky model's color and dimming toward the horizon are left out: a line in the report) |
+| VRayIES | **Imported** as a wide spot: power from its lumens or its intensity override, color or temperature, affect diffuse / specular; the IES file is named in the report, its distribution not imported (nor its own intensity, which V-Ray takes at power 0: then 0 W, a line in the report) |
+| Skylight, VRaySky (environment) | Not yet: the Skylight an empty, each a line in the report |
+| Cameras: Free, Target, Physical, VRayPhysicalCamera | **Imported** as Blender cameras where 3ds Max has them, framing what 3ds Max renders: the horizontal field of view for the scene's render aspect (Physical and V-Ray: zoom, lens breathing at the focus or target distance, a specified FOV; checked against 3ds Max within 0.05°), lens shift, clipping, orthographic width. Depth of field, distortion, tilt correction, a multi-pass effect and V-Ray's exposure are left out (a line each in the report) |
+| Render size, scene camera | **Imported** for a file with a camera: the scene camera is the camera of the view 3ds Max renders (the locked render view, else the active viewport), else the first camera (a line in the report), and the Blender scene takes the file's render width, height and pixel aspect. A file without a camera (a model dropped into a scene) leaves the scene's render settings and camera as they were; the report gives its render size |
+| Targets (of target cameras and lights) | **Imported** as empties where 3ds Max has them, not placeholders |
 | Everything else: other lights, hair, proxies (`.vrmesh`, Corona proxy), XRefs, particles, bones… | Not yet: placeholder |
 
 ## Scene structure
 
 | | This version |
 |---|---|
-| Position, rotation, scale | **Imported** as 3ds Max computes them at frame 0: Position / Rotation / Scale controllers (Bezier, TCB, Euler XYZ and the other Tait-Bryan orders, Position XYZ, list controllers with their weights), negative scale, pivot offsets. An unknown controller (Look At, constraints…) counts as no transform for that node |
+| Position, rotation, scale | **Imported** as 3ds Max computes them at frame 0: Position / Rotation / Scale controllers (Bezier, TCB, Euler XYZ and the other Tait-Bryan orders, Position XYZ, list controllers with their weights), negative scale, pivot offsets, the Look At controller of target cameras and lights (axis, flip, roll, the target as up node) and the LookAt Constraint (weighted targets, axes, an up node looked at or aligned with). The constraint's Keep Initial Offset and Set Orientation are left out (a line in the report). Another controller (other constraints, expressions, scripts…) counts as no transform for that node |
+| Look At targets | The rotation 3ds Max computes, fixed. With the import option **Keep Targets** an object with a Look At controller gets a Track To constraint aimed at its target's object instead, so it follows when the target moves; one with a roll or aimed along its Y axis keeps the fixed rotation (a line in the report: Track To has no roll and no downward up axis). Track To takes Blender's Z as up: with Forward and Up other than 3ds Max's (Y forward, Z up) a line in the report says so. A camera straight below its target, and a Look At with a scale along a turned axis, are not checked against 3ds Max with Track To (the fixed rotation is). LookAt Constraints stay fixed |
 | Parent and child | **Imported** through the whole chain, by the file's object references: objects with the same name stay apart |
 | Scene units | **Imported**: **Units: Auto** takes the system unit the file was saved with (inches, feet, miles, millimeters, centimeters, meters, kilometers, and a custom scale of those), so the scene arrives in meters. **Units** can name the unit instead, and **Scale** multiplies every length. A file that does not state its unit is imported at one meter per unit, times Scale, with a warning |
 | Layers | **Imported** as collections below a collection named after the file, nested like the layers. A hidden layer is excluded from the view layer, a frozen one is not selectable, one that does not render has rendering off |
@@ -155,8 +171,8 @@ the scene in the archive is kept.
   are not verified one by one yet.
 - When a `.max` is dropped, the options popup shows a **File** line: the 3ds Max version, the renderer, the
   number of objects and the unit, read in a fraction of a second even from a large scene.
-- A very large scene works but needs time and memory: see [BASELINE.md](BASELINE.md) (version 0.0.5 next to
-  0.0.4, 0.0.3 and the engine they replaced).
+- A very large scene works but needs time and memory: see [BASELINE.md](BASELINE.md) (version 0.1.0 next to
+  0.0.5, 0.0.4, 0.0.3 and the engine they replaced).
 - **Scene packs**: a `.zip`, `.rar` or `.7z` holding the scene, chosen in *File › Import*; a `.rar` or `.7z` can
   also be dropped (a dropped `.zip` goes to Blender's extension installer). The format is recognised by the file's
   content. The chosen `.max` and the image and `.ies` files it names are unpacked into a folder named after the
@@ -173,4 +189,8 @@ the scene in the archive is kept.
 
 ## What comes next
 
-Lights and cameras: V-Ray, Corona and standard lights, the sun and sky, cameras with their targets.
+Toward 1.0: an import with a progress bar that Esc cancels, a time and memory budget for large scenes, node graphs
+for the map wrappers that are still simplified (Color Correction, Falloff, Mix, Composite), files of older 3ds Max
+versions, and limits and fuzz tests against hostile files. Not scheduled yet: Corona lights, V-Ray mesh and dome
+lights, IES distributions, the sky and Skylight as the World, camera exposure, and the modifiers that still leave an
+object as its base object (Edit Poly, Edit Mesh, FFD…).

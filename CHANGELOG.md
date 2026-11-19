@@ -8,6 +8,33 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-19
+
+### Added
+
+- **First open of a whole scene**: a dropped V-Ray interior scene now opens through its own camera, lit by its own
+  lights, at its real size. Checked on two commercial interior scenes on Blender 4.2 and 5.2 (see
+  `docs/BASELINE.md`).
+- Target cameras, target lights and other objects aimed by a Look At controller or a LookAt Constraint point where
+  they point in 3ds Max (they kept the rotation of no controller before); their targets arrive as empties, not
+  placeholders. The new import option **Keep Targets** aims the ones with a Look At controller at their targets
+  with a Track To constraint, so they follow when a target moves (a roll or the Y axis keeps the fixed rotation).
+- V-Ray lights: plane and disc lights arrive as area lights, sphere lights as point lights, with their size, color
+  or color temperature, on / off, invisibility and diffuse / specular / reflection switches, and a power in watts
+  from their units. The new import option **Light Strength** (default 1.43, calibrated so that Cycles matches V-Ray's
+  brightness) scales every light. A scaled light is as bright as in V-Ray. Instances share one light. Mesh and dome lights are not imported yet (a line in
+  the report).
+- Standard lights (Omni, Spot, Direct), photometric lights (every shape and distribution), VRaySun and VRayIES
+  arrive as Blender point, spot, area and sun lights, as bright as V-Ray 5.2 renders them (measured), with their
+  cones, colors, Kelvin temperatures, on / off and diffuse / specular switches. What Blender cannot hold is a line
+  in the report: decay other than inverse square, a Direct's beam, IES and web distributions (a wide spot, the file
+  named), the sky model's sun color. A Skylight and a VRaySky environment are not imported yet (a line each).
+- Cameras: Free, Target, Physical and VRayPhysicalCamera arrive as Blender cameras with 3ds Max's framing: the
+  horizontal field of view whatever the render aspect (zoom, lens breathing and a specified FOV included, as 3ds Max
+  and V-Ray render them), lens shift, clipping and orthographic width. For a file with a camera, the camera of the view 3ds
+  Max renders (the locked render view, else the active viewport), else the first, becomes the scene camera and the
+  file's render size Blender's; a file without a camera leaves the scene's render settings alone. Depth of field, distortion, tilt correction and V-Ray's exposure are lines in the report.
+
 ### Changed
 
 - Scene packs: the import popup names the exact folder a pack unpacks into (`<archive> (2)` when that name is

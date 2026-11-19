@@ -462,7 +462,8 @@ class TestFixtures(unittest.TestCase):
                     self.assertEqual(sharing, e["instances"], e["name"])
                     self.assertEqual(n.material is not None, e["material"] is not None, e["name"])
                     self.assertEqual(s.entry(n.layer).superclass, classids.SC_LAYER)
-                    self.assertTrue(s.is_a(n.tm, classids.SC_CTRL_MATRIX3, classids.PRS))
+                    self.assertTrue(s.is_a(n.tm, classids.SC_CTRL_MATRIX3, classids.PRS) or
+                                    s.is_a(n.tm, classids.SC_CTRL_MATRIX3, classids.LOOK_AT), e["name"])
                     flags = (n.hidden, n.frozen, n.renderable, s.layer(n.layer).name)
                     self.assertEqual(flags, (e["hidden"], e["frozen"], e["renderable"], e["layer"]), e["name"])
                 layers = [(la.name, la.hidden, la.frozen, la.renderable) for la in s.layers()]
@@ -504,7 +505,20 @@ class TestFixtures(unittest.TestCase):
         flags = {"FixtureHidden": 0x100800, "FixtureGroup": 0x40, "FixtureGroupA": 0x900, "FixtureGroupB": 0x900,
                  "FixtureInstance01": 0, "FixtureInstance02": 0, "FixtureInstance03": 0, "FixtureCopy": 0,
                  "FixtureBent": 0, "FixtureSmooth": 0, "FixtureNestedRef": 0,
-                 "FixtureBoxCopy": 0}  # instances and references: 0
+                 "FixtureBoxCopy": 0,  # instances and references: 0
+                 # lookat: the nodes a Look At controller aims at (not those only a LookAt Constraint aims at)
+                 "FixtureCam.Target": 0x4800, "FixtureCamRoll.Target": 0x4800, "FixtureCamDown.Target": 0x4800,
+                 "FixtureSpot.Target": 0x4800, "FixtureCamChild.Target": 0x4800, "FixtureAim": 0x4800,
+                 "FixtureTargeted.Target": 0x4800,  # vray_lights: a targeted VRayLight's target
+                 "FixturePlaneInst": 0, "FixtureDiscScaled": 0,  # vray_lights: instances
+                 # lights_standard, lights_photometric: an instance each, the targets of target lights
+                 "StdOmniInst": 0, "PhPointInst": 0, "StdTargetSpot.Target": 0x4800,
+                 "StdTargetDirect.Target": 0x4800, "StdSun.Target": 0x4800, "PhWeb.Target": 0x4800,
+                 "PhTPoint.Target": 0x4800, "PhTLine.Target": 0x4800, "PhTRectangle.Target": 0x4800,
+                 "PhTSphere.Target": 0x4800, "PhTCylinder.Target": 0x4800,
+                 # cameras: the targets of the targeted cameras
+                 "CamTarget.Target": 0x4800, "CamTargetOrtho.Target": 0x4800, "CamPhysShift.Target": 0x4800,
+                 "CamVRayShift.Target": 0x4800, "CamVRayTarget.Target": 0x4800}
         heads = {"Node": 16, "RootNode": 16, "Texmaps": 48, "Bezier Float": 2, "Bezier Scale": 2, "Bezier Color": 2,
                  "Boolean Controller": 2, "Grid Reference": 2, "VRayMtl": 34, "MtlBaseLib": 2,
                  "": 2}  # Custom Curve Control's point class, nameless in the class directory (texmap_rules' Falloffs)

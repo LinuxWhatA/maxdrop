@@ -42,6 +42,15 @@
 # materials and says so in the import report; materials the builder could not make are not counted as made.
 # Modified for MaxDrop, 2026-11-18 (jsiovn). The popup names the exact folder a pack unpacks into
 # (archive.preview), also after the Scene field names another scene of the pack.
+# Modified for MaxDrop, 2026-11-18 (jsiovn). New option Keep Targets: objects aimed by a Look At controller get a
+# Track To constraint to their target; the ones it cannot aim, and an axis conversion, are named in the report.
+# Modified for MaxDrop, 2026-11-19 (jsiovn). The scene description gets the asset table: the report names the web
+# and IES files of the lights.
+# Modified for MaxDrop, 2026-11-19 (jsiovn). Cameras: the scene description gets the file's saved views, the build
+# makes the cameras and, for a file with a camera, sets the scene camera and the render size; a failed build removes
+# its cameras.
+# Modified for MaxDrop, 2026-11-19 (jsiovn). The light colors' swatch note is reported also when the material
+# conversion fails; the Keep Targets note on the axis conversion only when the file's up does not stay Blender's Z.
 
 
 __author__ = "Sebastian Sille <nrgsille@gmail.com>"
@@ -86,7 +95,13 @@ _SHOWN_FILES = 5
 _UNREADABLE = (OSError, ValueError, IndexError, struct.error)
 # What a build makes besides objects and collections, in the order a failed build removes them. Addresses, not
 # names: a new datablock could reuse the address of one freed meanwhile, but the build frees none.
-_MADE = ("meshes", "curves", "materials", "images")
+_MADE = ("meshes", "curves", "lights", "cameras", "materials", "images")
+
+# The default Light Strength: V-Ray 5.2 renders against Cycles renders of the same lights (docs/FORMAT.md,
+# "VRayLight", where the measured ratios are). The standard, photometric, sun and IES powers are derived from V-Ray
+# renders of the same scene so that this one factor holds for them too ("Standard and photometric lights", "Power,
+# measured": 1.43 is pi 683 / 1500).
+LIGHT_STRENGTH = 1.43
 
 # Saved in presets by identifier; the numbers keep each item's value stable.
 UNITS = (
@@ -368,8 +383,8 @@ def _material_slots(cf, sc, desc, max_path, context, image_search):
 
 def _remove(cols, before):
     """Remove what a failed build left: the objects of the file's collection tree, the collections, and the meshes,
-    curves, materials and images made since before ({kind: the as_pointer() of each datablock before the build}) that
-    nothing uses."""
+    curves, lights, cameras, materials and images made since before ({kind: the as_pointer() of each datablock before
+    the build}) that nothing uses."""
     for ob in list(cols.root.all_objects):
         bpy.data.objects.remove(ob)
     for col in list(cols.layers.values()) + [cols.root]:
@@ -437,6 +452,21 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
         description="What becomes of the 3ds Max modifiers Blender has an equivalent for",
         items=MODIFIERS,
         default='KEEP',
+    )
+    light_strength: FloatProperty(
+        name="Light Strength",
+        description="Factor on the power of every light, in watts from the 3ds Max light's own units. "
+        "1.43 gives V-Ray's brightness in Cycles",
+        min=0.0, max=1000000.0,
+        soft_min=0.0, soft_max=1000.0,
+        default=LIGHT_STRENGTH,
+    )
+    keep_targets: BoolProperty(
+        name="Keep Targets",
+        description="Aim target cameras, target lights and other objects with a Look At controller at their "
+        "target with a Track To constraint, so they follow when the target moves. Off: the rotation 3ds Max "
+        "had, fixed",
+        default=False,
     )
     # SKIP_PRESET as well as SKIP_SAVE: the operator has presets, and a scene name belongs to one pack.
     pack_scene: StringProperty(
@@ -569,19 +599,21 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
 
     def _import_scene(self, context, max_path, pack=None, pack_name=""):
         """Read, describe and build one .max with its materials into a collection named after it in the active
-        collection, then publish its import report (console and the text "MaxDrop Report"). pack: archive.unpack()'s
-        result when the scene came from a scene pack, pack_name the archive's file name. ([(report level, line)],
-        the convert.report.Report), the report's summary last; one of _UNREADABLE when the file cannot be read. A
-        build that fails is removed again (objects, collections, meshes, curves, materials, images) before the
-        exception goes on."""
+        collection, set the scene's render size and camera, then publish its import report (console and the text
+        "MaxDrop Report"). pack: archive.unpack()'s result when the scene came from a scene pack, pack_name the
+        archive's file name. ([(report level, line)], the convert.report.Report), the report's summary last; one of
+        _UNREADABLE when the file cannot be read. A build that fails is removed again (objects, collections, meshes,
+        curves, lights, cameras, materials, images) before the exception goes on."""
+        from .build import cameras as build_cameras
         from .build import collections as build_collections
         from .build import materials as build_materials
         from .build import modifiers as build_modifiers
         from .build import objects as build_objects
         from .build import report as build_report
+        from .convert import cameras, colors
         from .convert import report as convert_report
         from .convert import scene as convert_scene
-        from .reader import cfb, units
+        from .reader import assets, cfb, units
         from .reader import scene as reader_scene
         name = os.path.basename(max_path)
         materials = 'MATERIAL' in self.object_filter
@@ -589,7 +621,8 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
             sc = reader_scene.Scene.from_file(cf)
             unit = units.system_unit(sc)
             meters, note = _meters(self.units, unit, self.scale_objects)
-            desc = convert_scene.describe(sc, meters, unit, convert_modifiers=self.modifiers == 'KEEP')
+            desc = convert_scene.describe(sc, meters, unit, convert_modifiers=self.modifiers == 'KEEP',
+                                          assets=assets.AssetTable.from_file(cf), views=cameras.saved_views(cf))
             slots, counts, failed = None, None, []
             if materials:
                 try:
@@ -598,6 +631,8 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
                     print("MaxDrop: materials of %s not converted:\n%s" % (name, traceback.format_exc()), end="")
                     failed.append(("materials", "not converted (%s: %s): the scene is imported without materials"
                                    % (type(e).__name__, e)))
+            # light colors follow the swatch rule too; converted materials bring its note to the report
+            light_note = colors.of_scene(sc).note if desc.lights and counts is None else ""
             del sc  # the Scene holds the inflated stream of a compressed file
         if 'UV' not in self.object_filter:
             for md in desc.meshes.values():
@@ -608,20 +643,29 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
         builder = build_materials.MaterialBuilder()
         try:
             built = build_objects.build(desc, cols.root, cols, view_layer, slots=slots,
-                                        material=builder.make if materials else None)
+                                        material=builder.make if materials else None,
+                                        light_strength=self.light_strength)
             settings_skipped = build_modifiers.add(desc, built)
+            kept = build_objects.track_targets(desc, built) if self.keep_targets else []
             build_collections.finish(cols, view_layer)
+            build_cameras.set_render(context.scene, desc, built)  # last: a failed build leaves the scene's alone
         except BaseException:
             _remove(cols, before)
             raise
         del slots
         rep = convert_report.gather(desc, source=name, objects_built=len(built.objects),
                                     meshes_built=len(built.meshes), curves_built=len(built.curves),
+                                    lights_built=len(built.lights), cameras_built=len(built.cameras),
                                     dropped_uv_layers=built.dropped_uv_layers,
                                     pack=pack, pack_name=pack_name)
         if settings_skipped:
             rep.issues.append(("modifiers", "%d settings not on Blender %s, not set" % (settings_skipped,
                                                                                        bpy.app.version_string)))
+        names = {node.index: node.name or "object %d" % node.index for node in desc.nodes}
+        rep.issues.extend((names[i], "Keep Targets: no Track To, the rotation stays fixed: %s" % reason)
+                          for i, reason in kept)
+        if light_note:
+            rep.issues.append(("color swatches", light_note))
         if materials:
             conv_stats, tex_stats, lookup, swatches = counts or (None, None, None, None)
             made = sum(m is not None for m in built.materials.values())
@@ -634,6 +678,12 @@ class IMPORT_SCENE_OT_maxdrop(bpy.types.Operator, ImportHelper):
         if axis != Matrix.Identity(4):
             for ob in built.roots():
                 ob.matrix_basis = axis @ ob.matrix_basis
+            # the target's own Z (use_target_z) turns with the scene; the world's does not, which matters only when
+            # the file's up does not stay Blender's Z
+            if tuple(axis.col[2][:3]) != (0.0, 0.0, 1.0) and any(
+                    c.name == build_objects.TRACK_TO_NAME and not c.use_target_z
+                    for ob in built.objects.values() for c in ob.constraints):
+                rep.issues.append(("Keep Targets", "Track To keeps Blender's Z up, not the converted axes' up"))
         lines = [('WARNING', "%s %s" % (name, note))] if note else []
         lines.append(build_report.publish(rep))
         return lines, rep
@@ -739,6 +789,7 @@ def import_include(layout, operator):
         layrow.label(text="", icon='OUTLINER_OB_IMAGE' if operator.use_image_search else 'IMAGE_DATA')
         layout.column().prop(operator, "object_filter")
         layout.prop(operator, "modifiers")
+        layout.prop(operator, "light_strength")
 
 
 def import_transform(layout, operator):
@@ -749,6 +800,7 @@ def import_transform(layout, operator):
         layout.prop(operator, "scale_objects")
         layout.prop(operator, "axis_forward")
         layout.prop(operator, "axis_up")
+        layout.prop(operator, "keep_targets")
 
 
 class IO_FH_maxdrop(bpy.types.FileHandler):

@@ -33,7 +33,25 @@ makes it); the instance shares FixtureBox's mesh; the TurboSmooth over a Box eva
 layers_flags: two layer collections, one hidden object, one with hide_render, the group head as the parent of its two
 members. modifier_pivot: a node with modifiers gets its base mesh (no bounding box check, the oracle's is after the
 modifiers), the report names the modifiers not applied, and the node whose pivot alone is rotated keeps its object
-in place. Each fixture's import report is published (build.report) and must say nothing was left out; the one the
+in place. lookat: the nodes aimed by a Look At controller or a LookAt Constraint have 3ds Max's world matrices (above),
+the Target objects are empties; imported again with Keep Targets, each Look At a Track To can follow gets one aimed at
+its target's object, with the same evaluated world matrix, and the report names the two it cannot follow (a roll, the
+Y axis). vray_lights: each VRayLight node a light object (mesh and dome lights empties), its light of the
+description's type, shape and size and of the shape the fixture script made, its -Z axis along the oracle's, its
+energy the watts 3ds Max computed with the rules source's function times the default Light Strength (the disc's 4 / pi,
+the double-sided plane's half), its color, the off light hidden in viewport and render, the invisible one unseen by
+the camera and glossy rays; the instance shares the plane's light, the disc's instance scaled 2, 1.5, 1 has its
+own, three times as strong; imported again with Light Strength 2, twice the
+power. lights_standard, lights_photometric (and lookat's target spot): each light of the type, spot cone, power and
+color of the rules (STOCK_LIGHTS), its -Z axis along the oracle's, its flags; the Skylight an empty.
+Cameras (cameras, lookat): each camera node a camera object of the description's type, sensor fit HORIZONTAL, sensor,
+lens, shift, clipping and orthographic width, Blender's horizontal field of view (angle_x) within 0.05 degrees of 3ds
+Max's (the oracle's EvalCameraState), depth of field off, its -Z axis and +Y up along the oracle's; cameras' shifts and
+sensors from its script (CAMERA_SHIFTS, CAMERA_SENSORS). A fixture with a camera: the scene's render size is the
+oracle's, and scene.camera the oracle's render camera (cameras: CamTarget, the locked render view) or else the first
+camera (lookat: FixtureCam); cameras holds eleven camera objects with a Camera each. Without a camera the scene's render
+size and camera stay as they were.
+Each fixture's import report is published (build.report) and must say nothing was left out; the one the
 operator published for vray_wrappers lists its three peeled wrappers by class. A changed layers_flags description
 checks a hidden, a frozen, a non-rendering and a nested layer, which no fixture has. A hand-made description with sheared local matrices (top-level and parented, hidden, a zero scale) checks that
 Blender's world matrices equal the products of the locals, through the helper empty for top-level ones. Material
@@ -85,6 +103,7 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
     "hierarchy": [],
     "instances": ["UVMap"],
     "layers_flags": [],
+    "lookat": [],  # boxes without Generate Mapping Coords
     "modifier_pivot": ["UVMap"],  # FixtureBent's UVW Map writes channel 1 (applied, the Bend above it is not)
     "multi_uv": ["UVMap", "UVChannel_2", "UVChannel_3"],
     "primitives": {"FixtureBoxNoMap": []},  # else UVMap: Generate Mapping Coords
@@ -99,6 +118,10 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
     "vray_basic": ["UVMap"],
     "vray_maps": ["UVMap"],
     "vray_texmaps": ["UVMap"],
+    "vray_lights": [],  # lights and a target: no mesh
+    "lights_standard": [],
+    "lights_photometric": [],
+    "cameras": [],  # its box, without Generate Mapping Coords
     "vray_wrappers": ["UVMap"],
     "uvwmap": {"FixtureUVWGizmo": ["UVMap", "UVChannel_2"], "FixtureUVWTwo": ["UVMap", "UVChannel_3"]},  # else UVMap
     "uvwmap_oblique": ["UVMap"],
@@ -121,11 +144,83 @@ SHARP_EDGES = {"editable_mesh": 8, "modifier_pivot": {"FixtureSmooth": 0, None: 
                               "FixtureTubeSwap": 28, "FixtureTorusOdd": 35, "FixturePyramidDown": 14,
                               "FixtureCylinderReal": 14, "FixtureTubeDown": 28, None: 0}}
 SHARP_EDGES_DEFAULT = 12
+# the class directory's name of a placeholder (maxdrop_class) where it is not MAXScript's (the oracle's)
+CLASS_NAMES = {"Targetobject": "Target", "Targetcamera": "Target"}
 FLAT_SHADED = {"FixtureGeoOcta"}  # a GeoSphere not smoothed: no smoothing group, every face flat
 # primitives whose normals are not "away from the box center": a Plane's point up or down (by its sizes' signs), and
 # a Box of width -12 keeps 3ds Max's faces, which point in
 PLANE_NORMALS = {"FixturePlane": 1.0, "FixturePlaneDown": -1.0, "FixturePlaneReal": 1.0}
 INSIDE_OUT = {"FixtureBoxInside"}
+# vray_lights (tools/fixtures/vray_lights.ms): watts of the rules source's ocbaby_exsVrayLightWatts, run in 3ds Max
+# on each light; the factor MaxDrop changes them by (the disc in lm/m2/sr, measured against V-Ray; the double-sided
+# plane's one side); the shape and size in meters the script made; the linear colors (the fixture is saved with the
+# gamma off: swatches and the Kelvin curve decoded from sRGB); the object and light flags that are not the default
+VRAY_LIGHT_WATTS = {"FixturePlane": 0.0527086444, "FixturePlaneInst": 0.0527086444, "FixturePlaneLm": 2.19619322,
+                    "FixtureDisc": 0.00975400303, "FixtureSphere": 40.0, "FixtureSphereKelvin": 0.252661914,
+                    "FixtureOff": 0.00439238735, "FixtureInvisible": 20.0, "FixtureTargeted": 25.0,
+                    "FixtureDiscScaled": 0.00975400303}
+# the scaled disc: its area times 2 x 1.5, as V-Ray lights it (measured)
+VRAY_LIGHT_POWER = {"FixtureDisc": 4.0 / math.pi, "FixturePlaneLm": 0.5, "FixtureDiscScaled": 4.0 / math.pi * 3.0}
+VRAY_LIGHT_SHAPES = {"FixturePlane": ('AREA', 'RECTANGLE', 0.04, 0.02, 0.0),
+                     "FixturePlaneInst": ('AREA', 'RECTANGLE', 0.04, 0.02, 0.0),
+                     "FixturePlaneLm": ('AREA', 'RECTANGLE', 0.03, 0.03, 0.0),
+                     "FixtureDisc": ('AREA', 'DISK', 0.03, 0.0, 0.0), "FixtureSphere": ('POINT', None, 0.0, 0.0, 0.005),
+                     "FixtureSphereKelvin": ('POINT', None, 0.0, 0.0, 0.008),
+                     "FixtureOff": ('AREA', 'RECTANGLE', 0.02, 0.02, 0.0), "FixtureInvisible": ('AREA', 'DISK', 0.02,
+                                                                                               0.0, 0.0),
+                     "FixtureTargeted": ('AREA', 'RECTANGLE', 0.02, 0.01, 0.0),
+                     "FixtureDiscScaled": ('AREA', 'DISK', 0.03, 0.0, 0.0)}
+VRAY_LIGHT_COLORS = {"FixturePlane": (1.0, 0.57758, 0.304987), "FixturePlaneInst": (1.0, 0.57758, 0.304987),
+                     "FixtureDisc": (0.187821, 0.351533, 1.0), "FixtureDiscScaled": (0.187821, 0.351533, 1.0),
+                     "FixtureSphereKelvin": (1.0, 0.5304, 0.265643)}
+VRAY_LIGHT_FLAGS = {"FixtureInvisible": (False, True, False, 0.5, 0.0)}  # camera, diffuse, glossy, factors
+# cameras (tools/fixtures/cameras.ms): Blender's shift (image widths) and sensor where they are not 0 and 36 mm
+CAMERA_SHIFTS = {"CamPhysShift": (-0.1, 0.15), "CamVRayShift": (-0.1, -0.25)}
+CAMERA_SENSORS = {"CamVRayTarget": 30.0}
+FOV_TOLERANCE = 0.05  # degrees
+KEPT_SIZE = (1234, 567, 50)  # the scene's render size before each import (empty_scene)
+
+# lights_standard, lights_photometric (tools/fixtures/*.ms) and lookat's target spot: Blender's light type, spot
+# size in degrees and blend, and the watts of the rules (docs/FORMAT.md, "Standard and photometric lights") from
+# what the scripts set: a point or spot light 4 pi I / 683 W for I cd (a standard light's I = 1500 multiplier d^2,
+# d the decay start or 1 m), a diffuse one pi I / 683, a standard Direct 1500 multiplier / 683 W/m^2, a VRaySun
+# 146.4 x its multiplier, a VRayIES lm / 683
+_CD, _LAMBERT = 4.0 * math.pi / 683.0, math.pi / 683.0
+def _blend(falloff, hotspot):
+    """Blender's spot blend whose full intensity ends at the hotspot (Blender blends in cosine space)."""
+    edge = math.cos(math.radians(falloff) / 2.0)
+    return (math.cos(math.radians(hotspot) / 2.0) - edge) / (1.0 - edge)
+
+
+_WEB = (170.0, _blend(170.0, 100.0))
+STOCK_LIGHTS = {
+    "StdOmni": ('POINT', 0.0, 0.0, 2250.0 * _CD), "StdOmniInst": ('POINT', 0.0, 0.0, 2250.0 * _CD),
+    "StdOmniSquare": ('POINT', 0.0, 0.0, 1920.0 * _CD), "StdOmniInverse": ('POINT', 0.0, 0.0, 375.0 * _CD),
+    "StdOmniNegative": ('POINT', 0.0, 0.0, 0.0), "StdOmniNoDiffuse": ('POINT', 0.0, 0.0, 1500.0 * _CD),
+    "StdOmniAmbient": ('POINT', 0.0, 0.0, 750.0 * _CD), "StdSpot": ('SPOT', 50.0, _blend(50.0, 30.0), 4500.0 * _CD),
+    "StdSpotRect": ('SPOT', 45.0, _blend(45.0, 40.0), 1500.0 * _CD),
+    "StdTargetSpot": ('SPOT', 60.0, _blend(60.0, 20.0), 3000.0 * _CD),
+    "StdTargetDirect": ('SUN', 0.0, 0.0, 1500.0 * 0.8 / 683.0), "StdDirect": ('SUN', 0.0, 0.0, 1500.0 * 1.2 / 683.0),
+    "StdSun": ('SUN', 0.0, 0.0, 73.2), "FixtureSpot": ('SPOT', 45.0, _blend(45.0, 43.0), 1500.0 * _CD),
+    "PhPoint": ('POINT', 0.0, 0.0, 1200.0 * _CD), "PhPointInst": ('POINT', 0.0, 0.0, 1200.0 * _CD),
+    "PhSpot": ('SPOT', 70.0, _blend(70.0, 40.0), 1000.0 * _CD), "PhRect": ('AREA', 0.0, 0.0, 800.0 * _LAMBERT),
+    "PhDisc": ('AREA', 0.0, 0.0, 500.0 * _LAMBERT), "PhLine": ('AREA', 0.0, 0.0, 300.0 * _LAMBERT),
+    "PhSphere": ('POINT', 0.0, 0.0, 900.0 * _CD), "PhCylinder": ('POINT', 0.0, 0.0, 700.0 * _CD),
+    "PhWeb": ('SPOT',) + _WEB + (400.0 * _CD,), "PhOff": ('POINT', 0.0, 0.0, 1000.0 * _CD),
+    "IesPower": ('SPOT',) + _WEB + (1500.0 / 683.0,), "IesOverride": ('SPOT',) + _WEB + (300.0 * _CD,),
+    "PhTPoint": ('POINT', 0.0, 0.0, 100.0 * _CD), "PhTLine": ('POINT', 0.0, 0.0, 100.0 * _CD),
+    "PhTRectangle": ('POINT', 0.0, 0.0, 100.0 * _CD), "PhTSphere": ('POINT', 0.0, 0.0, 100.0 * _CD),
+    "PhTCylinder": ('POINT', 0.0, 0.0, 100.0 * _CD)}
+# swatches (0..255, decoded from sRGB: the fixtures are saved with the gamma off), the Kelvin colors 3ds Max computed
+# with the rules source's ocbaby_exsKelvinRGB; white when not listed
+STOCK_COLORS = {"StdOmni": (255, 200, 150), "StdOmniInst": (255, 200, 150), "StdSpot": (120, 160, 255),
+                "StdDirect": (255, 240, 220), "StdSun": (255, 230, 200), "PhOff": (255, 128, 0),
+                "PhPoint": (255, 177.2, 109.917), "PhPointInst": (255, 177.2, 109.917),
+                "IesOverride": (255, 205.816, 166.081)}
+STOCK_GREY = ("StdOmniSquare", "StdOmniInverse", "StdOmniNegative", "StdOmniNoDiffuse", "StdOmniAmbient",
+              "StdSpotRect", "StdTargetSpot", "StdTargetDirect", "FixtureSpot")  # a standard light's default 180
+STOCK_FLAGS = {"StdOmniNoDiffuse": (True, False, True, 0.0, 1.0), "StdSpotRect": (True, True, False, 1.0, 0.0),
+               "PhCylinder": (True, True, False, 1.0, 0.0), "IesOverride": (True, True, False, 1.0, 0.0)}
 # hollow: a tube's inner side and a torus's inner half face the box center; closed, they enclose a positive volume
 # the oracle's base_class_id of the primitives MaxDrop builds (convert/primitives.py)
 PRIMITIVE_CLASSES = {("0x00000010", "0x00000000"), ("0x00000011", "0x00000000"), ("0x00000012", "0x00000000"),
@@ -159,10 +254,18 @@ def empty_scene():
         bpy.data.meshes.remove(mesh)
     for curve in list(bpy.data.curves):
         bpy.data.curves.remove(curve)
+    for light in list(bpy.data.lights):
+        bpy.data.lights.remove(light)
+    for camera in list(bpy.data.cameras):
+        bpy.data.cameras.remove(camera)
     for col in list(bpy.data.collections):
         bpy.data.collections.remove(col)
     for text in list(bpy.data.texts):
         bpy.data.texts.remove(text)
+    r = bpy.context.scene.render  # a size no fixture has: a file without a camera must leave it
+    r.resolution_x, r.resolution_y, r.resolution_percentage = KEPT_SIZE
+    r.pixel_aspect_x = r.pixel_aspect_y = 1.0
+    bpy.context.scene.camera = None
     for material in list(bpy.data.materials):
         bpy.data.materials.remove(material)
 
@@ -254,8 +357,16 @@ def run_fixture(path, modules):
         homes = [c.name for c in ob.users_collection]
         check(label + ": in its layer's collection", homes == [o["layer"]], str(homes))
         flags = (ob.hide_viewport, ob.hide_get(view_layer=view_layer), ob.hide_render, ob.hide_select)
-        check(label + ": hidden, renderable and frozen flags",
-              flags == (o["hidden"], o["hidden"], not o["renderable"], o["frozen"]), str(flags))
+        want = (o["hidden"], o["hidden"], not o["renderable"], o["frozen"])
+        if node.kind == convert_scene.LIGHT and not desc.lights[node.light].on:  # a light switched off
+            want = (True, o["hidden"], True, o["frozen"])
+        check(label + ": hidden, renderable and frozen flags", flags == want, str(flags))
+        if node.kind == convert_scene.LIGHT:
+            check_light(label, ob, desc.lights[node.light], o)
+            continue
+        if o["camera"] is not None:
+            check_camera(label, ob, node, desc, o)
+            continue
         if o["shape"] is not None and node.kind == convert_scene.MESH:
             check_extruded(label, ob, node, o, meters, plan)
             continue
@@ -264,7 +375,8 @@ def run_fixture(path, modules):
             continue
         primitive = tuple(o["base_class_id"]) in PRIMITIVE_CLASSES  # built from its parameters
         if o["base_verts"] is None and not primitive:
-            check(label + ": placeholder empty", ob.type == 'EMPTY' and ob.get("maxdrop_class") == o["base_class_name"],
+            want = CLASS_NAMES.get(o["base_class_name"], o["base_class_name"])
+            check(label + ": placeholder empty", ob.type == 'EMPTY' and ob.get("maxdrop_class") == want,
                   "%s %r" % (ob.type, ob.get("maxdrop_class")))
             continue
         check(label + ": mesh object", ob.type == 'MESH', ob.type)
@@ -404,10 +516,180 @@ def run_fixture(path, modules):
                   modified, "" if modified == 1 else "s", ", %d issue%s" % (issues, "" if issues == 1 else "s")
                   if issues else "", build_report.TEXT_NAME)),
               line)
+    elif desc.placeholders:
+        held = sum(desc.placeholders.values())
+        check("%s: report published, nothing left out but the %d placeholders and %d issues" % (name, held, issues),
+              level == "WARNING" and published and rep.left_out == held + issues, line)
+    elif issues:
+        check("%s: report published, nothing left out but the %d issues" % (name, issues),
+              level == "WARNING" and published and rep.left_out == issues, line)
     else:
         check("%s: report published, nothing left out" % name, level == "INFO" and published, line)
     print("COUNTS %s: objects=%d meshes=%d placeholders=%d issues=%d" % (
         name, len(bpy.data.objects), len(bpy.data.meshes), sum(desc.placeholders.values()), len(desc.issues)))
+    check_render(name, oracle, obs, desc)
+    if name == "lookat":  # imports the file again: last
+        check_lookat(path, desc, obs, nodes, meters)
+    if name == "vray_lights":
+        lit = sorted(ob.name for ob in obs if ob.type == 'LIGHT')
+        check("vray_lights: ten light objects, nine lights (the instance shares one, the scaled one has its own)",
+              len(lit) == 10 and len(bpy.data.lights) == 9 and bpy.data.objects["FixturePlane"].data ==
+              bpy.data.objects["FixturePlaneInst"].data and bpy.data.objects["FixtureDisc"].data !=
+              bpy.data.objects["FixtureDiscScaled"].data, "%s, %d lights" % (lit, len(bpy.data.lights)))
+        check_light_strength(path)
+    if name in ("lights_standard", "lights_photometric"):
+        lit = [ob for ob in obs if ob.type == 'LIGHT']
+        shared = {"lights_standard": ("StdOmni", "StdOmniInst"), "lights_photometric": ("PhPoint", "PhPointInst")}
+        a, b = (bpy.data.objects[n] for n in shared[name])
+        count = {"lights_standard": 13, "lights_photometric": 17}[name]
+        check("%s: %d light objects, the instance shares its light" % (name, count),
+              len(lit) == count and len(bpy.data.lights) == count - 1 and a.data == b.data, "%d, %d lights" % (
+                  len(lit), len(bpy.data.lights)))
+
+
+def check_camera(label, ob, node, desc, o):
+    """A camera node: a camera object whose Camera is the description's, frames 3ds Max's horizontal field of view
+    (the oracle's) and looks along the oracle's -Z with its +Y up."""
+    check(label + ": a camera object", ob.type == 'CAMERA' and node.kind == "CAMERA", ob.type)
+    if ob.type != 'CAMERA':
+        return
+    cam, cd = ob.data, desc.cameras[node.camera]
+    got = (cam.type, cam.sensor_fit, cam.sensor_width, cam.lens, cam.shift_x, cam.shift_y, cam.dof.use_dof)
+    want = (cd.kind, 'HORIZONTAL', cd.sensor, cd.lens, cd.shift_x, cd.shift_y, False)
+    check(label + ": type, sensor fit, sensor, lens, shift, no depth of field", got[:2] == want[:2] and
+          close(got[2:6], want[2:6], 1e-5) and got[6] == want[6], "%s vs %s" % (got, want))
+    sx, sy = CAMERA_SHIFTS.get(o["name"], (0.0, 0.0))
+    check(label + ": the shift and sensor the fixture script made", close((cam.shift_x, cam.shift_y), (sx, sy), 1e-6)
+          and abs(cam.sensor_width - CAMERA_SENSORS.get(o["name"], 36.0)) < 1e-5, "%g, %g, %g" % (
+              cam.shift_x, cam.shift_y, cam.sensor_width))
+    fov = math.degrees(cam.angle_x)
+    check(label + ": horizontal field of view = 3ds Max's", abs(fov - o["camera"]["fov"]) < FOV_TOLERANCE,
+          "%g vs %g" % (fov, o["camera"]["fov"]))
+    check(label + ": orthographic as in 3ds Max", (cam.type == 'ORTHO') == o["camera"]["ortho"], cam.type)
+    if cam.type == 'ORTHO':
+        check(label + ": orthographic width", abs(cam.ortho_scale - cd.ortho_scale) < 1e-6, "%g" % cam.ortho_scale)
+    if o["camera"]["manual_clip"]:
+        want = (o["camera"]["hither"] * desc.meters, o["camera"]["yon"] * desc.meters)
+        check(label + ": clipping = 3ds Max's", close((cam.clip_start, cam.clip_end), want, 1e-6),
+              "%g, %g" % (cam.clip_start, cam.clip_end))
+    rows = o["transform"]
+    m = ob.matrix_world.to_3x3()
+    for axis, k, sign in (("-Z", 6, -1.0), ("+Y", 3, 1.0)):
+        want = Vector(rows[k:k + 3]).normalized() * sign
+        got = (m @ Vector((0.0, 0.0, 1.0) if k == 6 else (0.0, 1.0, 0.0))).normalized() * sign
+        check(label + ": %s along the oracle's" % axis, (got - want).length < 1e-5, "%s vs %s" % (
+            tuple(got), tuple(want)))
+
+
+def check_render(name, oracle, obs, desc):
+    """Every fixture: with a camera, the scene's render size is the oracle's and scene.camera the oracle's render
+    camera or else the first camera; without one, the scene's render size and camera stay as they were."""
+    scene = bpy.context.scene
+    r = oracle["render"]
+    got = (scene.render.resolution_x, scene.render.resolution_y, scene.render.resolution_percentage,
+           scene.render.pixel_aspect_x / scene.render.pixel_aspect_y)
+    by_handle = {o["handle"]: ob for ob, o in zip(obs, oracle["nodes"])}
+    cams = [ob for ob, o in zip(obs, oracle["nodes"]) if o["camera"] is not None]
+    want = by_handle[r["camera"]] if r["camera"] is not None else (cams[0] if cams else None)
+    if want is not None:
+        check("%s: render size = 3ds Max's" % name, got[:3] == (r["width"], r["height"], 100) and
+              abs(got[3] - r["pixel_aspect"]) < 1e-6, str(got))
+        check("%s: scene camera = %s" % (name, want.name), scene.camera == want,
+              scene.camera.name if scene.camera else "none")
+    else:
+        check("%s: no camera: the scene's render size and camera are kept" % name,
+              got == KEPT_SIZE + (1.0,) and scene.camera is None, "%s %s" % (got, scene.camera))
+    if name == "cameras":
+        check("cameras: eleven camera objects, one Camera each, CamTarget the scene camera",
+              len(cams) == 11 and len(bpy.data.cameras) == 11 and scene.camera.name == "CamTarget",
+              "%d, %d" % (len(cams), len(bpy.data.cameras)))
+    if name == "lookat":
+        check("lookat: FixtureCam (the first camera) is the scene camera", scene.camera is not None and
+              scene.camera.name == "FixtureCam" and desc.camera is not None)
+
+
+def check_light(label, ob, ld, o):
+    """vray_lights: a LIGHT node's object holds its light: the description's type, shape and size; its -Z axis
+    (where a V-Ray plane and a Blender area light shine) along the oracle's; its energy the watts 3ds Max computed
+    with the rules source's own function (VRAY_LIGHT_WATTS) times the operator's default Light Strength, halved for
+    the double-sided plane; its color and its object flags. Any other light: check_stock_light."""
+    light = ob.data
+    check(label + ": a light object", ob.type == 'LIGHT', ob.type)
+    if ob.type != 'LIGHT':
+        return
+    if o["name"] not in VRAY_LIGHT_WATTS:
+        check_stock_light(label, ob, ld, o)
+        return
+    size = (light.type, getattr(light, "shape", None) if light.type == 'AREA' else None,
+            light.size if light.type == 'AREA' else 0.0,
+            light.size_y if light.type == 'AREA' and light.shape == 'RECTANGLE' else 0.0,
+            light.shadow_soft_size if light.type == 'POINT' else 0.0)
+    want = (ld.kind, ld.shape, ld.size, ld.size_y if ld.shape == 'RECTANGLE' else 0.0, ld.radius)
+    check(label + ": type, shape and size", size[:2] == want[:2] and close(size[2:], want[2:], 1e-7),
+          "%s vs %s" % (size, want))
+    expected = VRAY_LIGHT_SHAPES.get(o["name"])
+    check(label + ": the shape the fixture script made", expected is not None and size[:2] == expected[:2] and
+          close(size[2:], expected[2:], 1e-7), str(expected))
+    rows = o["transform"]
+    z = Vector(rows[6:9]).normalized()
+    got = -(ob.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
+    check(label + ": shines along the oracle's -Z", (got + z).length < 1e-5, "%s vs %s" % (tuple(got), tuple(-z)))
+    from maxdrop import ops
+    watts = VRAY_LIGHT_WATTS[o["name"]] * VRAY_LIGHT_POWER.get(o["name"], 1.0)
+    check(label + ": power = 3ds Max's watts x Light Strength", abs(light.energy - watts * ops.LIGHT_STRENGTH) <=
+          watts * ops.LIGHT_STRENGTH * 1e-5, "%g vs %g" % (light.energy, watts * ops.LIGHT_STRENGTH))
+    color = VRAY_LIGHT_COLORS.get(o["name"], (1.0, 1.0, 1.0))
+    check(label + ": color", close(tuple(light.color), color, 1e-5) and close(tuple(light.color), ld.color, 1e-6),
+          str(tuple(light.color)))
+    flags = (ob.visible_camera, ob.visible_diffuse, ob.visible_glossy, round(light.diffuse_factor, 6),
+             round(light.specular_factor, 6))
+    want = VRAY_LIGHT_FLAGS.get(o["name"], (True, True, True, 1.0, 1.0))
+    check(label + ": camera, diffuse and glossy visibility, diffuse and specular factors", flags == want, str(flags))
+
+
+def check_stock_light(label, ob, ld, o):
+    """lights_standard, lights_photometric, lookat's target spot: the light's type, spot cone, size or radius as the
+    description says, energy the watts of STOCK_LIGHTS times the default Light Strength, color, flags; its -Z axis
+    (where a spot, an area light and a sun shine in both programs) along the oracle's."""
+    from maxdrop import ops
+    light = ob.data
+    kind, cone, blend, watts = STOCK_LIGHTS[o["name"]]
+    check(label + ": type", light.type == kind == ld.kind, "%s vs %s" % (light.type, kind))
+    if light.type == 'SPOT':
+        check(label + ": spot size and blend", abs(math.degrees(light.spot_size) - cone) < 1e-4 and
+              abs(light.spot_blend - blend) < 1e-6, "%g, %g" % (math.degrees(light.spot_size), light.spot_blend))
+    if light.type == 'AREA':
+        got = (light.shape, light.size, light.size_y if light.shape == 'RECTANGLE' else light.size)
+        check(label + ": area shape and size", got[0] == ld.shape and close(got[1:], (ld.size, ld.size_y), 1e-7),
+              str(got))
+    elif light.type == 'SUN':
+        check(label + ": sun angle", abs(light.angle - ld.angle) < 1e-7, "%g" % light.angle)
+    else:
+        check(label + ": radius", abs(light.shadow_soft_size - ld.radius) < 1e-7, "%g" % light.shadow_soft_size)
+    want = watts * ops.LIGHT_STRENGTH
+    check(label + ": power = the rules' watts x Light Strength", abs(light.energy - want) <= max(want, 1.0) * 1e-5,
+          "%g vs %g" % (light.energy, want))
+    rgb = STOCK_COLORS.get(o["name"], (180, 180, 180) if o["name"] in STOCK_GREY else (255, 255, 255))
+    color = tuple(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in (v / 255.0 for v in rgb))
+    check(label + ": color", close(tuple(light.color), color, 1e-5), str(tuple(light.color)))
+    rows = o["transform"]
+    z = Vector(rows[6:9]).normalized()
+    got = -(ob.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
+    check(label + ": shines along the oracle's -Z", (got + z).length < 1e-5, "%s vs %s" % (tuple(got), tuple(-z)))
+    flags = (ob.visible_camera, ob.visible_diffuse, ob.visible_glossy, round(light.diffuse_factor, 6),
+             round(light.specular_factor, 6))
+    want = STOCK_FLAGS.get(o["name"], (True, True, True, 1.0, 1.0))
+    check(label + ": camera, diffuse and glossy visibility, diffuse and specular factors", flags == want, str(flags))
+
+
+def check_light_strength(path):
+    """vray_lights imported again with Light Strength 2: every light's energy is its power times 2."""
+    empty_scene()
+    result = bpy.ops.import_scene.maxdrop(filepath=path, light_strength=2.0)
+    check("vray_lights Light Strength 2: the operator finishes", result == {'FINISHED'}, str(result))
+    sphere = bpy.data.objects.get("FixtureSphere")
+    check("vray_lights Light Strength 2: 40 W x 2", sphere is not None and abs(sphere.data.energy - 80.0) < 1e-4,
+          str(sphere and sphere.data.energy))
 
 
 def check_extruded(label, ob, node, o, meters, plan):
@@ -591,6 +873,74 @@ def check_modifier_pivot(obs, meters):
     b = [c / meters for v in bent.data.vertices for c in bent.matrix_world @ v.co - Vector((30 * meters, 0, 0))]
     check("modifier_pivot: FixtureBent has a mesh of its own", src.data != bent.data)
     check("modifier_pivot: the rotated pivot leaves the object in place", close(b, a, BBOX_TOLERANCE))
+
+
+def check_lookat(path, desc, obs, nodes, meters):
+    """lookat: the Target objects are empties, not placeholders; by default nothing is constrained (the rotation is
+    baked, checked with every world matrix above). With Keep Targets each node whose Look At a Track To can follow
+    gets one, aimed at its target's object, and its evaluated world matrix is still 3ds Max's; a roll and the Y axis
+    keep the baked rotation and the report names them."""
+    targets = [ob.name for ob, o in zip(obs, nodes) if o["base_class_name"] == "Targetobject"]
+    # the target cameras are cameras, the target spot a light: the Point helper is the one placeholder
+    check("lookat: the five targets are empties, no placeholders", len(targets) == 5 and all(
+        bpy.data.objects[t].type == 'EMPTY' for t in targets) and dict(desc.placeholders) == {"Point": 1},
+        str(dict(desc.placeholders)))
+    check("lookat: no constraint without Keep Targets", not any(ob.constraints for ob in obs))
+    empty_scene()
+    result = bpy.ops.import_scene.maxdrop(filepath=path, keep_targets=True)
+    check("lookat Keep Targets: the operator finishes", result == {'FINISHED'}, str(result))
+    bpy.context.view_layer.update()
+    obs = objects_of(desc)
+    by_index = {node.index: ob for node, ob in zip(desc.nodes, obs)}
+    tracked = []
+    for ob, node, o in zip(obs, desc.nodes, nodes):
+        label = "lookat Keep Targets/%s" % o["name"]
+        look = node.look_at
+        cons = [(c.type, c.name) for c in ob.constraints]
+        if look is None or look.track is None:
+            check(label + ": no constraint", cons == [], str(cons))
+            continue
+        tracked.append(o["name"])
+        c = ob.constraints.get("MaxDrop Target")
+        check(label + ": one Track To aimed at its target", cons == [('TRACK_TO', "MaxDrop Target")] and
+              c.target == by_index[look.target] and (c.track_axis, c.up_axis, c.use_target_z) ==
+              (look.track, look.up, look.target_z), "%s %s" % (cons, c and (c.track_axis, c.up_axis)))
+        got = max_rows(ob.matrix_world, meters)
+        check(label + ": evaluated world matrix = 3ds Max's", close(got, o["transform"], MATRIX_TOLERANCE),
+              "%s vs %s" % (["%.6g" % v for v in got], o["transform"]))
+    check("lookat Keep Targets: the Look At nodes a Track To can aim", tracked == [
+        "FixtureCam", "FixtureCamDown", "FixtureSpot", "FixtureCamChild", "FixtureLooker"], str(tracked))
+    text = bpy.data.texts.get("MaxDrop Report")
+    body = text.as_string() if text is not None else ""
+    named = [n for n in ("FixtureCamRoll", "FixtureLookerY") if any(
+        n in line and "Keep Targets" in line for line in body.splitlines())]
+    check("lookat Keep Targets: the report names the two kept fixed", named == ["FixtureCamRoll", "FixtureLookerY"],
+          str(named))
+    # a look-at whose target was not built, or that aims at itself, keeps its rotation and is named with the reason.
+    # No .max reaches either guard (every node is built; a self-aim is damaged by reader.controllers, look_at None):
+    # hand-built descriptions
+    from types import SimpleNamespace
+    from maxdrop.build import objects as build_objects
+    from maxdrop.convert.scene import LookAtDescription
+    lone = [bpy.data.objects.new("FixtureLone%d" % k, None) for k in range(2)]
+    aim = ("TRACK_NEGATIVE_Z", "UP_Y", False, None)
+    fake = SimpleNamespace(nodes=[SimpleNamespace(index=0, look_at=LookAtDescription(99, *aim)),
+                                  SimpleNamespace(index=1, look_at=LookAtDescription(1, *aim))])
+    kept = build_objects.track_targets(fake, SimpleNamespace(objects={0: lone[0], 1: lone[1]}))
+    check("lookat Keep Targets: a missing or self target is returned with its reason, no constraint",
+          kept == [(0, build_objects.NO_TARGET), (1, build_objects.SELF_TARGET)]
+          and not any(ob.constraints for ob in lone), str(kept))
+    for ob in lone:
+        bpy.data.objects.remove(ob)
+    # the note on the axis conversion: only when the file's up does not stay Blender's Z
+    for forward, up, expected in (('X', 'Z', False), ('-Z', 'Y', True)):
+        empty_scene()
+        result = bpy.ops.import_scene.maxdrop(filepath=path, keep_targets=True, axis_forward=forward, axis_up=up)
+        text = bpy.data.texts.get("MaxDrop Report")
+        noted = text is not None and "Track To keeps Blender's Z up" in text.as_string()
+        label = "lookat Keep Targets, Forward %s, Up %s" % (forward, up)
+        check(label + ": the up note " + ("given" if expected else "not given"),
+              result == {'FINISHED'} and noted == expected, "%s, noted %s" % (result, noted))
 
 
 def _irs(path):
@@ -1433,6 +1783,30 @@ def check_conversion_failure(max_path):
     empty_scene()
 
 
+def check_light_note_on_failure(max_path):
+    """A file with lights whose gamma setting is not found and whose material conversion raises: the swatch note of
+    the light colors is still in the report (with converted materials it comes through them)."""
+    import maxdrop.ops as ops
+    from maxdrop.convert import colors
+    empty_scene()
+    original_slots, original_rule = ops._material_slots, colors.of_scene
+
+    def failing(*args, **kwargs):
+        raise RuntimeError("maxdrop test: conversion fails")
+
+    ops._material_slots, colors.of_scene = failing, lambda source: colors.UNKNOWN
+    try:
+        result = bpy.ops.import_scene.maxdrop(filepath=max_path)
+    finally:
+        ops._material_slots, colors.of_scene = original_slots, original_rule
+    text = bpy.data.texts.get("MaxDrop Report")
+    body = text.as_string() if text is not None else ""
+    check("conversion failure: the light colors' swatch note is still reported",
+          result == {'FINISHED'} and len(bpy.data.lights) > 0 and "color swatches: " + colors.GAMMA_NOTE in body,
+          "%s %d lights | %s" % (result, len(bpy.data.lights), body[-500:]))
+    empty_scene()
+
+
 def check_builder_wiring(ma, mb, builder, cm, tx, srgb, data, lost, gamma):
     """The links and values of the hand-made IRs' nodes, against numbers worked out by hand."""
     pa, pb = _principled(ma), _principled(mb)
@@ -1749,7 +2123,9 @@ def main():
                                  ("builder debt", check_builder_debt),
                                  ("image reuse", check_image_reuse), ("double import", check_double_import),
                                  ("conversion failure", lambda: check_conversion_failure(
-                                     os.path.join(ROOT, "tests", "fixtures", "vray_maps.max")))):
+                                     os.path.join(ROOT, "tests", "fixtures", "vray_maps.max"))),
+                                 ("light note on failure", lambda: check_light_note_on_failure(
+                                     os.path.join(ROOT, "tests", "fixtures", "vray_lights.max")))):
             try:
                 run_check()
             except Exception:

@@ -59,6 +59,7 @@ UV_LAYERS = {
     "hierarchy": [],
     "instances": ["UVMap"],
     "layers_flags": [],
+    "lookat": [],  # boxes without Generate Mapping Coords
     "modifier_pivot": ["UVMap"],  # FixtureBent's UVW Map writes channel 1 (applied, the Bend above it is not)
     "multi_uv": ["UVMap", "UVChannel_2", "UVChannel_3"],
     "primitives": collections.defaultdict(lambda: ["UVMap"], {"FixtureBoxNoMap": []}),  # Generate Mapping Coords
@@ -73,6 +74,10 @@ UV_LAYERS = {
     "vray_basic": ["UVMap"],
     "vray_maps": ["UVMap"],
     "vray_texmaps": ["UVMap"],
+    "vray_lights": [],  # lights and a target: no mesh
+    "lights_standard": [],
+    "lights_photometric": [],
+    "cameras": [],  # its box, without Generate Mapping Coords; the cameras are no mesh
     "vray_wrappers": ["UVMap"],
     # per mesh: every box, the cylinder and the sphere have channel 1; two UVW Maps write channels 2 and 3
     "uvwmap": collections.defaultdict(lambda: ["UVMap"], {"FixtureUVWGizmo": ["UVMap", "UVChannel_2"],
@@ -108,10 +113,58 @@ FLAT_MESHES = {"FixtureGeoOcta"}
 PRIMITIVE_CLASSES = {("0x00000010", "0x00000000"), ("0x00000011", "0x00000000"), ("0x00000012", "0x00000000"),
                      ("0x00000020", "0x00000000"), ("0xa86c23dd", "0x00000000"), ("0x00007b21", "0x00000000"),
                      ("0x00000000", "0x00007f9e"), ("0x081f1dfc", "0x77566f65"), ("0x76bf318a", "0x4bf37b10")}
+# placeholders the fixtures hold: lookat's Point helper
+PLACEHOLDERS = {"lookat": {"Point": 1}}
+NO_DECAY = "light: no decay: Blender's light falls off with the square of the distance; as bright as in 3ds Max at 1 m"
 # the issues the fixtures are made to raise
 ISSUES = {"uvwmap": ["uvw map: a UVW Map above Bend is not evaluated",
                      "uvw map: shrink-wrap mapping is not evaluated: the stored channel stays"],
-          "stack_convert": ["modifiers: TurboSmooth above Bend is not converted"]}
+          "stack_convert": ["modifiers: TurboSmooth above Bend is not converted"],
+          "lookat": [  # its target spot; it was saved with a Perspective viewport active
+              "camera: the view 3ds Max renders (viewport 4) looks through no camera: the first camera, FixtureCam, is "
+              "the scene camera", NO_DECAY],
+          "cameras": ["camera: depth of field is not imported"] * 2 + [
+              "camera: its exposure is not imported: Blender renders as if the camera had none"] * 3 + [
+              "camera: its tilt correction (0, 5) is not imported: Blender has no keystone correction"],
+          "lights_standard": [
+              "light: ambient only is not imported: it lights as any light",
+              "light: inverse decay: Blender's light falls off with the square of the distance; as bright as in 3ds "
+              "Max at 0.5 m",
+              "light: its beam (0.8 m across) is not imported: the sun lights the whole scene",
+              "light: its beam (1.4 m across) is not imported: the sun lights the whole scene",
+              "light: its color is its filter color: the sky model's sun color is not imported",
+              "light: its rectangular cone is drawn round",
+              "light: its strength is the sun's at the zenith: the sky model's dimming toward the horizon is not "
+              "imported",
+              "light: multiplier -1 is negative: 0 W"] + [NO_DECAY] * 6 + [
+              "light: not built: a Skylight is not imported yet (Skylight -> World is later work)",
+              "light: overshoot is not imported: the spot lights its cone only",
+              "light: the environment map is a VRaySky: not imported yet (environment -> World is later work)"],
+          "lights_photometric": [
+              "light: its IES file fixture_web.ies is approximated by a spot of 170 degrees",
+              "light: its IES file fixture_web.ies is approximated by a spot of 170 degrees",
+              "light: its cylinder shape is a sphere of its radius",
+              "light: its cylinder shape is a sphere of its radius",
+              "light: its disc shape is a sphere of its radius",
+              "light: its line shape is a rectangle 0.01 m wide",
+              "light: its line shape is not imported: a point",
+              "light: its photometric web fixture_web.ies is approximated by a spot of 170 degrees",
+              "light: its rectangle shape is not imported: a point"],
+          "vray_lights": ["light: diffuse contribution 0.5: Blender's diffuse factor, which only EEVEE uses",
+                          "light: double-sided: Blender's area light shines on one side, with half the power",
+                          "light: not built: a dome light is not imported yet (dome -> World is later work)",
+                          "light: not built: a mesh light is not imported yet"]}
+# the oracle's base_class_id of the lights MaxDrop builds: VRayLight, VRaySun, VRayIES, the standard and the
+# photometric lights
+LIGHT_CLASSES = {("0x3c5575a1", "0x5fd602df"), ("0x732c0383", "0x7d993776"), ("0x2eaf2f07", "0x7ec44f31"),
+                 ("0x00001011", "0x00000000"), ("0x00001012", "0x00000000"), ("0x00001013", "0x00000000"),
+                 ("0x00001014", "0x00000000"), ("0x00001015", "0x00000000"), ("0x32375fcc", "0x0b025cf0"),
+                 ("0x78207401", "0x357f1d58"), ("0x36507d92", "0x105a1a47"), ("0x5bcc6d42", "0x0c4f430e"),
+                 ("0x7ca93582", "0x1abb6b32"), ("0x46f634e3", "0x0a327aaf"), ("0x658d4f97", "0x72cd4259"),
+                 ("0x45076885", "0x40791449"), ("0x71794f9d", "0x70ae52f2"), ("0x38732348", "0x201758b3"),
+                 ("0x33fc7ae9", "0x54433dc5"), ("0x7c8b5b10", "0x4bd33e86")}
+# not built yet: vray_lights' mesh and dome lights, lights_standard's Skylight (not in LIGHT_CLASSES)
+UNBUILT_LIGHTS = {"FixtureMesh", "FixtureDome"}
 # meshes under a converted smoother with Smooth Result: no sharp edge (modifier_pivot's reference, stack_basic's box)
 SHARP_EDGES_SMOOTHED = {"FixtureSmooth": 0, "FixtureTurbo": 0, "FixtureTurboOne": 0, "FixtureMeshSmooth": 0,
                         "FixtureOrder": 0}
@@ -454,6 +507,40 @@ def _run_py_table(name):
     raise AssertionError("no %s in tests/blender/run.py" % name)
 
 
+class LookAt(unittest.TestCase):
+    def test_track_to_of_each_look_at(self):
+        look_at = importlib.import_module(_PKG + ".reader.controllers").LookAt
+        describe = conv.look_at_description
+        self.assertIsNone(describe(None))
+        self.assertIsNone(describe(look_at(None, 2, False, 0.0, False)))  # aims at the origin: nothing to track
+        self.assertEqual(describe(look_at(7, 2, False, 0.0, False)),
+                         conv.LookAtDescription(7, "TRACK_NEGATIVE_Z", "UP_Y", False, None))
+        self.assertEqual(describe(look_at(7, 2, True, 0.0, True)),
+                         conv.LookAtDescription(7, "TRACK_Z", "UP_Y", True, None))
+        self.assertEqual(describe(look_at(7, 0, False, 0.0, False)).track, "TRACK_NEGATIVE_X")
+        self.assertEqual(describe(look_at(7, 0, True, 0.0, False)).track, "TRACK_X")
+        for look, reason in ((look_at(7, 1, False, 0.0, False), conv.NO_TRACK_AXIS),
+                             (look_at(7, 1, True, 0.0, False), conv.NO_TRACK_AXIS),
+                             (look_at(7, 2, False, 0.1, False), conv.NO_TRACK_ROLL)):
+            self.assertEqual(describe(look), conv.LookAtDescription(7, None, None, False, reason))
+
+    def test_lookat_fixture(self):
+        desc = conv.read(os.path.join(ROOT, "tests", "fixtures", "lookat.max"))
+        index = {n.index: n.name for n in desc.nodes}
+        looks = {n.name: (index[n.look_at.target], n.look_at.track, n.look_at.up, n.look_at.target_z,
+                          n.look_at.reason) for n in desc.nodes if n.look_at is not None}
+        self.assertEqual(looks, {  # the boxes with a LookAt Constraint have none
+            "FixtureCam": ("FixtureCam.Target", "TRACK_NEGATIVE_Z", "UP_Y", False, None),
+            "FixtureCamRoll": ("FixtureCamRoll.Target", None, None, False, conv.NO_TRACK_ROLL),
+            "FixtureCamDown": ("FixtureCamDown.Target", "TRACK_NEGATIVE_Z", "UP_Y", False, None),
+            "FixtureSpot": ("FixtureSpot.Target", "TRACK_NEGATIVE_Z", "UP_Y", False, None),
+            "FixtureCamChild": ("FixtureCamChild.Target", "TRACK_NEGATIVE_Z", "UP_Y", False, None),
+            "FixtureLooker": ("FixtureAim", "TRACK_X", "UP_Y", True, None),
+            "FixtureLookerY": ("FixtureAim", None, None, False, conv.NO_TRACK_AXIS)})
+        targets = [n for n in desc.nodes if n.name.endswith(".Target")]
+        self.assertEqual([(n.kind, n.class_name) for n in targets], [(conv.EMPTY, "Target")] * 5)
+
+
 class FixtureTables(unittest.TestCase):
     """Every committed fixture has an entry in the per-fixture tables, here and in tests/blender/run.py, so a new
     fixture fails the plain suite instead of only the Blender run."""
@@ -532,8 +619,10 @@ class Fixtures(unittest.TestCase):
             for node, o in zip(desc.nodes, oracle["nodes"]):
                 extruded = o["shape"] is not None and o["eval_verts"] is not None  # an Extrude on the shape
                 primitive = tuple(o["base_class_id"]) in PRIMITIVE_CLASSES
+                light = tuple(o["base_class_id"] or ()) in LIGHT_CLASSES and o["name"] not in UNBUILT_LIGHTS
                 kind = conv.MESH if o["base_verts"] is not None or extruded or primitive else \
-                    conv.CURVE if o["shape"] else conv.EMPTY
+                    conv.CURVE if o["shape"] else conv.LIGHT if light else \
+                    conv.CAMERA if o["camera"] is not None else conv.EMPTY
                 self.assertEqual(node.kind, kind, "%s %s" % (name, node.name))
                 if node.kind == conv.MESH:
                     md = desc.meshes[node.mesh]
@@ -623,7 +712,8 @@ class Fixtures(unittest.TestCase):
 
     def test_placeholders(self):
         for name, desc, _o in self.cases:
-            self.assertEqual(dict(desc.placeholders), {}, name)  # the group head is a Dummy: converted, an empty
+            # the group head is a Dummy: converted, an empty
+            self.assertEqual(dict(desc.placeholders), PLACEHOLDERS.get(name, {}), name)
             self.assertEqual(sorted(r for _i, r in desc.issues), ISSUES.get(name, []), name)
             self.assertEqual(dict(desc.unknown_controllers), {}, name)
         desc = dict((n, d) for n, d, _o in self.cases)["layers_flags"]
