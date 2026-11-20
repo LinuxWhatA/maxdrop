@@ -8,8 +8,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-21
+
 ### Added
 
+- **Version 1.0**: an import shows its progress and Esc cancels it, large scenes stay within a time and memory
+  budget (see `docs/BASELINE.md`), the Falloff, Output and RGB Tint maps, Composite's blend modes and masks and
+  Color Correction's rewiring are drawn as nodes, files of 3ds Max 2012 and older are read with their names
+  (checked on made-up data), and hostile files are refused by limits instead of running Blender out of memory.
+  Checked on two commercial interior scenes on Blender 4.2 and 5.2, as for 0.1.0. What is not imported yet stays
+  listed in `docs/SUPPORT.md`.
 - Import: started from a window (a drop, or File > Import), an import runs in steps: the status bar shows what it
   does (unpacking with the bytes written, reading, building with the count) and Blender keeps drawing. Esc
   cancels it and removes everything that import made (objects, meshes, materials, images, collections, the report
@@ -33,6 +41,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
   yet: checked on made-up data.
 - Tests: files saved by 3ds Max 2020 in the 2017, 2018 and 2019 formats, with accented and Chinese names; docs/
   SUPPORT.md lists which 3ds Max versions are tested, expected to work or not supported.
+- Landing page: three short videos (a scene pack chosen in File > Import, the same pack dropped from File Explorer,
+  the unpacked .max chosen in File > Import), recorded in Blender 5.2 with the scene's contents blurred, and
+  pictures of the options and the report. The page and the README no longer say Blender stops responding during
+  an import.
+- Landing page in Vietnamese (`vi.html`), with the same pictures and videos; a link in the header switches between
+  English and Tiếng Việt.
 
 ### Changed
 

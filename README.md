@@ -4,11 +4,12 @@ A free Blender extension that imports 3ds Max `.max` scenes, meshes and material
 file onto Blender, or use *File › Import › MaxDrop*. It also takes the `.zip`, `.rar` or `.7z` scene pack the
 scene was downloaded as. Blender 4.2 or newer; tested on 4.2 LTS, 4.5 LTS and 5.2 LTS.
 
-> **Early release.** MaxDrop is a new fork of [io_scene_max](https://github.com/nrgsille76/io_scene_max). It
+> **Stable, not complete.** MaxDrop is a fork of [io_scene_max](https://github.com/nrgsille76/io_scene_max). It
 > imports editable meshes with their UVs, smoothing, instances, hierarchy, layers and scene units, the room shell
 > (shapes, Extrude, UVW Map), nine of the standard primitives, V-Ray, Corona, Standard and Physical materials with
 > their texture maps, and the lights and cameras: a dropped V-Ray interior scene opens through its own camera, lit by
-> its own lights. Most modifiers are not applied yet and some lights and maps are simplified.
+> its own lights. An import shows its progress and Esc cancels it. Most modifiers are not applied yet and some lights
+> and maps are simplified.
 > [docs/SUPPORT.md](docs/SUPPORT.md) is the honest list.
 
 > **Independent.** Not affiliated with, endorsed by or supported by Autodesk or Chaos. Autodesk and 3ds Max are
@@ -30,8 +31,8 @@ scene was downloaded as. Blender 4.2 or newer; tested on 4.2 LTS, 4.5 LTS and 5.
 - **Layers** as collections, nested like the layers; hidden, frozen and non-rendering layers and objects keep
   those flags.
 - **Materials** as a Principled BSDF with their maps as nodes (tiling, offset, rotation, cropping, Mix, Color
-  Correction, normal and bump maps): VRayMtl and the other V-Ray materials and wrappers, Standard, Physical,
-  Multi/Sub-Object, CoronaPhysicalMtl, CoronaMtl, CoronaLightMtl and CoronaLayeredMtl.
+  Correction, Falloff, Composite, normal and bump maps): VRayMtl and the other V-Ray materials and wrappers,
+  Standard, Physical, Multi/Sub-Object, CoronaPhysicalMtl, CoronaMtl, CoronaLightMtl and CoronaLayeredMtl.
 - **Textures** that are plain image files, next to the `.max` file, in a `maps` or `textures` folder beside it, or
   in folders you add in the preferences.
 - **Lights**: V-Ray plane, disc and sphere lights, standard and photometric lights, VRaySun and VRayIES as Blender
@@ -79,6 +80,8 @@ above.
    - **Units**: **Auto** takes the unit the scene was saved with; pick Millimeters, Centimeters, Meters, Inches or
      Feet to override it. A file that does not state its unit is imported at one meter per unit, times Scale.
    - **Scale**: an extra factor on top of Units; leave it at `1`.
+   - **Text Encoding** picks the code page of the names in a file of 3ds Max 2012 or older (**Auto**: the one the
+     file records, else UTF-8, else Western); files of 3ds Max 2013 and later ignore it.
    - **Image Search** also looks for the textures in the subfolders of the scene's folder.
    - **Object Filter** picks whether materials and UV maps come along; **Forward** and **Up** turn the scene.
    - **Modifiers**: **Keep as Blender Modifiers** turns TurboSmooth, MeshSmooth, Shell and Symmetry into Subdivision
@@ -87,8 +90,8 @@ above.
    - **Keep Targets** aims target cameras and lights at their targets with a Track To constraint, so they follow
      when a target moves; off, they keep the rotation 3ds Max gives them.
    - Every import makes a collection named after the file, with one collection per 3ds Max layer below it.
-3. Click **Import**. A large scene takes a while and Blender does not respond until it is done
-   ([docs/BASELINE.md](docs/BASELINE.md) has measured times).
+3. Click **Import**. A large scene takes a while ([docs/BASELINE.md](docs/BASELINE.md) has measured times): the
+   status bar shows the progress, and Esc cancels the import and removes what it made.
 4. The status bar sums up the import in one line. The text **MaxDrop Report** in the Text Editor (and the
    system console) lists what arrived and what did not, such as light settings Blender has no place for, and
    what became of the materials: converted by class, wrappers and maps approximated, textures found and the
@@ -136,13 +139,14 @@ any importer; it then complains about a missing manifest. Import a `.zip` throug
 **The scene arrives at the wrong size.** The file states its unit and **Units: Auto** uses it. If the scene was
 modelled in another unit than it was saved with, pick that unit in **Units**; **Scale** is an extra factor.
 
-**Objects are missing or misshapen.** Lights and cameras are not imported yet, and a modifier MaxDrop does not
-apply (Edit Poly, Edit Mesh, FFD…) leaves the object as it was below it; an object MaxDrop cannot convert arrives
-as an empty with its 3ds Max class in the custom property `maxdrop_class`.
-The text **MaxDrop Report** (Text Editor) lists them, and what became of the materials.
+**Objects are missing or misshapen.** A modifier MaxDrop does not apply (Edit Poly, Edit Mesh, FFD…) leaves the
+object as it was below it; an object MaxDrop cannot convert arrives as an empty with its 3ds Max class in the
+custom property `maxdrop_class`. The text **MaxDrop Report** (Text Editor) lists them, and what became of the materials.
 
-**Which 3ds Max versions?** MaxDrop's own test files are saved by 3ds Max 2020, and scenes of 3ds Max 2015 and
-2020 have been imported. Tell us in an issue when a file does not open.
+**Which 3ds Max versions?** MaxDrop's own test files are saved by 3ds Max 2020, also in the 2017, 2018 and 2019
+formats, and scenes of 3ds Max 2015 and 2020 have been imported; files of 3ds Max 2013 and later are expected to
+work. A file of 3ds Max 2012 or older has not been tried yet: **Text Encoding** picks the code page of its names.
+The table in [docs/SUPPORT.md](docs/SUPPORT.md#files) has the details. Tell us in an issue when a file does not open.
 
 **Can it export `.max`?** No, and that is not planned.
 
