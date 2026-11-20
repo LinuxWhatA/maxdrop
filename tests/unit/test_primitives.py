@@ -313,6 +313,58 @@ class HandMadeTest(unittest.TestCase):
         with self.assertRaisesRegex(prim.PrimitiveError, "refused"):
             prim.build(p)
 
+    def test_the_order_of_points_and_faces_is_kept(self):
+        """The corners, faces, smoothing groups, IDs, points and UVs (rounded to 1e-4), in their order, of one mesh
+        per class (negative sizes, a cone tip, odd counts, two GeoSphere bases): the digests of what the per-corner
+        builder made before numpy, which test_meshes_equal_3ds_max (order aside) does not pin."""
+        import hashlib
+        cases = (("BOX", {0: 2.0, 1: -3.0, 2: 4.0, 3: 3, 4: 2, 5: 4}, "de8547d1733d7443"),
+                 ("PLANE", {0: 2.0, 1: -3.0, 2: 3, 3: 2}, "c2a7f84f2709c8b5"),
+                 ("PYRAMID", {0: 2.0, 1: 3.0, 2: -4.0, 3: 2, 4: 3, 5: 3}, "97c2fa78814a5956"),
+                 ("SPHERE", {0: 2.0, 1: 13}, "407447298984d1e5"),
+                 ("GEOSPHERE", {0: 2.0, 1: 4}, "b87ec06763469322"),
+                 ("GEOSPHERE", {0: 2.0, 1: 3, 2: 0}, "0619ddb6429e73fa"),
+                 ("CYLINDER", {0: 2.0, 1: -3.0, 2: 3, 3: 2, 4: 7}, "4671fe69ab168d36"),
+                 ("CONE", {0: 2.0, 1: 0.0, 2: 3.0, 3: 2, 4: 3, 5: 5}, "7024f48d14d24563"),
+                 ("TUBE", {0: 2.0, 1: 1.0, 2: -3.0, 3: 5, 4: 2, 5: 3}, "e5d798310a58549c"),
+                 ("TORUS", {0: 2.0, 1: 0.5, 3: 0.5, 4: 7, 5: 5, 6: 1}, "67870246609e4acc"))
+        for name, values, want in cases:
+            data, _ = prim.build(prim.params_of(getattr(classids, name), Block(values))[0])
+            h = hashlib.sha256()
+            for a in (data.loop_vertices, data.loop_starts, data.smoothing_groups, data.material_ids):
+                h.update(numpy.ascontiguousarray(a).tobytes())
+            for a in (data.positions, data.maps[1].uvw):  # + 0.0: -0.0 hashes as 0.0
+                h.update((numpy.round(a.astype(numpy.float64), 4) + 0.0).tobytes())
+            self.assertEqual(h.hexdigest()[:16], want, "%s %s" % (name, values))
+
+    def test_every_class_at_the_corner_cap_builds_fast(self):
+        """A file may set segments to thousands: each class just under MAX_CORNERS face corners builds in about 0.1
+        to 0.3 s (built per corner in Python it took 1.3 to 3.4 s). Bound at 2 s, the best of two runs, so a busy
+        CI runner does not fail it."""
+        import time
+        cap = {classids.BOX: {3: 295, 4: 295, 5: 295}, classids.PLANE: {2: 724, 3: 724},
+               classids.PYRAMID: {3: 250, 4: 250, 5: 523}, classids.SPHERE: {1: 1024},
+               classids.GEOSPHERE: {1: 161}, classids.CYLINDER: {2: 500, 3: 10, 4: 1000},
+               classids.CONE: {3: 500, 4: 10, 5: 1000}, classids.TUBE: {3: 1000, 4: 10, 5: 250},
+               classids.TORUS: {4: 724, 5: 724}}
+        sizes = {classids.SPHERE: {0: 1.0}, classids.GEOSPHERE: {0: 1.0}, classids.CONE: {0: 1.0, 1: 0.5, 2: 1.0},
+                 classids.TUBE: {0: 1.0, 1: 0.5, 2: 1.0}, classids.TORUS: {0: 1.0, 1: 0.25}}
+        for class_id, segments in cap.items():
+            values = dict(sizes.get(class_id, {0: 1.0, 1: 1.0, 2: 1.0}))
+            values.update(segments)
+            p, _ = prim.params_of(class_id, Block(values), real_world=True)
+            self.assertGreater(prim._faces(p) * 4, prim.MAX_CORNERS * 0.98, p.name)
+            best = None
+            for _run in range(2):
+                start = time.perf_counter()
+                data, _ = prim.build(p)
+                took = time.perf_counter() - start
+                best = took if best is None else min(best, took)
+                if best < 2.0:
+                    break
+            self.assertLessEqual(len(data.loop_vertices), prim.MAX_CORNERS, p.name)
+            self.assertLess(best, 2.0, p.name)
+
     def test_options_not_built(self):
         cases = ((classids.SPHERE, {0: 1.0, 7: 1}, "Slice"), (classids.SPHERE, {0: 1.0, 3: 0.5}, "hemisphere"),
                  (classids.GEOSPHERE, {0: 1.0, 3: 1}, "hemisphere"), (classids.CYLINDER, {0: 1.0, 6: 1}, "Slice"),

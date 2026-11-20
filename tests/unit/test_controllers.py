@@ -491,8 +491,7 @@ class TestUnsupportedAndDamaged(MatrixCase):
         sibling = b.node(b.simple_prs((7, 0, 0)))
         t = b.transforms()
         self.assertEqual(t.world(n), ct.IDENTITY)
-        self.assertEqual(len(t.issues), 1)
-        self.assertTrue(t.issues[0].reason.startswith(ct.DAMAGED), t.issues[0].reason)
+        self.assertEqual([x.reason for x in t.issues], [ct.NON_FINITE])  # cos(inf) is NaN, not a math error
         self.assertMatrix(t.world(sibling), ct.translation((7, 0, 0)))
         b = Build()
         lst = b.add(node(C_ROTLIST, refs34(b.euler((0, 0, 1)), None, None,
@@ -500,7 +499,22 @@ class TestUnsupportedAndDamaged(MatrixCase):
         n = b.node(b.prs(None, lst))
         t = b.transforms()
         self.assertEqual(t.world(n), ct.IDENTITY)
-        self.assertEqual(len(t.issues), 1)
+        self.assertEqual([x.reason for x in t.issues], [ct.NON_FINITE])
+
+    def test_infinite_weight_fails_an_outer_list_too(self):
+        # the NaN matrix of an infinite weight, weighted again by an outer list, stays NaN at any weight: never
+        # the identity a NaN quaternion would read as
+        for outer in (0.0, 0.5, 1.0, 2.0):
+            b = Build()
+            inner = b.add(node(C_ROTLIST, refs34(b.euler((0, 0, 1)), None, None,
+                                                 b.add(node(C_PB2, refs34(b.flt(float("inf"))))))))
+            lst = b.add(node(C_ROTLIST, refs34(inner, None, None, b.add(node(C_PB2, refs34(b.flt(outer)))))))
+            n = b.node(b.prs(None, lst))
+            sibling = b.node(b.simple_prs((7, 0, 0)))
+            t = b.transforms()
+            self.assertEqual(t.world(n), ct.IDENTITY, outer)
+            self.assertEqual([x.reason for x in t.issues], [ct.NON_FINITE], outer)
+            self.assertMatrix(t.world(sibling), ct.translation((7, 0, 0)))
 
     def test_shared_sub_controllers_are_evaluated_once(self):
         b = Build()

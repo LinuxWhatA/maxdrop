@@ -17,6 +17,7 @@
     desc.unknown_controllers            # Counter: controller class name -> times met
     desc.issues                         # [(node object index, None for the whole scene or a scene-level label
                                         #   such as ENVIRONMENT, reason)] for the report
+    describe(scene, meters, cancel=stop.is_set)   # Cancelled between two nodes once cancel() holds
 
 Matrices are Blender's convention: 4x4 tuples of rows, a column vector p becomes M @ p, the translation is the
 last column. The reader's row-vector matrices are transposed here. node.matrix is the local matrix (relative to
@@ -127,8 +128,8 @@ UV_FIRST = "UVMap"
 UV_NAME = "UVChannel_%d"
 MAX_EDGE_MASKS = 64  # distinct smoothing-group masks paired on one non-manifold edge
 # Face corners the primitives and extrusions of one scene may make: each has its own cap (primitives.MAX_CORNERS,
-# extrude.MAX_VERTICES), but a file can hold any number of them, each costing seconds and hundreds of MB. Checked
-# before each is made, so the last one made can pass it by up to its own cap.
+# extrude.MAX_VERTICES), but a file can hold any number of them, each costing up to about a second and hundreds of
+# MB. Checked before each is made, so the last one made can pass it by up to its own cap.
 MAX_BUILT_CORNERS = 1 << 24
 _SPENT = "the primitives and extrusions before it reach %d face corners, the budget for one scene"
 SHEAR_TOLERANCE = 1e-5  # |cos| between two rows of a local matrix
@@ -136,6 +137,11 @@ OFFSET = "its object is offset from its pivot: the camera looks from the pivot, 
 ENVIRONMENT = "environment"  # the label of an issue of the environment map (no node holds it)
 
 ChunkError = chunks.ChunkError
+
+
+class Cancelled(Exception):
+    """describe() stopped because its cancel check held (an import cancelled while reading). Not a ValueError: the
+    file is not damaged."""
 
 
 class NodeDescription:
@@ -469,11 +475,12 @@ def sheared(m):
     return False
 
 
-def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, views=None):
+def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, views=None, cancel=None):
     """The SceneDescription of a reader.scene.Scene; meters is the length of one file unit; convert_modifiers False
     leaves the modifiers Blender has an equivalent for in node.modifiers, unconverted and unreported; assets, the
     scene's reader.assets.AssetTable, names the files of web and IES lights (None: not named); views, the file's
-    convert.cameras.SavedViews, picks the scene camera (None: the first camera)."""
+    convert.cameras.SavedViews, picks the scene camera (None: the first camera); cancel, a callable asked before each
+    node of both walks, ends it with Cancelled once it returns true."""
     if not (math.isfinite(meters) and meters > 0):
         raise ValueError("meters per unit must be a positive number, not %r" % (meters,))
     t = controllers.Transforms(scene)
@@ -484,6 +491,8 @@ def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, 
     shape_of = {}  # base object index -> reader Shape, or None when the reader refused it
     remaining = collections.Counter()  # base object -> nodes still to build: its MeshData goes with the last
     for i in order:
+        if cancel is not None and cancel():
+            raise Cancelled()
         try:
             node = scene.node(i)
             stack = scene.object_stack(node.object) if node.object is not None else None
@@ -505,6 +514,8 @@ def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, 
     camera_params = {}  # camera base object index -> its values (convert.cameras.read_params)
     mm = unit.meters * 1000.0 if unit is not None else meters * 1000.0  # the thin lens is in the file's own unit
     for i in order:
+        if cancel is not None and cancel():
+            raise Cancelled()
         local, world = t.local(i), t.world(i)
         kind, key, class_name, modifiers, name, node, layer, base = EMPTY, None, "", (), "", None, None, None
         curve, applied, converted, light, camera = None, (), (), None, None
@@ -679,7 +690,7 @@ def _primitive(scene, base, issues, node, built):
     except ChunkError as exc:  # PrimitiveError, or a block the reader refuses
         issues.append((node, "primitive: %s" % exc))
         return None
-    except (ArithmeticError, ValueError) as exc:  # a formula the sizes break costs the object, not the import
+    except ArithmeticError as exc:  # a formula the sizes break costs the object, not the import
         issues.append((node, "primitive: not built: %s" % exc))
         return None
     built[0] += len(data.loop_vertices)

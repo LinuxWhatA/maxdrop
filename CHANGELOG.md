@@ -36,6 +36,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
 
 ### Changed
 
+- Import: Esc while a windowed import reads its file stops the reading at the next object (it ran to the end of
+  the file, and a new import was refused until then), and a very large mesh is built in several steps, so Blender
+  keeps drawing and Esc answers during it.
+- Primitives: a primitive is built with array operations instead of one Python step per face corner, the same mesh
+  about ten times faster: one with segments in the thousands (up to the cap of 2,097,152 face corners) takes a few
+  tenths of a second instead of up to 4 s, and a scene of many such primitives no longer stalls the reading.
 - Materials: an inverted Output (of a Bitmap or an Output map) with an RGB offset subtracts the offset, as 3ds Max
   renders it (it was added).
 - Report: a scene saved with a view through no camera active (common) names its scene camera, the first camera, in
@@ -67,6 +73,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
   of as a placeholder.
 - Scene packs: Blender closing at the moment an unpack creates its folder (or the folder of a pack with several
   scenes) no longer leaves an empty folder behind that makes the next unpack use `<name> (2)`.
+- Scene packs: the hidden folders left by rare crashes or by several unpacks of one pack at once are cleaned up by
+  a later unpack of that pack (a half-filled `.maxdrop-reclaim-*` folder once stale; a leftover beside the folder
+  of a pack with several scenes by every unpack of that pack that writes), and a folder holding a scene is kept
+  instead of removed; a folder name freed from a stale unpack is taken again when its folder cannot be renamed
+  into place.
 
 ## [0.1.0] - 2026-11-19
 
