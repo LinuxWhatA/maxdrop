@@ -3,15 +3,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """Tests of maxdrop/convert/materials.py, the material rules: no Blender. vray_basic's IR against values computed by
-hand from its authoring script (tools/fixtures/vray_basic.ms), vray_maps' map slots, vray_wrappers' peels, and each
-rule on synthetic parameters (the classes no fixture has: VRayLightMtl, VRayFastSSS2, the car paints, the other
-wrappers, the Standard shaders but Blinn). standard_physical's Standard and Physical Material and box_poly_standard's
-Standard against values computed by hand from their scripts; vray_wrappers' Multi/Sub-Object by material ID and the
-slot plan of its box.
+hand from its authoring script (tools/fixtures/vray_basic.ms), vray_maps' map slots, vray_wrappers' peels, vray_more's
+VRayLightMtl, VRayFastSSS2, car paints and other wrappers, and each rule on synthetic parameters. standard_physical's
+Standard and Physical Material, box_poly_standard's Standard, standard_shaders' Standard shaders and Physical map slots
+against values computed by hand from their scripts (and the ids by the names the oracle gives them); vray_wrappers'
+Multi/Sub-Object by material ID and the slot plan of its box.
 
     python -I -m unittest discover tests
 """
 import importlib
+import json
 import math
 import os
 import sys
@@ -39,6 +40,7 @@ colors = importlib.import_module(_PKG + ".convert.colors")
 texmaps = importlib.import_module(_PKG + ".convert.texmaps")
 cfb = importlib.import_module(_PKG + ".reader.cfb")
 chunks = importlib.import_module(_PKG + ".reader.chunks")
+classdir = importlib.import_module(_PKG + ".reader.classdir")
 classids = importlib.import_module(_PKG + ".reader.classids")
 pblock = importlib.import_module(_PKG + ".reader.pblock")
 reader_materials = importlib.import_module(_PKG + ".reader.materials")
@@ -137,7 +139,7 @@ class Helpers(unittest.TestCase, Close):
 
     def test_rules_use_the_swatch_rule(self):
         """Every rule's swatches go through it: a gamma-off scene decodes each one with the sRGB curve."""
-        light = FakeMtl(0, mat.VRAY_LIGHT_MTL, "Glow", {0: {0: (1.0, 0.5, 0.0)}})
+        light = FakeMtl(0, classids.VRAY_LIGHT_MTL, "Glow", {0: {0: (1.0, 0.5, 0.0)}})
         conv = mat.MaterialConverter(FakeGraph(light), swatches=colors.GAMMA_OFF)
         self.close(conv.convert(0).emission_color.value, (1.0, 0.214041, 0.0))
         std = FakeMtl(0, classids.STANDARD_MTL, "Std")  # no shader: the default diffuse 150
@@ -153,7 +155,7 @@ class Helpers(unittest.TestCase, Close):
 
     def test_class_name(self):
         self.assertEqual(mat.class_name(classids.SC_MATERIAL, classids.VRAY_MTL), "VRayMtl")
-        self.assertEqual(mat.class_name(classids.SC_MATERIAL, mat.VRAY_LIGHT_MTL), "VRayLightMtl")
+        self.assertEqual(mat.class_name(classids.SC_MATERIAL, classids.VRAY_LIGHT_MTL), "VRayLightMtl")
         self.assertEqual(mat.class_name(classids.SC_MATERIAL, (1, 2)), "ClassID(0x00000001, 0x00000002)")
 
     def test_not_a_material(self):
@@ -265,7 +267,7 @@ class VRayMtlRules(unittest.TestCase, Close):
 
 class OtherRules(unittest.TestCase, Close):
     def test_vray_light_mtl(self):
-        light = FakeMtl(0, mat.VRAY_LIGHT_MTL, "Glow",
+        light = FakeMtl(0, classids.VRAY_LIGHT_MTL, "Glow",
                         {0: {0: (1.0, 0.5, 0.0), 1: 7.5, 2: Ref(1), 3: 1, 5: Ref(2), 6: 0}})
         conv, ir = _convert(light, _map(1), _map(2))
         self.close(ir.base_color.value, (0.0, 0.0, 0.0))
@@ -278,7 +280,7 @@ class OtherRules(unittest.TestCase, Close):
         self.assertEqual((ir.name, ir.source), ("Glow", "VRayLightMtl"))
 
     def test_vray_fast_sss2(self):
-        sss = FakeMtl(0, mat.VRAY_FAST_SSS2, "Skin", {0: {
+        sss = FakeMtl(0, classids.VRAY_FAST_SSS2, "Skin", {0: {
             26: (0.5, 0.5, 0.5), 27: Ref(1), 28: 1, 36: 0.25, 2: (1.0, 0.5, 0.5), 0: 4.0, 22: 2.0, 31: 1.4,
             40: (1.0, 1.0, 1.0), 51: 0.7, 3: Ref(2), 4: 1, 85: Ref(3), 86: 1}})
         conv, ir = _convert(sss, _map(1), _map(2), _map(3))
@@ -292,11 +294,14 @@ class OtherRules(unittest.TestCase, Close):
         self.close(ir.subsurface_radius, 0.08)  # 4 cm x scale 2, in meters
         self.assertEqual(ir.bump, mat.MapRef(2, 1.0, False))
         self.assertEqual(ir.alpha.map, mat.MapRef(3, 1.0, False))
+        conv, ir = _convert(FakeMtl(0, classids.VRAY_FAST_SSS2, "Default", {0: {}}))
+        self.close(ir.subsurface_color, (0.5,) * 3)  # sub_surface_color's default: 127.5 grey
+        self.close((ir.subsurface_radius, ir.subsurface_weight, ir.ior), (0.01, 1.0, 1.3))
 
     def test_car_paints(self):
         common = {0: (0.5, 0.0, 0.0), 1: Ref(1), 2: 1, 4: 0.4, 8: 0.9, 27: (1.0, 1.0, 1.0), 39: 0.95}
         paint = {**common, 31: 0.05, 55: Ref(2), 56: 1}  # coat_strength: reflectance at normal incidence
-        conv, ir = _convert(FakeMtl(0, mat.VRAY_CAR_PAINT_MTL, "Paint", {0: paint}), _map(1), _map(2))
+        conv, ir = _convert(FakeMtl(0, classids.VRAY_CAR_PAINT_MTL, "Paint", {0: paint}), _map(1), _map(2))
         self.close(ir.base_color.value, (0.5, 0.0, 0.0))
         self.assertEqual(ir.base_color.map, mat.MapRef(1, 1.0, False))
         self.close(ir.roughness.value, 0.1)
@@ -307,20 +312,20 @@ class OtherRules(unittest.TestCase, Close):
         self.close(ir.coat_roughness, 0.05)
         self.close(ir.coat_color, (1.0, 1.0, 1.0))
         self.assertEqual(ir.bump, mat.MapRef(2, 1.0, False))
-        conv, ir = _convert(FakeMtl(0, mat.VRAY_CAR_PAINT_MTL, "Bare", {0: {**common, 31: 0.0}}), _map(1))
+        conv, ir = _convert(FakeMtl(0, classids.VRAY_CAR_PAINT_MTL, "Bare", {0: {**common, 31: 0.0}}), _map(1))
         self.close(ir.coat_weight, 0.0)
-        conv, ir = _convert(FakeMtl(0, mat.VRAY_CAR_PAINT_MTL, "Mirror", {0: {**common, 31: 1.0}}), _map(1))
+        conv, ir = _convert(FakeMtl(0, classids.VRAY_CAR_PAINT_MTL, "Mirror", {0: {**common, 31: 1.0}}), _map(1))
         self.close(ir.coat_ior, 100.0)  # reflectance 1 is an IOR near 400: clamped like every IOR
-        conv, ir = _convert(FakeMtl(0, mat.VRAY_CAR_PAINT_MTL, "Default", {0: {}}))
+        conv, ir = _convert(FakeMtl(0, classids.VRAY_CAR_PAINT_MTL, "Default", {0: {}}))
         self.close((ir.coat_weight, ir.roughness.value), (1.0, 0.4))  # coat_strength 0.05, base_glossiness 0.6
-        conv, ir = _convert(FakeMtl(0, mat.VRAY_CAR_PAINT_MTL2, "Paint2",
+        conv, ir = _convert(FakeMtl(0, classids.VRAY_CAR_PAINT_MTL2, "Paint2",
                                     {0: {**common, 31: 0.8, 81: 1.7, 54: Ref(2), 55: 1}}), _map(1), _map(2))
         self.close(ir.coat_weight, 0.8)
         self.close(ir.coat_ior, 1.7)
         self.close(ir.roughness.value, 0.1)
         self.assertEqual(ir.bump, mat.MapRef(2, 1.0, False))
         self.assertEqual(ir.source, "VRayCarPaintMtl2")
-        conv, ir = _convert(FakeMtl(0, mat.VRAY_CAR_PAINT_MTL2, "Default2", {0: {}}))
+        conv, ir = _convert(FakeMtl(0, classids.VRAY_CAR_PAINT_MTL2, "Default2", {0: {}}))
         self.close((ir.coat_weight, ir.coat_ior, ir.roughness.value), (1.0, 1.5, 0.6))
 
     def test_unknown_class_is_grey_and_counted(self):
@@ -344,10 +349,10 @@ def _wrapper(index, class_id, params, name="W"):
 class Wrappers(unittest.TestCase):
     def test_each_wrapper_peels_to_its_first_set_sub_material(self):
         cases = [
-            (mat.VRAY_OVERRIDE_MTL, {0: Ref(None), 2: Ref(1), 4: Ref(2)}, 1),  # empty base: the next slot
-            (mat.VRAY_MTL_WRAPPER, {0: Ref(1)}, 1),
-            (mat.DOUBLE_SIDED_MTL, {0: Ref(2), 1: Ref(1)}, 2),
-            (mat.SHELLAC_MTL, {0: Ref(1), 1: Ref(2)}, 1),
+            (classids.VRAY_OVERRIDE_MTL, {0: Ref(None), 2: Ref(1), 4: Ref(2)}, 1),  # empty base: the next slot
+            (classids.VRAY_MTL_WRAPPER, {0: Ref(1)}, 1),
+            (classids.DOUBLE_SIDED_MTL, {0: Ref(2), 1: Ref(1)}, 2),
+            (classids.SHELLAC_MTL, {0: Ref(1), 1: Ref(2)}, 1),
             (classids.VRAY_2SIDED_MTL, {0: Ref(None), 1: Ref(2)}, 2),
             (classids.VRAY_BLEND_MTL, {0: Ref(None), 1: [Ref(None), Ref(2), Ref(1)]}, 2),  # coat table
             (classids.SHELL_MTL, {1: 1, 2: Ref(1), 3: Ref(2)}, 2),  # render index 1: baked
@@ -363,8 +368,8 @@ class Wrappers(unittest.TestCase):
                 self.assertEqual(sum(conv.stats.peeled.values()), 1)
 
     def test_nested_wrappers_count_each_once(self):
-        objs = (_wrapper(0, mat.VRAY_MTL_WRAPPER, {0: Ref(1)}), _wrapper(1, classids.VRAY_2SIDED_MTL, {0: Ref(2)}),
-                _vray(2, "Base"), _wrapper(3, mat.VRAY_MTL_WRAPPER, {0: Ref(1)}))
+        objs = (_wrapper(0, classids.VRAY_MTL_WRAPPER, {0: Ref(1)}), _wrapper(1, classids.VRAY_2SIDED_MTL, {0: Ref(2)}),
+                _vray(2, "Base"), _wrapper(3, classids.VRAY_MTL_WRAPPER, {0: Ref(1)}))
         conv = mat.MaterialConverter(FakeGraph(*objs))
         self.assertEqual(conv.convert(0).name, "Base")
         self.assertEqual(conv.convert(3).name, "Base")
@@ -379,7 +384,7 @@ class Wrappers(unittest.TestCase):
         ]
         for params, reason in cases:
             with self.subTest(reason):
-                conv = mat.MaterialConverter(FakeGraph(_wrapper(0, mat.VRAY_MTL_WRAPPER, params, "Wrap"), _map(5)))
+                conv = mat.MaterialConverter(FakeGraph(_wrapper(0, classids.VRAY_MTL_WRAPPER, params, "Wrap"), _map(5)))
                 ir = conv.convert(0)
                 self.assertTrue(ir.unknown)
                 self.assertEqual(ir.name, "Wrap")
@@ -394,7 +399,7 @@ class Wrappers(unittest.TestCase):
         self.assertIn("render index", reason)
 
     def test_depth_guard(self):
-        objs = [_wrapper(i, mat.VRAY_MTL_WRAPPER, {0: Ref(i + 1)}) for i in range(mat.MAX_PEEL + 1)]
+        objs = [_wrapper(i, classids.VRAY_MTL_WRAPPER, {0: Ref(i + 1)}) for i in range(mat.MAX_PEEL + 1)]
         objs.append(_vray(mat.MAX_PEEL + 1, "Deep"))
         conv = mat.MaterialConverter(FakeGraph(*objs))
         base, reason = conv.peel(0)
@@ -514,6 +519,91 @@ class VRayWrappers(unittest.TestCase, Close):
         self.assertEqual(conv.stats.issues, [])
 
 
+class VRayMore(unittest.TestCase, Close):
+    """tools/fixtures/vray_more.ms, by hand (gamma off: sRGB s/255 -> linear). Every map at amount 1.0: the rules
+    do not read the multipliers yet (maxdrop-em3.103)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cf, graph, cls.by_name = _fixture("vray_more")
+        with cf:
+            cls.conv = mat.MaterialConverter(graph)
+            cls.irs = {n: cls.conv.convert(cls.by_name[n]) for n in (
+                "FixtureLightMtl", "FixtureFastSSS2", "FixtureCarPaint", "FixtureCarPaint2", "FixtureOverride",
+                "FixtureMtlWrapper", "FixtureDoubleSided", "FixtureShellac")}
+            cls.peels = {n: cls.conv.peel(cls.by_name[n]) for n in cls.irs}
+
+    def map(self, name):
+        return mat.MapRef(self.by_name[name], 1.0, False)
+
+    def test_light_mtl(self):
+        ir = self.irs["FixtureLightMtl"]
+        self.assertEqual((ir.source, ir.unknown), ("VRayLightMtl", False))
+        self.close(ir.emission_color.value, _lins(250, 120, 30))
+        self.assertEqual(ir.emission_color.map, self.map("FixtureLightMap"))
+        self.close(ir.emission_strength, 3.7)
+        self.assertIsNone(ir.alpha.map)  # opacity_texmap_on off
+        self.close((ir.base_color.value, ir.roughness.value, ir.specular.value), ((0.0,) * 3, 1.0, 0.0))
+
+    def test_fast_sss2(self):
+        ir = self.irs["FixtureFastSSS2"]
+        self.assertEqual(ir.source, "VRayFastSSS2")
+        self.close(ir.base_color.value, _lins(180, 120, 90))
+        self.assertEqual(ir.base_color.map, self.map("FixtureSSSDiffuseMap"))
+        self.close(ir.roughness.value, 1.0 - 0.72)
+        self.close(ir.specular.value, sum(_lins(200, 210, 220)) / 3)
+        self.close(ir.ior, 1.45)
+        self.close(ir.subsurface_weight, 1.0 - 0.35)
+        self.close(ir.subsurface_color, _lins(220, 90, 70))
+        self.close(ir.subsurface_radius, 3.0 * 0.7 / 100, "scatter_radius 3 cm times scale 0.7, in meters")
+        self.assertEqual(ir.bump, self.map("FixtureSSSBumpMap"))
+        self.assertIsNone(ir.normal)
+        self.assertIsNone(ir.alpha.map)  # texmap_opacity_on off
+
+    def test_car_paint(self):
+        ir = self.irs["FixtureCarPaint"]
+        self.assertEqual(ir.source, "VRayCarPaintMtl")
+        self.close(ir.base_color.value, _lins(150, 20, 30))
+        self.assertEqual(ir.base_color.map, self.map("FixtureCarPaintColorMap"))
+        self.close((ir.roughness.value, ir.metallic.value, ir.specular.value), (1.0 - 0.77, 1.0, 0.45))
+        self.close(ir.coat_color, _lins(240, 230, 220))
+        self.close(ir.coat_roughness, 1.0 - 0.93)
+        self.close(ir.coat_weight, 1.0)
+        self.close(ir.coat_ior, 1.3 / 0.7, "coat_strength 0.09: (1 + 0.3) / (1 - 0.3)")
+        self.assertEqual(ir.bump, self.map("FixtureCarPaintBumpMap"))
+
+    def test_car_paint2(self):
+        ir = self.irs["FixtureCarPaint2"]
+        self.assertEqual(ir.source, "VRayCarPaintMtl2")
+        self.close(ir.base_color.value, _lins(20, 60, 150))
+        self.assertIsNone(ir.base_color.map)  # texmap_base_color_on off
+        self.close((ir.roughness.value, ir.metallic.value, ir.specular.value), (1.0 - 0.66, 1.0, 0.35))
+        self.close(ir.coat_color, _lins(230, 240, 250))
+        self.close(ir.coat_roughness, 1.0 - 0.88)
+        self.close((ir.coat_weight, ir.coat_ior), (0.82, 1.62))
+        self.assertEqual(ir.bump, self.map("FixtureCarPaint2BumpMap"))
+
+    def test_wrappers_peel_to_their_base(self):
+        expect = {"FixtureOverride": ("FixtureOverrideBase", (200, 40, 40), 0.51),
+                  "FixtureMtlWrapper": ("FixtureWrapperBase", (160, 90, 200), 0.56),
+                  "FixtureDoubleSided": ("FixtureFacing", (210, 150, 60), 0.57),
+                  "FixtureShellac": ("FixtureShellacBase", (120, 200, 160), 0.59)}
+        for wrapper, (sub, diffuse, gloss) in expect.items():
+            with self.subTest(wrapper):
+                self.assertEqual(self.peels[wrapper], (self.by_name[sub], None))
+                ir = self.irs[wrapper]
+                self.assertEqual((ir.name, ir.index, ir.source), (sub, self.by_name[sub], "VRayMtl"))
+                self.close(ir.base_color.value, _lins(*diffuse))
+                self.close(ir.roughness.value, 1.0 - gloss)
+        self.assertEqual(dict(self.conv.stats.peeled),
+                         {"VRayOverrideMtl": 1, "VRayMtlWrapper": 1, "Double Sided": 1, "Shellac": 1})
+
+    def test_no_issues(self):
+        self.assertEqual((self.conv.stats.issues, dict(self.conv.stats.unknown)), ([], {}))
+        for name, ir in self.irs.items():
+            self.assertEqual(ir.issues, [], name)
+
+
 def _standard(index, shader_class, shader, blocks=None, maps=None, name="S"):
     """A Standard material with its shader part (block 0 of the part = shader) and maps {slot: (ref, on, amount)}."""
     blocks = {k: dict(v) for k, v in (blocks or {}).items()}
@@ -576,11 +666,11 @@ class Standard(unittest.TestCase, Close):
                 self.close(ir.specular.value, 0.4)
                 self.close(ir.emission_color.value, (0.0, 1.0, 0.0), "self-illumination color")
                 self.close(ir.emission_strength, 1.0)
-                self.close(ir.metallic.value, 1.0 if sid == mat.METAL_SHADER else 0.0)
+                self.close(ir.metallic.value, 1.0 if sid == classids.METAL_SHADER else 0.0)
                 self.assertEqual(conv.stats.issues, [])
 
     def test_strauss(self):
-        conv, ir = _convert(_standard(0, mat.STRAUSS_SHADER, {0: (1.0, 0.0, 0.0), 1: 0.8, 2: 0.6}))
+        conv, ir = _convert(_standard(0, classids.STRAUSS_SHADER, {0: (1.0, 0.0, 0.0), 1: 0.8, 2: 0.6}))
         self.close(ir.base_color.value, (1.0, 0.0, 0.0))
         self.close(ir.roughness.value, 0.2)
         self.close(ir.metallic.value, 0.6)
@@ -680,6 +770,168 @@ class Physical(unittest.TestCase, Close):
         self.close(ir.emission_strength, 0.0)
 
 
+def _oracle_graph(name):
+    with open(os.path.join(FIXTURE_DIR, name + ".oracle.json"), encoding="ascii") as f:
+        return {e["name"]: e for e in json.load(f)["material_graph"]}
+
+
+def _names(block):
+    return {p["id"]: p["name"] for p in block["params"]}
+
+
+class StandardShaders(unittest.TestCase, Close):
+    """tools/fixtures/standard_shaders.ms, by hand (gamma off: sRGB s/255 -> linear): one Standard material per
+    shader. The ids are also checked by the names 3ds Max gives them in the oracle, apart from SHADERS."""
+
+    # material: (shader, diffuse, specular, level %, glossiness %, self-illumination amount %, its color, color on)
+    VALUES = {
+        "FixtureBlinn": ("BLINN_SHADER", (200, 60, 40), (220, 210, 200), 41, 31, 17, (30, 90, 200), True),
+        "FixturePhong": ("PHONG_SHADER", (60, 180, 90), (210, 220, 230), 52, 42, 19, (200, 30, 90), False),
+        "FixtureMetal": ("METAL_SHADER", (180, 140, 60), (240, 230, 200), 63, 53, 21, (90, 200, 30), True),
+        "FixtureAnisotropic": ("ANISOTROPIC_SHADER", (90, 60, 200), (190, 200, 210), 74, 64, 23, (40, 160, 220),
+                               False),
+        "FixtureOrenNayarBlinn": ("OREN_NAYAR_BLINN_SHADER", (150, 90, 120), (230, 220, 210), 35, 45, 27,
+                                  (220, 120, 40), True),
+        "FixtureMultiLayer": ("MULTI_LAYER_SHADER", (100, 170, 160), (200, 190, 180), 46, 56, 29, (160, 40, 220),
+                              False),
+        "FixtureTranslucent": ("TRANSLUCENT_SHADER", (170, 110, 80), (215, 225, 235), 57, 67, 31, (30, 220, 160),
+                               True),
+    }
+    FIELDS = {"diffuse": "diffuse", "specular": "specular", "level": "specularLevel", "glossiness": "glossiness",
+              "si_amount": "selfIllumAmount", "si_color": "selfIllumColor", "use_si_color": "useSelfIllumColor"}
+
+    @classmethod
+    def setUpClass(cls):
+        cf, graph, cls.by_name = _fixture("standard_shaders")
+        with cf:
+            cls.conv = mat.MaterialConverter(graph)
+            cls.irs = {n: cls.conv.convert(cls.by_name[n]) for n in list(cls.VALUES) + ["FixtureStrauss"]}
+        cls.oracle = _oracle_graph("standard_shaders")
+
+    def shader_block(self, name):
+        """(ClassId, parameter names by id) of the shader part of a Standard material in the oracle."""
+        parts = [(classdir.ClassId(*(int(h, 16) for h in p["class_id"])), p) for p in self.oracle[name]["parts"]]
+        parts = [(cid, p) for cid, p in parts if cid != classids.STAR_SAMPLER]  # the other part: the sampler
+        self.assertEqual(len(parts), 1, name)
+        return parts[0][0], _names(parts[0][1]["blocks"][0])
+
+    def test_each_shader_by_hand(self):
+        for name, (shader, diffuse, spec, level, gloss, amount, si_color, si_on) in self.VALUES.items():
+            with self.subTest(name):
+                ir = self.irs[name]
+                self.assertEqual((ir.name, ir.source, ir.unknown), (name, "Standard", False))
+                self.close(ir.base_color.value, _lins(*diffuse))
+                self.close(ir.roughness.value, 1.0 - gloss / 100.0)
+                self.close(ir.specular.value, level / 100.0 * sum(_lins(*spec)) / 3)
+                if si_on:  # its own color at strength 1
+                    self.close(ir.emission_color.value, _lins(*si_color))
+                    self.close(ir.emission_strength, 1.0)
+                else:  # the diffuse at the amount
+                    self.close(ir.emission_color.value, _lins(*diffuse))
+                    self.close(ir.emission_strength, amount / 100.0)
+                self.close(ir.metallic.value, 1.0 if shader == "METAL_SHADER" else 0.0)
+                self.assertIsNone(ir.base_color.map)
+
+    def test_strauss(self):
+        ir = self.irs["FixtureStrauss"]
+        self.close(ir.base_color.value, _lins(120, 130, 210))
+        self.close((ir.roughness.value, ir.metallic.value, ir.specular.value), (1.0 - 0.37, 0.48, 0.5))
+        self.close(ir.emission_strength, 0.0)
+
+    def test_ids_name_the_parameters(self):
+        for name, values in self.VALUES.items():
+            with self.subTest(name):
+                sid, names = self.shader_block(name)
+                self.assertEqual(sid, getattr(classids, values[0]))
+                ids = mat.SHADERS[sid]
+                self.assertEqual({field: names[getattr(ids, field)] for field in self.FIELDS}, self.FIELDS)
+        sid, names = self.shader_block("FixtureStrauss")
+        self.assertEqual(sid, classids.STRAUSS_SHADER)
+        self.assertEqual((names[0], names[1], names[2]), ("diffuse", "glossiness", "metalness"))
+        self.assertEqual(set(mat.SHADERS), {getattr(classids, v[0]) for v in self.VALUES.values()})
+
+    def test_no_issues(self):
+        self.assertEqual((self.conv.stats.issues, dict(self.conv.stats.unknown)), ([], {}))
+
+
+class PhysicalMaps(unittest.TestCase, Close):
+    """tools/fixtures/standard_shaders.ms's two Physical Materials, by hand (gamma off): the same nine map slots in
+    both, each switched off in one of them. The ids are checked by the names the oracle gives them (mat.PHYSICAL,
+    which physical_mtl reads; the switches at a fixed offset): the values alone cannot tell apart two ids that
+    hold the same value in both materials."""
+
+    @classmethod
+    def setUpClass(cls):
+        cf, graph, cls.by_name = _fixture("standard_shaders")
+        with cf:
+            cls.conv = mat.MaterialConverter(graph)
+            cls.maps = cls.conv.convert(cls.by_name["FixturePhysicalMaps"])
+            cls.off = cls.conv.convert(cls.by_name["FixturePhysicalOff"])
+        cls.oracle = _oracle_graph("standard_shaders")
+
+    def map(self, name, invert=False):
+        return mat.MapRef(self.by_name["FixturePhys" + name + "Map"], 1.0, invert)
+
+    def test_maps(self):
+        ir = self.maps
+        self.assertEqual((ir.source, ir.unknown, ir.issues), ("Physical Material", False, []))
+        base = tuple(c * 0.8 for c in _lins(200, 100, 50))
+        self.close(ir.base_color.value, tuple(b * 0.8 + t * 0.2 for b, t in zip(base, _lins(60, 120, 180))))
+        self.assertEqual(ir.base_color.map, self.map("MapsBase"))
+        self.close(ir.specular.value, 0.7 * sum(_lins(210, 200, 190)) / 3)
+        self.assertEqual(ir.specular.map, self.map("MapsReflectivity"))
+        self.close(ir.roughness.value, 1.0 - 0.35, "roughness_inv")
+        self.assertEqual(ir.roughness.map, self.map("MapsRoughness", invert=True))
+        self.close(ir.metallic.value, 0.25)
+        self.assertEqual(ir.metallic.map, self.map("MapsMetalness"))
+        self.close(ir.transmission.value, 0.2)
+        self.assertIsNone(ir.transmission.map)  # transparency_map_on off
+        self.close(ir.ior, 1.4)
+        self.assertTrue(ir.thin_walled)
+        self.close(ir.emission_color.value, _lins(220, 180, 140))
+        self.assertEqual(ir.emission_color.map, self.map("MapsEmitColor"))  # emission_map_on off: the color map
+        self.close(ir.emission_strength, 0.6 * 900.0 / 683.0)
+        self.close((ir.coat_weight, ir.coat_roughness, ir.coat_ior), (0.45, 1.0 - 0.15, 1.7))
+        self.close(ir.coat_color, _lins(230, 200, 170))
+        self.assertEqual((ir.bump.index, ir.bump.invert), (self.map("MapsBump").index, False))
+        self.close(ir.bump.amount, 0.55, "bump_map_amt")
+        self.assertIsNone(ir.normal)
+        self.assertEqual(ir.alpha.map, self.map("MapsCutout"))
+
+    def test_off(self):
+        ir = self.off
+        self.assertEqual(ir.issues, [])
+        base = tuple(c * 0.9 for c in _lins(70, 140, 210))
+        self.close(ir.base_color.value, tuple(b * 0.7 + t * 0.3 for b, t in zip(base, _lins(200, 150, 100))))
+        self.close(ir.specular.value, 0.55 * sum(_lins(180, 190, 200)) / 3)
+        self.close((ir.roughness.value, ir.metallic.value, ir.transmission.value, ir.ior), (0.4, 0.6, 0.3, 1.6))
+        for name in ("base_color", "specular", "roughness", "metallic", "alpha"):
+            self.assertIsNone(getattr(ir, name).map, name)
+        self.assertEqual(ir.transmission.map, self.map("OffTransparency"))
+        self.assertFalse(ir.thin_walled)
+        self.close(ir.emission_color.value, _lins(100, 150, 250))
+        self.assertEqual(ir.emission_color.map, self.map("OffEmission"))  # the weight map, the color map off
+        self.close(ir.emission_strength, 2400.0 / 683.0, "the weight map stands for the weight")
+        self.close((ir.coat_weight, ir.coat_roughness, ir.coat_ior), (0.2, 0.3, 1.55))
+        self.close(ir.coat_color, _lins(150, 200, 250))
+        self.assertEqual((ir.bump, ir.normal), (None, None))  # bump_map_on off
+
+    def test_ids_name_the_parameters(self):
+        """Every id of mat.PHYSICAL, which physical_mtl reads, and each map's switch name their parameters."""
+        for name in ("FixturePhysicalMaps", "FixturePhysicalOff"):
+            with self.subTest(name):
+                names = _names(self.oracle[name]["blocks"][0])
+                self.assertEqual({key: names[pid] for key, pid in mat.PHYSICAL.items()},
+                                 {key: key for key in mat.PHYSICAL})
+                maps = [key for key in mat.PHYSICAL if key.endswith("_map")]
+                self.assertEqual(len(maps), 9)
+                for key in maps:
+                    self.assertEqual(names[mat.PHYSICAL[key] + mat.PHYSICAL_SWITCH], key + "_on")
+
+    def test_no_issues(self):
+        self.assertEqual(self.conv.stats.issues, [])
+
+
 def _multi(index, entries, name="Multi", ids=True):
     """A Multi/Sub-Object of entries [(material id, ref, on)]."""
     block = {0: [r for _i, r, _on in entries], 1: [on for _i, _r, on in entries]}
@@ -705,7 +957,7 @@ class MultiSub(unittest.TestCase):
 
     def test_wrappers_around_and_inside(self):
         objs = (
-            _wrapper(0, mat.VRAY_MTL_WRAPPER, {0: Ref(1)}),  # wrapper -> Multi
+            _wrapper(0, classids.VRAY_MTL_WRAPPER, {0: Ref(1)}),  # wrapper -> Multi
             _multi(1, [(4, Ref(2), 1), (5, Ref(3), 1), (6, Ref(4), 1)]),
             _wrapper(2, classids.VRAY_2SIDED_MTL, {0: Ref(5)}),  # Multi -> wrapper
             _multi(3, [(5, Ref(6), 1)]),  # nested Multi: the same ID
@@ -781,11 +1033,12 @@ class MultiSub(unittest.TestCase):
         self.assertEqual(conv.material_for(1, 0).name, "Deep")
 
 
-def _desc(**meshes):
-    """A SceneDescription stand-in: meshes {key: (users, face material IDs)}."""
+def _desc(curves=None, **meshes):
+    """A SceneDescription stand-in: meshes {key: (users, face material IDs)}, curves {key: users}."""
     return types.SimpleNamespace(meshes={k: types.SimpleNamespace(users=u, material_indices=numpy.array(f,
                                                                                                       dtype=numpy.int32))
-                                         for k, (u, f) in meshes.items()})
+                                         for k, (u, f) in meshes.items()},
+                                 curves={k: types.SimpleNamespace(users=u) for k, u in (curves or {}).items()})
 
 
 def _lin(s):
@@ -1023,6 +1276,35 @@ class Assign(unittest.TestCase):
         self.assertEqual((self.names(plan["a"].slots), plan["a"].indices.tolist()), ([["Plain", "Plain"]], [0, 0, 0]))
         self.assertEqual((plan["b"].slots, plan["b"].indices.tolist()), ([], [0, 0]))
         self.assertEqual((self.names(plan["c"].slots), plan["c"].indices.tolist()), ([], []))
+        self.assertEqual(plan.curves, {})
+
+    def test_curves(self):
+        """One slot: what each user gets for material ID 1 (a Multi/Sub-Object by that ID, none when its entry is
+        off); no plan when no user has a material. The same key for a mesh and a curve: two dicts."""
+        objs = (_vray(4, "Plain"), _vray(5, "Other"), _multi(6, [(0, Ref(5), 1), (1, Ref(4), 1)]),
+                _multi(7, [(0, Ref(4), 0), (1, Ref(5), 1)]))
+        conv = mat.MaterialConverter(FakeGraph(*objs))
+        curves = {"one": [1, 2], "two": [3, 4], "multi": [5], "off": [6], "bare": [7], "k": [8]}
+        plan = mat.assign(_desc(curves=curves, k=([1], [0])), {1: 4, 2: 4, 3: 4, 4: 5, 5: 6, 6: 7, 7: None, 8: 5},
+                          conv)
+        self.assertIsInstance(plan, mat.Slots)
+        got = {k: (p.users, self.names(p.slots), p.indices.tolist()) for k, p in plan.curves.items()}
+        self.assertEqual(got, {"one": ([1, 2], [["Plain", "Plain"]], []), "two": ([3, 4], [["Plain", "Other"]], []),
+                               "multi": ([5], [["Other"]], []), "k": ([8], [["Other"]], [])})
+        self.assertEqual(plan.curves["k"].indices.dtype.name, "int32")
+        self.assertEqual(self.names(plan["k"].slots), [["Plain"]])
+
+    def test_fixture_curves(self):
+        """shapes_more: FixtureCurveStd has a Standard material, FixtureCurveMulti a Multi/Sub-Object (ID 1:
+        FixtureCurveSubOne); the other shapes none."""
+        cf, graph, _by_name = _fixture("shapes_more")
+        with cf:
+            s = reader_scene.Scene.from_file(cf)
+            desc = importlib.import_module(_PKG + ".convert.scene").describe(s, 0.001, None)
+            plan = mat.assign(desc, mat.node_materials(s, desc), mat.MaterialConverter(graph))
+        names = {n.index: n.name for n in desc.nodes}
+        got = {names[p.users[0]]: self.names(p.slots) for p in plan.curves.values()}
+        self.assertEqual(got, {"FixtureCurveStd": [["FixtureCurveRed"]], "FixtureCurveMulti": [["FixtureCurveSubOne"]]})
 
 
 if __name__ == "__main__":

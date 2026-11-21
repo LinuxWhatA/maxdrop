@@ -76,8 +76,9 @@ Reference slots of a node, checked on every node of every fixture (`test_scene.p
 - slot 1: the object. With no modifier it is the base object, whose ClassID and superclass equal the oracle's
   `base_class_id` and `base_superclass`. With modifiers it is a derived object: special id `0x2032`, past the
   class directory, whose references are its modifiers top to bottom and then the base object (modifier_pivot:
-  Bend, UVW Map, Editable Poly, the oracle's order; `Scene.object_stack` follows them; see
-  [Modifiers](#modifiers)). Nodes whose stacks end in the same base object are exactly the oracle's `instances`
+  Bend, UVW Map, Editable Poly, the oracle's order; `Scene.object_stack` follows them, also through a
+  world-space derived object `0x2033` above it or above the base object, stack_wsm; see [Modifiers](#modifiers)).
+  Nodes whose stacks end in the same base object are exactly the oracle's `instances`
   (instances: three instances share the source's object, the copy has its own; modifier_pivot: a bare source and two references with modifiers of their own,
   three slot-1 objects on one base object);
 - slot 3: the material, present exactly when the oracle names one (the group head of layers_flags has no
@@ -109,7 +110,7 @@ hidden, frozen and renderable flags against the oracle.
 ## Modifiers
 
 A node's slot 1 with modifiers is a derived object `0x2032` (`reader/modifiers.py`, `tests/unit/test_modifiers.py`
-against the oracle's `modifiers` on every fixture; stack_basic and modifier_pivot have stacks):
+against the oracle's `modifiers` on every fixture; stack_basic, modifier_pivot and stack_wsm have stacks):
 
 | Chunk | Content | Shown by |
 |---|---|---|
@@ -151,10 +152,16 @@ Position/Rotation/Scale, center Position XYZ, block]`; TurboSmooth `[ParamBlock2
 ParamBlock2, UVW Map, Taper, Twist and Noise the old ParamBlock (UVW Map: index 0 map type, 9 to 11 length, width,
 height, see [UVW Map](#uvw-map); TurboSmooth: parameter 0 iterations).
 
-A world-space modifier (a "binding", superclass `0x820`) sits in a derived object of its own, special id `0x2033`:
-a scratch file of 3ds Max 2020 (one box, a UVW Map, then a Map Scaler binding; not committed) had node slot 1 =
-`0x2033` with references `[Map Scaler, the 0x2032 derived object]` and the same `0x2500` layout. `modifiers.py`
-follows it; `Scene.object_stack` does not yet. Neither corpus scene has one.
+A world-space modifier (a "binding", superclass `0x820`) sits in a derived object of its own, special id `0x2033`,
+past the class directory like `0x2032` (stack_wsm, `test_modifiers.py`, `test_scene.py`): FixtureWSM (a UVW Map, then
+a Map Scaler binding) has node slot 1 = `0x2033` with references `[Map Scaler, the 0x2032 derived object]`, that one
+`[UVW Map, Editable Poly]`; FixtureWSMOnly (a Map Scaler binding alone) `0x2033` with `[Map Scaler, Editable Poly]`.
+The same chunks as a `0x2032`: `0x2034`, `0x204B`, one `0x2500` per modifier slot (an identity `0x2510`, the box of
+the stack below in `0x2511`, a `0x2513` of `00 01 04 00`), an empty `0x2501`. So the world-space modifiers come above
+every object-space one; `modifiers.py` marks them `world_space` and `Scene.object_stack` follows both ids. The
+binding keeps an empty `0x0100` name: MaxDrop names it by the class directory (MapScaler), 3ds Max shows "Map Scaler
+Binding" (the oracle's `name`), and the oracle's context of it is `null` (`getModContextTM` answers `undefined` for
+a world-space modifier). Its references: `[-1, -1, a Map Scaler object]`. Neither corpus scene has one.
 
 ## Layers
 
@@ -194,16 +201,67 @@ oracle).
 
 - Matrices are in Max's row-vector convention: a point times the matrix, row 4 = translation, `A * B` applies `A`
   first; this is the oracle's 12-float layout.
-- Every fixture node's controller is a Position/Rotation/Scale `(0x2005, 0)` (but lookat's, see
-  [Look At](#look-at)) with reference slots 0 = Position XYZ
-  `(0x118F7E02, 0xFFEE238A)`, 1 = Euler XYZ `(0x2012, 0)`, 2 = Bezier Scale `(0x2010, 0)`. Position XYZ and Euler
-  XYZ reference three Bezier Float `(0x2007, 0)` in slots 0, 1, 2 (x, y, z).
-- A Bezier Float's value is an `f32` in `0x2501`, inside a `0x7127` container in every fixture.
-- Euler angles are radians. Euler XYZ has `0x1003` = `i32` 0 in every fixture (the axis order; 0 = XYZ).
-  hierarchy: FixtureRoot's Z angle `0.5236` gives row 1 = `[0.866025, 0.5, 0]`, a standard row-vector rotation.
-- Bezier Scale holds `0x2505`: 3 x `f32` scale, then the scale axis as a 4 x `f32` quaternion. hierarchy:
-  FixtureLeaf (`scale = [-1,1,1]` in the script) stores `[-1, -1, -1]`; with that, the oracle's rotation rows
-  (`[-0.866025, -0.5, 0]`, ..., `[0, 0, -1]`) come out exactly.
+- Every fixture node's controller is a Position/Rotation/Scale `(0x2005, 0)` (but lookat's and the controllers
+  fixture's camera, see [Look At](#look-at)) with reference slots 0 = position, 1 = rotation, 2 = scale; by default
+  Position XYZ `(0x118F7E02, 0xFFEE238A)`, Euler XYZ `(0x2012, 0)` and Bezier Scale `(0x2010, 0)`. Position XYZ,
+  Euler XYZ and ScaleXYZ `(0x118F7C01, 0xFEEE238B)` reference three float controllers in slots 0, 1, 2 (x, y, z;
+  ScaleXYZ's in percent in MAXScript, stored as factors).
+- Euler angles are radians. hierarchy: FixtureRoot's Z angle `0.5236` gives row 1 = `[0.866025, 0.5, 0]`, a
+  standard row-vector rotation. `0x1003` = `i32` axis order: 0 for XYZ (X applied first; also after switching
+  another order back to XYZ), 101, 102, 103, 104, 105 for XZY, YZX, YXZ, ZXY, ZYX (the first letter applied first),
+  106, 107, 108 for XYX, YZY, ZXZ (not read: an issue, XYZ used). controllers: FixtureEulerMulti and one node per
+  other Tait-Bryan order, each with three angles.
+- Bezier Scale holds `0x2505`: 3 x `f32` scale, then the scale axis as a 4 x `f32` quaternion, scale matrix =
+  `Q^-1 * S * Q`. hierarchy: FixtureLeaf (`scale = [-1,1,1]` in the script) stores `[-1, -1, -1]`; with that, the
+  oracle's rotation rows (`[-0.866025, -0.5, 0]`, ..., `[0, 0, -1]`) come out exactly. controllers:
+  FixtureScaleAxis (scale `[2, 0.5, 1]` along a turned axis) matches the oracle; the other order, `Q * S * Q^-1`,
+  misses by 1.2.
+
+Keyframe controllers (controllers fixture; every class read here is a 3ds Max 2020 class id it shows):
+
+| Class | ClassId | Value chunk | Key chunk, bytes per key |
+|---|---|---|---|
+| Linear Float | `(0x2001, 0)` | `0x2501` f32 | `0x2511`, 12 |
+| TCB Float | `(0x442311, 0)` | `0x2501` | `0x2520`, 40 |
+| Bezier Float | `(0x2007, 0)` | `0x2501`, in `0x7127` | `0x2525`, 28 |
+| Linear Position | `(0x2002, 0)` | `0x2503` 3 x f32 | `0x2513`, 20 |
+| TCB Position | `(0x442312, 0)` | `0x2503` | `0x2521`, 64 |
+| Bezier Position | `(0x2008, 0)` | `0x2503` | `0x2526`, 80 |
+| Linear Rotation | `(0x2003, 0)` | `0x2504` quaternion | `0x2514`, 24 |
+| TCB Rotation | `(0x442313, 0)` | `0x2504` | `0x2522`, 92 |
+| Smooth Rotation (MAXScript `Bezier_Rotation`) | `(0x2009, 0)` | `0x2504` | `0x2527`, 88 |
+| Linear Scale | `(0x2004, 0)` | `0x2505` | `0x2515`, 36 |
+| TCB Scale | `(0x442315, 0)` | `0x2505` | `0x2523`, 112 |
+| Bezier Scale | `(0x2010, 0)` | `0x2505` | `0x2528`, 148 |
+
+- The value chunk is the value at the time slider when the file was saved, and `0x2500` (2 x `i32` ticks) the
+  interval it holds for: `(-2^31, 2^31-1)` (forever) without keys, `(4800, 4800)` (frame 30) on every keyed
+  controller of the controllers fixture, saved at frame 30. FixtureLinearKeyed's `0x2503` is `[-48, 64, 13]`, 60 %
+  of the way between its keys at frames 0 and 50, while the oracle at frame 0 has the frame-0 key. So the value
+  chunk is used when its interval holds time 0, the keys otherwise (FixtureBezierKeys: keys at frames 0, 20 and 50,
+  `0x2501` = 36.6667, oracle -20, the frame-0 key).
+- A key record: `i32` time (ticks, 160 per frame at 30 fps), `u32` flags, the value (1, 3, 4 or 7 floats as the
+  value chunk), then the class's tangents or TCB parameters. TCB Rotation keeps the absolute quaternion there and
+  an angle-axis relative to the previous key later in the record. `0x3003` = the first and last key's time
+  (`(-2^31, -2^31)` without keys), `0x3002` 0 for Linear and 4 for TCB and Bezier when keyed.
+- At time 0: a key at 0 gives its value (FixtureBezierKeys, the keyed nodes, the lists' animated entries); before
+  the first key, the first key's value (FixtureTCBBefore, keys at frames 10 and 50); between two Linear keys, linear
+  (FixtureLinearBetween, keys at -10 and 40: position `[-56, 93, 11]`, scale rows of length 1.1, 1.0, 1.4) and the
+  rotation by slerp.
+- Linear and TCB Float hold `0x2501` directly in the object; Bezier Float in `0x7127` in every fixture.
+
+List controllers: Float List `(0x4B4B1000, 0)`, Position List `(0x4B4B1002, 0)`, Rotation List `(0x4B4B1003, 0)`,
+Scale List `(0x4B4B1004, 0)`. `0x1010` = entry count, `0x1020` = active entry, entries at reference slots 0..n-1,
+a ParamBlock2 at a later slot (4) whose parameter 0 is the weights, a float table: stored values (0.5, 0.5 on
+FixturePosList, FixtureRotList, FixtureScaleList; 0.5, 1.0 on FixtureFloats' Float List), a controller in the
+block's reference slots where animated. Each entry weighs as the oracle shows:
+
+- Position and Float List: the weighted sum (FixturePosList `0.5 * [40, 40, 0] + 0.5 * [10, 20, 30]` =
+  `[25, 30, 15]`; FixtureFloats `0.5 * 30 + 1.0 * 7` = 22).
+- Scale List: the product of `I + (S - I) * weight` per entry (FixtureScaleList `[1.5, 2, 0.75]` from `[2, 1, 1]`
+  and `[1, 3, 0.5]` at 50 %).
+- Rotation List: each entry's rotation turned by its weight along its own axis, a later entry applied first
+  (FixtureRotList: 30 deg about X and 80 deg about Z at 50 % give Z 40 deg, then X 15 deg).
 - Local = scale * rotation * position; world = local * parent world, up the whole chain. hierarchy: FixtureLeaf
   (position `[25, 5, 0]` under FixtureChild under the rotated FixtureRoot) lands on `[40.1314, 26.8301, 0]`.
 - Object offset = scale (`0x096C`, along its axis) * rotation (`0x096B`) * position (`0x096A`); the object's world
@@ -335,7 +393,8 @@ A field whose value is zero is left out: the top of every box has mask `0x30`, t
 `maxdrop/reader/shapes.py` reads them; `tests/unit/test_shapes.py` checks every shape node of every fixture against
 the oracle's `shape`: what 3ds Max's own conversion to an Editable Spline gives (knot types, segment types,
 positions and vectors within 1e-4, closed flags, interpolation and rendering settings). shapes has one node per
-case below. The classes, superclass `0x40` (shape):
+case below; shapes_more the settings shapes leaves out (NGon corner radius, Ellipse outline, Arc angles out of
+range, a Rectangle's corner radius past half a side, rectangular sections). The classes, superclass `0x40` (shape):
 
 | Class (ClassID) | Kept as |
 |---|---|
@@ -351,8 +410,16 @@ Every shape has the rendering block at reference slot 0, an old ParamBlock of 28
 their interpolation in another at slot 2 (0 steps, 1 optimize, 2 adaptive). Of the rendering block, set to distinct
 values in a scratch file of 3ds Max 2020 and in FixtureLine: 0 thickness (the diameter), 1 sides, 2 angle (degrees),
 3 to 5 the same for the viewport, 6 Enable In Renderer, 7 generate mapping coordinates, 8 Enable In Viewport, 9 use
-viewport settings, 11 rectangular, 12 width, 13 length, 14 the rectangular angle, 21 the auto-smooth threshold
-(radians).
+viewport settings, 11 rectangular, 12 width, 13 length, 14 the rectangular angle (degrees; shapes_more's
+FixtureSection: 30 beside a round angle of 15), 21 the auto-smooth threshold (radians).
+
+A rectangular section, as 3ds Max renders it (`snapshotAsMesh renderMesh:true`, shapes_more and probes): the width
+lies across the curve in its plane, the length along the plane's normal (a line along X: Y +-width / 2, Z +-length /
+2; along Z: X and Y; a Circle: radial and Z), turned by the angle (FixtureSection, at its first point: (Y, Z) =
+(-1.48205, 1.43301), (1.98205, -0.566987) and their opposites), capped at the ends of an open spline. Blender's bevel
+object maps profile x to the line's -Y and y to Z: the rectangle turned by +angle in the profile gives the same
+corners on FixtureSection, and FixtureSectionLoop spans what 3ds Max's does (convert.scene `rectangular_section`;
+the angle's sign is checked on that line along +X only), with the caps filled.
 
 An Editable Spline keeps a BezierShape `0x1010`:
 
@@ -382,18 +449,31 @@ knot's magnitude.
 The parametric shapes are made by the reader the way 3ds Max makes them, fitted to the oracle:
 
 - a circular arc of angle *a* gets vectors of radius times `veccalc(a)` along its tangents, where `veccalc` is the
-  3ds Max SDK's bisection that makes the mean distance of 10 points of the segment from the center equal the
-  radius: 0.5517857 for 90 degrees (the textbook 4/3 tan(a/4) is 0.552285);
+  3ds Max SDK's float32 bisection that makes the mean distance of 10 points of the segment from the center equal
+  the radius: 0.5517862 for 90 degrees (the SDK's CIRCLE_VECTOR_LENGTH; the textbook 4/3 tan(a/4) is 0.552285). In
+  float32 the loop stops early on small angles: 1.5 / 1024 for 0 (a zero-length Arc, radius 10 and 1000), 0.0010986
+  for a sixth of a degree (a double bisection gives about 0 and 0.00097);
 - Circle: 4 Bezier knots from angle 0, counter-clockwise; Ellipse: the same scaled to width / 2 and length / 2;
+  with its outline on (ParamBlock2 id 3, the flag alone: thickness 0 gives two coincident splines) a second spline,
+  the same with both semi-axes plus the thickness (id 2), each clamped at 0 (FixtureEllOutline 3, FixtureEllInset
+  -15: semi-axes 5 and 0), same start and direction;
 - Rectangle: without a corner radius 4 Bezier-corner knots from (width / 2, length / 2), counter-clockwise, each
   vector a third of the way to its neighbour; with one 8, each pair at the ends of a side, both vectors along that
-  side, radius x `veccalc(90 degrees)` long;
+  side, radius x `veccalc(90 degrees)` long; a radius past half a side is not clamped (the knots cross:
+  FixtureRectOver, 10 x 30 with 8; a probe with 10 x 12 and 20);
 - Arc: always 4 Bezier knots, 3 equal segments (FixtureArc 170 degrees, FixturePie 90, FixtureArcWide 350), the
   first in vector and the last out vector at their knot; pie adds the center and closes the spline; reverse runs
-  from `to` back to `from`;
+  from `to` back to `from`. `from` and `to` are clamped to [0, 360] first, then a `to` below `from` adds 360:
+  from = to is a zero-length arc, its knots at `from` (FixtureArcSame; also 400 -> 500 at 360, 0 -> -90 at 0),
+  10 -> 370 ends at 360 (FixtureArcOver), -30 -> 60 starts at 0 (FixtureArcUnder), 100 -> 50 runs 310 degrees
+  (FixtureArcWrap), 0 -> 360 and 0 -> 720 are a full turn;
 - NGon: scribe 0 puts the corners at radius / cos(180 degrees / sides) (the radius is the apothem), scribe 1 at the
   radius, the first at angle 0; Bezier-corner knots with vectors a third of the way to the neighbours, or with
-  circular a Bezier knot per corner with vectors of the arc between them.
+  circular a Bezier knot per corner with vectors of the arc between them. A corner radius *c* (not circular, which
+  ignores it) makes two Bezier knots per corner, at *c* x tan(180 degrees / sides) from it along the sides to the
+  previous and the next corner (the one before corner 0 first), both vectors along their side, that distance x
+  `veccalc(90 degrees)` long, whatever the corner's angle; not clamped (FixtureNGonCorner, FixtureNGonCornerIn,
+  FixtureNGonCornerRound, FixtureNGonCornerBig: 4 sides with 30, the knots cross).
 
 ## Extrude
 
@@ -934,9 +1014,11 @@ Reference parameters, checked against the oracle's targets on every fixture:
   stored indices are -1 although 3ds Max reports the map set (Color Correction `map`, Mix `map1` / `map2` /
   `mask`, Falloff `map1` / `map2`, VRayMtl `texmap_diffuse` ...). The slot is the parameter definition's reference
   number, a constant of the class: `maxdrop/reader/owner_slots.py` keeps it per (superclass, ClassID, block id),
-  from the fixtures' `0x0013` tables and, for VRayOverrideMtl, VRayLightMtl, Composite and class `0xC90017A5`
-  (no fixture `0x0013` entry: texmap_rules' Composite keeps its maps as block references), from corpus scene B's
-  (format 20000); every object of scene A agrees. Only a block without
+  from the fixtures' `0x0013` tables (vray_more's: VRayOverrideMtl at 1 to 5, VRayLightMtl `texmap`,
+  `opacity_texmap`, `displacement_texmap` at 1, 2, 3, as corpus scene B has them; VRayMtlWrapper, Double Sided and
+  Shellac at 1, 2) and, for Composite and class `0xC90017A5` (no fixture `0x0013` entry: texmap_rules' Composite
+  keeps its maps as block references), from corpus scene B's (format 20000); every object of scene A agrees.
+  `test_materials.py` checks each entry against the fixtures' tables. Only a block without
   `0x0013` uses it: for a stored -1, and for a stored index that is none of the owner's references when the owner
   holds one at that slot (scene A stores 3704 such indices: 3702 equal the slot's, 2 are stale, a Normal Bump's
   `normal_map` naming another Normal Bump's Bitmap and a Falloff's `map1` naming a controller, where 3ds Max
@@ -978,7 +1060,8 @@ reader's children.
 
 - A material has superclass `0x0C00`, a map `0x0C10`. The name is a `0x4001` string inside a container whose id
   depends on the class: `0x4000` (Standard, Bitmap, Multi/Sub-Object, Shell, VRay2SidedMtl, VRayBlendMtl,
-  VRayNormalMap), `0x5431` (VRayMtl), `0x0100` (Physical Material). The reader takes the first container child
+  VRayNormalMap, VRayFastSSS2, both car paints, VRayOverrideMtl, VRayMtlWrapper, Double Sided, Shellac), `0x5431`
+  (VRayMtl, VRayLightMtl), `0x0100` (Physical Material). The reader takes the first container child
   holding a `0x4001`.
 - The parameter blocks are among the material's references (VRayMtl: slots 1 to 6 = blocks 1 to 6; Standard:
   slots 3 to 7 = blocks 0 to 4). References of superclass UVGen (`0x0C20`), XYZGen (`0x0C30`), TexOutput
@@ -1016,13 +1099,43 @@ values by the fixture scripts or read by the tests):
 | VRay2SidedMtl `(0x6066686A, 0x11731B4B)` | 0 | 0 frontMtl, 1 backMtl, 7 translucency, 3 backMtlOn, 4 texmap_translucency, 8 force1SidedSubMtls |
 | VRayBlendMtl `(0x3DA0041B, 0x0F436E31)` | 0 | 0 baseMtl, 1 coatMtl (table), 2 blend (color table), 3 texmap_blend, 4 texmap_blend_multiplier, 6 coatMtl_enable, 5 additiveMode |
 | Shell Material `(0x255, 0)` | 0 | 2 originalMaterial, 3 bakedMaterial, 0 viewportMtlIndex, 1 renderMtlIndex |
+| VRayOverrideMtl `(0x15D20E6B, 0x54E217EB)` | 0 | 0 baseMtl, 2 giMtl, 4 reflectMtl, 6 refractMtl, 8 shadowMtl (getSubMtl order), each followed by its switch (1 baseMtl_on ... 9 shadowMtl_on) (vray_more) |
+| VRayMtlWrapper `(0x409517DF, 0x3A5F44B6)` | 0 | 0 baseMtl, 2 generateGIMult (vray_more) |
+| Double Sided `(0x210, 0)` | 0 | 0 material1 (facing), 1 material2 (back), 2 / 3 map1Enabled / map2Enabled, 4 translucency (percent) (vray_more) |
+| Shellac `(0x46EE536A, 0)` | 0 | 0 shellacMtl1 (base), 1 shellacMtl2, 2 shellacColorBlend (percent) (vray_more) |
+| VRayLightMtl `(0x7CCF263E, 0x3F5B39B9)` | 0 | 0 color, 1 multiplier, 2 / 3 texmap (on), 5 / 6 opacity_texmap (on), 9 displacement_texmap (vray_more) |
+| VRayFastSSS2 `(0x3F2C5FAA, 0x750008BC)` | 0 | 26 diffuse_color, 27 / 28 / 29 texmap_diffuse_color (on, multiplier), 36 diffuse_amount, 2 sub_surface_color, 16 scatter_color, 57 overall_color, 0 scatter_radius (a plain float in centimeters whatever the system unit), 22 scale, 31 IOR, 40 specular_color, 44 specular_amount, 51 specular_glossiness, 3 / 4 / 5 texmap_bump (on, multiplier), 85 / 86 / 87 texmap_opacity (on, multiplier) (vray_more) |
+| VRayCarPaintMtl `(0x38312C74, 0x47280883)` | 0 | 0 base_color, 1 / 2 / 3 texmap_base_color (on, multiplier), 4 base_reflection, 8 base_glossiness, 12 flake_color, 16 flake_glossiness, 27 coat_color, 31 coat_strength, 39 coat_glossiness, 55 / 56 / 57 texmap_base_bump (on, multiplier) (vray_more) |
+| VRayCarPaintMtl2 `(0x56BC47E2, 0x03E008C7)` | 0 | 0 base_color, 1 / 2 / 3 texmap_base_color (on, multiplier), 4 base_reflection, 8 base_glossiness, 12 flake_color, 16 flake_glossiness, 27 coat_color, 31 coat_amount, 81 coat_ior, 39 coat_glossiness, 54 / 55 / 56 texmap_base_bump (on, multiplier) (vray_more) |
 | Multi/Sub-Object `(0x200, 0)` | 0 | 0 materialList, 1 mapEnabled, 2 names, 3 materialIDList (zero-based) |
 | Standard `(2, 0)` | 0 shader | 0 shaderType, 2 twoSided |
 | | 1 extended | 1 opacity (fraction), 6 ior |
-| | 3 maps | 0 mapEnables, 1 maps, 2 mapAmounts (fractions; slot 1 = diffuse) |
-| Physical Material `(0x3D6B1CEC, 0xDEADC001)` | 0 | 1 base_weight, 2 base_color (float color with alpha), 3 reflectivity, 4 roughness, 6 metalness, 10 refl_color, 11 diff_roughness, 30 transparency, 31 trans_color, 33 trans_ior, 50 emission, 51 emit_color, 60 coating, 62 coat_roughness |
+| | 3 maps | 0 mapEnables, 1 maps, 2 mapAmounts (fractions), one element per map channel of the shader, in the shader's order (below) |
+| Its shader (a part at reference 2, superclass Shader `0x10B0`) | 0 | Phong `(0x37, 0)`, Blinn `(0x38, 0)`, Metal `(0x39, 0)`: 0 ambient, 1 diffuse, 2 specular, 6 useSelfIllumColor, 7 selfIllumAmount, 8 selfIllumColor, 9 specularLevel, 10 glossiness, 11 soften (standard_physical, standard_shaders) |
+| | | Anisotropic `(0x2857F460, 0)`: 0 ambient, 1 diffuse, 2 specular, 3 selfIllumColor, 4 diffuseLevel, 5 specularLevel, 6 selfIllumAmount, 7 glossiness, 8 anisotropy, 9 orientation, 14 useSelfIllumColor |
+| | | Oren-Nayar-Blinn `(0x2857F421, 0)`: 0 ambient, 1 diffuse, 2 specular, 3 selfIllumColor, 4 selfIllumAmount, 5 glossiness, 6 specularLevel, 7 soften, 8 diffuseLevel, 9 diffuseRoughness, 13 useSelfIllumColor |
+| | | Multi-Layer `(0x2857F470, 0)`: 0 ambient, 1 diffuse, 2 selfIllumColor, 3 selfIllumAmount, 4 diffuseLevel, 5 diffuseRoughness, 6 / 7 / 8 / 9 / 10 specular, specularLevel, glossiness, anisotropy, orientation of the first layer, 11-15 the same of the second, 19 useSelfIllumColor |
+| | | Translucent Shader `(0x2857F480, 0)`: 0 ambient, 1 diffuse, 2 specular, 3 selfIllumColor, 4 selfIllumAmount, 5 glossiness, 6 specularLevel, 7 diffuseLevel, 8 filter, 9 translucentColor, 10 backsideSpecular, 14 useSelfIllumColor |
+| | | Strauss `(0x2857F450, 0)`: 0 diffuse, 1 glossiness, 2 metalness (standard_shaders). Anisotropic, Oren-Nayar-Blinn, Multi-Layer and Translucent store their diffuse in ambient whatever is set |
+| Physical Material `(0x3D6B1CEC, 0xDEADC001)` | 0 | 1 base_weight, 2 base_color (float color with alpha), 3 reflectivity, 4 roughness, 5 roughness_inv, 6 metalness, 10 refl_color, 11 diff_roughness, 30 transparency, 31 trans_color, 33 trans_ior, 37 thin_walled, 50 emission, 51 emit_color, 52 emit_luminance (cd/m2), 60 coating, 61 coat_color, 62 coat_roughness, 63 coat_roughness_inv, 66 coat_ior; maps 100-120 (`*_map`: 101 base_color, 102 reflectivity, 103 refl_color, 104 roughness, 105 metalness, 109 transparency, 116 emission, 117 emit_color, ...), 130 bump_map, 131 coat_bump_map, 132 displacement_map, 133 cutout_map, each switched on by its id + 50 (`*_map_on`, default on), 230 bump_map_amt (a factor, default 0.3); 250-270 mapM0 ... mapM20 are saved empty, 3ds Max answers the map of id - 150 (standard_physical, standard_shaders) |
 | Bitmap `(0x240, 0)` | 0 | 0-3 clip u, v, w, h, 7 cropPlace, 8 filtering, 12 preMultAlpha, 13 bitmap (asset), 14 coords, 15 output |
 | VRayNormalMap `(0x71FA6E51, 0x72057C2F)` | 0 | 0 normal_map, 2 normal_map_on, 3 normal_map_multiplier, 4 bump_map, 5 bump_map_on, 6 bump_map_multiplier, 1 map_channel, 7 flip_red, 8 flip_green, 9 swap_red_and_green |
+
+A Standard material's map tables follow its shader's map channels (3ds Max 2020, zero-based; measured on a probe
+scene with a map in each slot, where `getSubTexmapSlotName` and the saved table agree; standard_shaders, without
+Standard maps, shows only where each shader's bump amount sits). Blinn, Phong, Metal: 0 ambient, 1 diffuse, 2 specular color, 3 specular level, 4
+glossiness, 5 self-illumination, 6 opacity, 7 filter color, 8 bump, 9 reflection, 10 refraction, 11 displacement.
+Anisotropic: 0 ambient, 1 diffuse, 2 specular color, 3 diffuse level, 4 specular level, 5 glossiness, 6 anisotropy,
+7 orientation, 8 self-illumination, 9 opacity, 10 filter color, 11 bump, 12 reflection, 13 refraction, 14
+displacement. Oren-Nayar-Blinn and Translucent Shader: 0 ambient, 1 diffuse, 2 specular color, 3 glossiness, 4
+specular level, 5 self-illumination, 6 opacity, 7 filter color, 8 diffuse level, 9 diffuse roughness (Translucent:
+translucent color), 10 bump, 11 reflection, 12 refraction, 13 displacement. Multi-Layer: 0 ambient, 1 diffuse, 2
+diffuse level, 3 diffuse roughness, 4-8 specular color, level, glossiness, anisotropy, orientation of the first
+layer, 9-13 of the second, 14 self-illumination, 15 opacity, 16 filter color, 17 bump, 18 reflection, 19 refraction,
+20 displacement. Strauss: 0 color, 1 glossiness, 2 metalness, 3 opacity, 4 refraction filter, 5 bump, 6 reflection,
+7 refraction, 8 displacement. The amounts of channels without a map keep the layout the material was created with
+(Blinn's: bump 0.3 at 8) in the file, while 3ds Max answers its shader's. MaxDrop reads Blinn's channels for every
+shader so far (maxdrop-em3.104).
 
 The maps of texmap_rules (block 0 each; `convert/texmaps.py`):
 
@@ -1141,10 +1254,10 @@ Not shown by any fixture yet, so not stated above:
   8-bit text, the code page the summary records (the machine's ANSI code page is assumed), the layer name in the
   same code page. Their FileAssetMetaData strings are still read as UTF-16, and an older `ClassDirectory` stream
   as `ClassDirectory3`.
-- Of shapes ([Shapes](#shapes)): NGon's corner radius and Ellipse's outline (no fixture sets them: drawn without,
-  an issue), an Arc whose `from` equals `to` (taken as a full turn), the order of a reversed pie's knots (the center
-  last), a Rectangle whose corner radius is more than half a side (its knots cross; 3ds Max's handling is not
-  known), the rectangular rendering section; the `f32` and the last `u32` of a knot, `0x2904`, `0x1070` of the
+- Of shapes ([Shapes](#shapes)): the order of a reversed pie's knots (the center last), a rectangular section on a
+  curve that is not flat in XY (Blender's twist and 3ds Max's may differ: an issue), the section angle's sign on
+  other directions than +X, a rectangular section of width or length 0 (not drawn, an issue), the angle of a round
+  section (not drawn); the `f32` and the last `u32` of a knot, `0x2904`, `0x1070` of the
   BezierShape and `0x2150` (on some Editable Splines and Lines); the other shape classes (Star, Text, Helix, Donut,
   Section, NURBS curves...), which stay placeholders.
 - Of a modifier stack ([Modifiers](#modifiers)): `0x204B`, `0x2501`, `0x2502`, `0x2512` and `0x2513`; how the
@@ -1174,20 +1287,21 @@ Not shown by any fixture yet, so not stated above:
 - Controllers seen only in the corpus (scenes A and B, compared with their oracle; `controllers.py` relies on
   them):
   - a Bezier Float with its `0x2501` directly in the object, not in `0x7127` (under ScaleXYZ, list weights);
-  - keys: `0x2525` in a Bezier Float (28 bytes per key: `i32` time, `u32` flags, `f32` value, four `f32`), `0x2528`
-    in a Bezier Scale (148 bytes, the 7-float value at byte 8). Every key chunk holds one key (at time 0, 200 or
-    16000). Where the key's value differs from the saved value chunk (1 float, 3 scales), the oracle at frame 0
-    agrees with the saved value;
-  - the scale axis of Bezier Scale (`Q^-1 * S * Q` with the stored quaternion; the other order misses 10 nodes of
-    scene B) and the Euler order XYZ = X applied first (ZYX misses over half of scene B);
-  - ScaleXYZ `(0x118F7C01, 0xFEEE238B)`: three Bezier Float, x, y, z;
-  - Position List `(0x4B4B1002, 0)` and Rotation List `(0x4B4B1003, 0)`: `0x1010` = entry count, `0x1020` = active
-    entry, entries at reference slots 0..n-1, a ParamBlock2 at a later slot whose reference slots 0..n-1 are the
-    weights (Bezier Float); only weights 1 and 0 occur, so how entries combine is not pinned down;
+  - list weights held by controllers (Bezier Float) in the list block's reference slots, with weights 1 and 0;
+  - every keyed controller of a transform has a `0x2500` interval holding time 0 (scene A 259, scene B 326, and 450
+    forever with one key). Three Bezier Scales, interval `(0, 0)`, have a key at time 0 whose value differs from the
+    saved value (by under 2 %): the oracle agrees with the saved value, which the interval rule picks. One Bezier
+    Float with the empty interval `(-2^31, -2^31)` and its one key at 16000 is a Noise modifier's, not a
+    transform's: what 3ds Max makes of it is not known;
   - Look At `(0x2006, 0)` on a camera and a light of each scene: evaluated as [Look At](#look-at) says, their
     world matrices equal the oracle's (all 662 nodes without modifiers of scene A, all 2,042 of scene B).
-- Controllers taken from the 3ds Max SDK without any file showing them: Linear Position, Rotation and Scale
-  (`0x2002`, `0x2003`, `0x2004`), Bezier Position and Rotation (`0x2008`, `0x2009`), TCB Position, Rotation and
-  Scale (`0x442312`, `0x442313`, `0x442315`), their value chunks (`0x2503` point, `0x2504` quaternion, `0x2505`
-  scale), and the Euler orders 1 to 5. Scale List `(0x4B4B1004, 0)` is in a fixture's class directory, but no
-  file has one on a node: how its entries and weights combine is taken from the other lists.
+- Controllers no file shows yet (`controllers.py` assumes them): a controller without `0x2500` (none in the corpus or
+  the fixtures; its value chunk is used, with an issue when several keys animate it); Bezier and TCB interpolation
+  between two keys (linear, an issue: their tangents are not read); how Linear Scale interpolates a turned scale
+  axis (slerp; the fixture's axes are the identity); whether Linear Rotation takes the shorter arc between keys more
+  than half a turn apart, as the reader's slerp does (FixtureLinearBetween's keys are 45 deg apart); the bare Euler orders 1 to 5 and 100 (read as the SDK numbers
+  them: 1 = XZY ... 5 = ZYX, 100 = XYZ); the Euler orders 106 to 108 (an issue); the order of a Scale List's
+  entries (the fixture's two scales are both along the axes, so they commute) and the weight of a Rotation List
+  entry that turns about more than one axis (the fixture's turn about one axis each); parameter 1 of a list's
+  block (an `i32` 0 in every list: presumably Average, which would divide by the weights' sum); the out-of-range
+  types (a constant value before the first key and after the last is taken).

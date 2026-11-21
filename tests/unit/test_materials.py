@@ -28,15 +28,17 @@ TOLERANCE = 1e-5  # relative above 1: the oracle prints 6 significant digits
 # that compares nothing. A fixture whose graph is one Standard material compares 125; the light fixtures have no
 # material.
 FLOORS = {"vray_lights": 0, "lights_standard": 0, "lights_photometric": 0, "box_poly_standard": 120, "cameras": 120,
+          "controllers": 120,
           "corona_layered": 630, "corona_legacy": 370, "corona_light": 180,
           "corona_maps": 950, "corona_physical": 500, "editable_mesh": 380, "extrude": 120, "gamma_swatches": 540,
           "hierarchy": 120, "instances": 120, "layers_flags": 120,
           "layers_more": 120, "lookat": 120, "modifier_pivot": 120,
           "multi_uv": 120, "pblock_animated": 920, "primitives": 120, "saved_as_2017": 120,
-          "saved_as_2018": 120, "saved_as_2019": 120, "shapes": 120, "stack_basic": 120, "stack_convert": 120,
-          "stack_shell": 120, "standard_physical": 290,
+          "saved_as_2018": 120, "saved_as_2019": 120, "shapes": 120, "shapes_more": 120, "stack_basic": 120,
+          "stack_convert": 120, "stack_shell": 120, "stack_wsm": 120, "standard_physical": 290, "standard_shaders": 1600,
           "texmap_rules": 1570, "texmap_wrappers": 1690, "units_cm": 120, "units_in": 120, "units_mm": 120, "uvwmap": 120,
-          "uvwmap_oblique": 120, "vray_basic": 190, "vray_maps": 630, "vray_texmaps": 2900, "vray_wrappers": 2000}
+          "uvwmap_oblique": 120, "vray_basic": 190, "vray_maps": 630, "vray_more": 2500, "vray_texmaps": 2900,
+          "vray_wrappers": 2000}
 
 
 _PKG = "maxdrop_convert_test"  # the package the convert tests make: maxdrop/__init__.py (bpy) never runs
@@ -51,6 +53,9 @@ classids = importlib.import_module(_PKG + ".reader.classids")
 scene = importlib.import_module(_PKG + ".reader.scene")
 pblock = importlib.import_module(_PKG + ".reader.pblock")
 materials = importlib.import_module(_PKG + ".reader.materials")
+owner_slots = importlib.import_module(_PKG + ".reader.owner_slots")
+STANDARD_SHADER_SLOT = 2  # a Standard material's reference to its shader
+BLINN_LAYOUT = {classids.PHONG_SHADER, classids.BLINN_SHADER, classids.METAL_SHADER}  # map channels as created
 ChunkError = chunks.ChunkError
 
 
@@ -130,6 +135,30 @@ class Parity:
         else:  # file names are asset ids in the file (resolved by a later reader); nodes, bitmaps: oracle null
             self.skipped += 1
 
+    def stale(self, owner, oracle_block):
+        """skip(pid, k, ours): whether a value of this block is one the file keeps stale while 3ds Max computes its
+        own (standard_shaders):
+        - a Standard material whose shader is not Blinn, Phong or Metal, block 3 mapAmounts at a slot without a
+          map: the file keeps the amounts of the material as created (Blinn's map channels, bump 0.3 at slot 8),
+          3ds Max answers those of its shader's channels (Anisotropic: 0.3 at slot 11). Every amount without a
+          map is skipped (only those two slots differ): none is used.
+        - a Physical Material's mapM0 ... mapM20 (block 0, 250-270): saved empty, 3ds Max answers the map of
+          parameter id - 150 (mapM1 = base_color_map)."""
+        entry = self.scene.entry(owner)
+        params = {p["id"]: p["value"] for p in oracle_block["params"]}
+        if entry is None or entry.superclass != classids.SC_MATERIAL:
+            return lambda pid, k, ours: False
+        if entry.class_id == classids.STANDARD_MTL and oracle_block["block_id"] == 3:
+            slot = self.scene.refs(owner).get(STANDARD_SHADER_SLOT)
+            shader = self.scene.entry(slot) if slot is not None else None
+            if shader is not None and shader.class_id not in BLINN_LAYOUT:
+                return lambda pid, k, ours: pid == 2 and params[1][k] is None
+        if entry.class_id == classids.PHYSICAL_MTL and oracle_block["block_id"] == 0:
+            return lambda pid, k, ours: (250 <= pid <= 270 and isinstance(ours, pblock.Reference)
+                                         and ours.index is None and params.get(pid) is not None
+                                         and params.get(pid) == params.get(pid - 150))
+        return lambda pid, k, ours: False
+
     def blocks(self, oracle_blocks, blocks, legacy, owner, where):
         for b in oracle_blocks:
             if b["kind"] == "pb2":
@@ -140,6 +169,7 @@ class Parity:
                 self.case.assertEqual(ours.block_id, b["block_id"], where)
                 self.case.assertEqual(ours.issues, (), where)  # also: as many entries as the header announces
                 self.case.assertTrue(set(ours.ids()) <= {p["id"] for p in b["params"]}, where)
+                skip = self.stale(owner, b)
                 for p in b["params"]:
                     what = "%s block %d param %d %s" % (where, b["block_id"], p["id"], p["name"])
                     rp = ours.param(p["id"])
@@ -163,7 +193,9 @@ class Parity:
                     self.case.assertEqual(len(values), len(theirs), what)
                     for k, (a, t) in enumerate(zip(values, theirs)):
                         at = "%s[%d]" % (what, k) if rp.table else what
-                        if (p["id"], k) in controllers:
+                        if skip(p["id"], k, a):
+                            self.skipped += 1
+                        elif (p["id"], k) in controllers:
                             self.controller(a, controllers[(p["id"], k)], block_index, at)
                         else:
                             self.value(base, a, t, at)
@@ -225,6 +257,44 @@ class Fixtures(unittest.TestCase):
                     x for part in e["parts"] for x in part["blocks"]])
                 self.assertEqual(parity.animated, want, name)
                 del cf
+
+    def test_owner_slots_match_the_fixtures(self):
+        """Each owner_slots.py entry a fixture's 0x0013 lists says what that table says; every entry has one but the
+        two measured on corpus scene B only."""
+        tables = {}
+        for path in FIXTURES:
+            with cfb.CompoundFile(path) as cf:
+                s = scene.Scene.from_file(cf)
+                for i in range(len(s)):
+                    entry = s.entry(i)
+                    if entry is None or entry.superclass not in (classids.SC_MATERIAL, classids.SC_TEXMAP):
+                        continue
+                    for target in s.refs(i).values():
+                        t = s.entry(target)
+                        if t is None or t.superclass != classids.SC_PARAMETER_BLOCK2:
+                            continue
+                        chunk = s.chunk(target)
+                        table = chunk.first(0x0013)
+                        if table is None:
+                            continue
+                        buf = table.view()
+                        found = {}
+                        for k in range(struct.unpack_from("<I", buf)[0]):
+                            pid, slot, _unknown = struct.unpack_from("<HHH", buf, 4 + 6 * k)
+                            found.setdefault(pid, slot)
+                        key = (entry.superclass, entry.class_id, pblock.ParamBlock2.from_chunk(chunk).block_id)
+                        self.assertEqual(tables.setdefault(key, found), found, os.path.basename(path))
+                del cf
+        corpus_only = {classids.COMPOSITE, owner_slots.LAYERED_TEXMAP}
+        for (superclass, class_id), blocks in owner_slots.TABLE.items():
+            for block_id, want in blocks.items():
+                with self.subTest(class_id=class_id, block=block_id):
+                    found = tables.get((superclass, class_id, block_id))
+                    if class_id in corpus_only:
+                        self.assertIsNone(found)
+                        continue
+                    self.assertIsNotNone(found, "no fixture 0x0013 for this entry")
+                    self.assertEqual({pid: found.get(pid) for pid in want}, want)
 
     def test_vray_values_by_id(self):
         """A few values docs/FORMAT.md quotes, read by parameter id as the converters will."""

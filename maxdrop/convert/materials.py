@@ -12,7 +12,8 @@
     ir.base_color.value, ir.base_color.map        # linear RGB, MapRef(index, amount, invert) or None
     conv.material_for(index, mat_id)    # the MaterialIR a face with that zero-based material ID renders with
                                         # (Multi/Sub-Objects resolved), None for an empty slot
-    slots = assign(desc, node_materials(scene, desc), conv)   # {mesh key: MeshSlots}, for build/objects.py
+    slots = assign(desc, node_materials(scene, desc), conv)   # Slots {mesh key: MeshSlots}, for build/objects.py
+    slots.curves                        # {curve key: MeshSlots}: the slot of each curve with a material
     conv.peel(index)                    # (object index of the renderable material or None, reason)
     conv.stats.peeled, conv.stats.unknown, conv.stats.issues
 
@@ -57,7 +58,7 @@ Rules (the decisions of an earlier 3ds Max -> FBX exporter, without its FBX work
   base color as for VRayMtl, the IOR as well (refraction IOR when it refracts, else the Fresnel IOR); a Fresnel IOR
   of CORONA_METAL_IOR or more with a bright reflection (as METAL_REFLECTION) is a metal in the reflection color.
 - CoronaLightMtl -> emission (color, intensity, map) and its opacity map.
-- Wrappers (VRay2SidedMtl, VRayBlendMtl, VRayOverrideMtl, VRayMtlWrapper, DoubleSided, Shellac, CoronaLayeredMtl:
+- Wrappers (VRay2SidedMtl, VRayBlendMtl, VRayOverrideMtl, VRayMtlWrapper, Double Sided, Shellac, CoronaLayeredMtl:
   base, then its layers that are on) -> the first set sub-material in 3ds Max's getSubMtl order; Shell Material -> its render
   sub-material. Peeling stops at any other
   class (a Multi/Sub-Object included), at most MAX_PEEL wrappers deep; each wrapper object peeled counts once.
@@ -72,15 +73,20 @@ Rules (the decisions of an earlier 3ds Max -> FBX exporter, without its FBX work
 
 The slots of a mesh (assign): its distinct face IDs, each keyed by the materials its users (the nodes sharing the
 mesh) get for that ID; one slot per key, in ID order, faces remapped to their slot. A material that is not a
-Multi/Sub-Object gives one slot; an empty key (no material) is a slot only beside others.
+Multi/Sub-Object gives one slot; an empty key (no material) is a slot only beside others. A curve (a shape node
+built as a curve) has one slot, keyed by the materials its users get for material ID 1, none when no user has one:
+the shape reader does not read the segments' material IDs.
 
 Colors are 3ds Max swatches, clamped to 0..1 and made linear by the scene's swatch rule (convert/colors.py): the
 value itself when the scene was saved with the gamma on (or does not say), the sRGB curve when it was off.
 A missing, animated or non-finite parameter takes the class's default; an IOR is clamped to 1..100. The SSS radius is
-in meters (VRayFastSSS2 stores it in centimeters whatever the system unit).
-Parameter ids: docs/FORMAT.md for the classes of the fixtures (the Corona ones: Corona 12); the others (named beside
-each rule) were read from 3ds Max 2020 + V-Ray 5.2 through the SDK or from probe scenes it saved, not from a
-fixture. No bpy, no mathutils.
+in meters: VRayFastSSS2's scatter_radius is in centimeters whatever the system unit, multiplied by its scale (V-Ray's
+documentation says both). VRayCarPaintMtl's coat_strength is, in V-Ray's documentation, the strength of the coat
+reflections seen from the front; that Fresnel gives the other angles is this rule's reading.
+Parameter ids: docs/FORMAT.md for the classes of the fixtures (the Corona ones: Corona 12; the V-Ray ones: V-Ray 5.2);
+standard_shaders sets every shader's ids and the Physical Material's maps. The Standard map slots (STD_*) are Blinn's
+map channels, not yet the other shaders' (maxdrop-em3.104).
+No bpy, no mathutils.
 """
 import collections
 import dataclasses
@@ -100,30 +106,14 @@ METAL_REFLECTION = 0.25  # mean linear reflection (about sRGB 137 grey) above wh
 CORONA_METAL_IOR = 10.0  # a CoronaLegacyMtl Fresnel IOR from which a bright reflection is a metal (made with 999)
 GREY_SRGB = 128 / 255  # the grey of a material without a rule: MaxDrop's own, not a swatch
 
-# The classes no fixture has: reader/classids.py takes a class only with a fixture.
-VRAY_LIGHT_MTL = ClassId(0x7CCF263E, 0x3F5B39B9)
-VRAY_FAST_SSS2 = ClassId(0x3F2C5FAA, 0x750008BC)
-VRAY_CAR_PAINT_MTL = ClassId(0x38312C74, 0x47280883)
-VRAY_CAR_PAINT_MTL2 = ClassId(0x56BC47E2, 0x03E008C7)
-VRAY_OVERRIDE_MTL = ClassId(0x15D20E6B, 0x54E217EB)
-VRAY_MTL_WRAPPER = ClassId(0x409517DF, 0x3A5F44B6)
-DOUBLE_SIDED_MTL = ClassId(0x00000210, 0)
-SHELLAC_MTL = ClassId(0x46EE536A, 0)
-
-CLASS_NAMES = {
-    VRAY_LIGHT_MTL: "VRayLightMtl", VRAY_FAST_SSS2: "VRayFastSSS2", VRAY_CAR_PAINT_MTL: "VRayCarPaintMtl",
-    VRAY_CAR_PAINT_MTL2: "VRayCarPaintMtl2", VRAY_OVERRIDE_MTL: "VRayOverrideMtl",
-    VRAY_MTL_WRAPPER: "VRayMtlWrapper", DOUBLE_SIDED_MTL: "DoubleSided", SHELLAC_MTL: "Shellac",
-}
-
 # wrapper ClassId -> its sub-material parameters (block 0) in getSubMtl order; a table parameter gives each element
 WRAPPERS = {
     classids.VRAY_2SIDED_MTL: (0, 1),  # frontMtl, backMtl
     classids.VRAY_BLEND_MTL: (0, 1),  # baseMtl, coatMtl (table)
-    VRAY_OVERRIDE_MTL: (0, 2, 4, 6, 8),  # baseMtl, giMtl, reflectMtl, refractMtl, shadowMtl
-    VRAY_MTL_WRAPPER: (0,),  # baseMtl
-    DOUBLE_SIDED_MTL: (0, 1),  # material1 (facing), material2 (back)
-    SHELLAC_MTL: (0, 1),  # shellacMtl1 (base), shellacMtl2
+    classids.VRAY_OVERRIDE_MTL: (0, 2, 4, 6, 8),  # baseMtl, giMtl, reflectMtl, refractMtl, shadowMtl
+    classids.VRAY_MTL_WRAPPER: (0,),  # baseMtl
+    classids.DOUBLE_SIDED_MTL: (0, 1),  # material1 (facing), material2 (back)
+    classids.SHELLAC_MTL: (0, 1),  # shellacMtl1 (base), shellacMtl2
     classids.CORONA_LAYERED_MTL: (1000, 1001),  # baseMtl, layers (table)
 }
 SHELL_RENDER_INDEX, SHELL_SUBS = 1, (2, 3)  # renderMtlIndex; originalMaterial, bakedMaterial
@@ -135,27 +125,34 @@ LUMENS_PER_WATT = 683.0  # luminous efficacy at 555 nm: cd/m2 -> W/(m2 sr)
 MULTI_MATERIALS, MULTI_ENABLED, MULTI_IDS = 0, 1, 3
 
 # Standard: the shader is a part (superclass Shader); its block 0 holds the colors, with ids per shader class
-# (probe scenes saved by 3ds Max 2020 with each shader; only Blinn is in a fixture).
-PHONG_SHADER = ClassId(0x00000037, 0)
-METAL_SHADER = ClassId(0x00000039, 0)
-ANISOTROPIC_SHADER = ClassId(0x2857F460, 0)
-OREN_NAYAR_BLINN_SHADER = ClassId(0x2857F421, 0)
-MULTI_LAYER_SHADER = ClassId(0x2857F470, 0)
-TRANSLUCENT_SHADER = ClassId(0x2857F480, 0)
-STRAUSS_SHADER = ClassId(0x2857F450, 0)  # 0 color, 1 glossiness, 2 metalness
-
+# (fixture standard_shaders).
+# Strauss (classids.STRAUSS_SHADER) has its own: 0 diffuse, 1 glossiness, 2 metalness.
 ShaderIds = collections.namedtuple("ShaderIds", "diffuse specular level glossiness si_amount si_color use_si_color")
 _BLINN_IDS = ShaderIds(1, 2, 9, 10, 7, 8, 6)
 SHADERS = {
-    PHONG_SHADER: _BLINN_IDS,
+    classids.PHONG_SHADER: _BLINN_IDS,
     classids.BLINN_SHADER: _BLINN_IDS,
-    METAL_SHADER: _BLINN_IDS,
-    ANISOTROPIC_SHADER: ShaderIds(1, 2, 5, 7, 6, 3, 14),
-    OREN_NAYAR_BLINN_SHADER: ShaderIds(1, 2, 6, 5, 4, 3, 13),
-    MULTI_LAYER_SHADER: ShaderIds(1, 6, 7, 8, 3, 2, 19),  # the first specular layer
-    TRANSLUCENT_SHADER: ShaderIds(1, 2, 6, 5, 4, 3, 14),
+    classids.METAL_SHADER: _BLINN_IDS,
+    classids.ANISOTROPIC_SHADER: ShaderIds(1, 2, 5, 7, 6, 3, 14),
+    classids.OREN_NAYAR_BLINN_SHADER: ShaderIds(1, 2, 6, 5, 4, 3, 13),
+    classids.MULTI_LAYER_SHADER: ShaderIds(1, 6, 7, 8, 3, 2, 19),  # the first specular layer
+    classids.TRANSLUCENT_SHADER: ShaderIds(1, 2, 6, 5, 4, 3, 14),
 }
-# Standard map slots: index into block 3's tables (mapEnables 0, maps 1, mapAmounts 2)
+# Physical Material, block 0: the ids physical_mtl reads, keyed by the names 3ds Max gives them (fixture
+# standard_shaders checks every one against its oracle); a map's switch (`<name>_on`) is at its id + PHYSICAL_SWITCH.
+PHYSICAL = {
+    "base_weight": 1, "base_color": 2, "reflectivity": 3, "roughness": 4, "roughness_inv": 5, "metalness": 6,
+    "refl_color": 10, "transparency": 30, "trans_color": 31, "trans_ior": 33, "thin_walled": 37, "emission": 50,
+    "emit_color": 51, "emit_luminance": 52, "coating": 60, "coat_color": 61, "coat_roughness": 62,
+    "coat_roughness_inv": 63, "coat_ior": 66, "base_color_map": 101, "reflectivity_map": 102, "roughness_map": 104,
+    "metalness_map": 105, "transparency_map": 109, "emission_map": 116, "emit_color_map": 117, "bump_map": 130,
+    "cutout_map": 133, "bump_map_amt": 230,  # the bump amount: a factor
+}
+PHYSICAL_SWITCH = 50
+
+# Standard map slots: index into block 3's tables (mapEnables 0, maps 1, mapAmounts 2). The tables follow the
+# shader's map channels: these are Blinn's, Phong's and Metal's; the other shaders order them otherwise
+# (docs/FORMAT.md) and are read with these all the same: maxdrop-em3.104.
 STD_DIFFUSE, STD_SPECULAR, STD_LEVEL, STD_GLOSSINESS, STD_SELF_ILLUM, STD_OPACITY, STD_BUMP, STD_REFLECTION = (
     1, 2, 3, 4, 5, 6, 8, 9)
 STD_DIFFUSE_DEFAULT = (150 / 255,) * 3
@@ -228,7 +225,7 @@ def class_name(superclass, class_id):
     """The class name for the report: the class directory's for a known class (without the blanks around it:
     CoronaPhysicalMtl's starts with a carriage return), else the ClassID."""
     cid = ClassId(*class_id)
-    return (classids.name_of(superclass, cid) or CLASS_NAMES.get(cid) or "ClassID%s" % (cid,)).strip()
+    return (classids.name_of(superclass, cid) or "ClassID%s" % (cid,)).strip()
 
 
 def _clamp01(v):
@@ -563,7 +560,7 @@ def vray_fast_sss2(conv, m, ir):
     ir.specular = Input(_clamp01(mean(conv.rgb(m, 40, 0, (1.0, 1.0, 1.0)))))
     ir.ior = _ior(_num(m, 31, 0, 1.3))
     ir.subsurface_weight = _clamp01(1.0 - _num(m, 36, 0, 0.0))
-    ir.subsurface_color = conv.rgb(m, 2, 0, (1.0, 1.0, 1.0))
+    ir.subsurface_color = conv.rgb(m, 2, 0, (0.5, 0.5, 0.5))
     ir.subsurface_radius = max(0.0, _num(m, 0, 0, 1.0) * _num(m, 22, 0, 1.0)) * 0.01
     conv.bump_slot(ir, conv.map_ref(m, 3, 4, None, 0, ir=ir))
     ir.alpha = Input(1.0, conv.map_ref(m, 85, 86, None, 0, ir=ir))
@@ -622,7 +619,7 @@ def _std_map(conv, m, slot, ir, invert=False):
 
 def standard_mtl(conv, m, ir):
     """Standard: block 0 shader (2 twoSided), block 1 extended (1 opacity, 6 ior), block 3 maps; the colors in the
-    shader part's block 0 (SHADERS, STRAUSS_SHADER)."""
+    shader part's block 0 (SHADERS; Strauss its own)."""
     ir.two_sided = _flag(m, 2, 0, False)
     ir.ior = _ior(_num(m, 6, 1, 1.5))
     ir.alpha = Input(_clamp01(_num(m, 1, 1, 1.0)), _std_map(conv, m, STD_OPACITY, ir))
@@ -633,7 +630,7 @@ def standard_mtl(conv, m, ir):
     level_map = _std_map(conv, m, STD_LEVEL, ir) or _std_map(conv, m, STD_SPECULAR, ir)
     emit_map = _std_map(conv, m, STD_SELF_ILLUM, ir)
     specular, amount, emit = 0.0, 0.0, None
-    if sid == STRAUSS_SHADER:
+    if sid == classids.STRAUSS_SHADER:
         diffuse, gloss = conv.rgb(s, 0, 0, STD_DIFFUSE_DEFAULT), _num(s, 1, 0, 0.1)
         ir.metallic = Input(_clamp01(_num(s, 2, 0, 0.0)))
         specular = 0.5
@@ -645,7 +642,7 @@ def standard_mtl(conv, m, ir):
             emit = conv.rgb(s, ids.si_color, 0, (0.0, 0.0, 0.0))
         else:
             amount = max(0.0, _num(s, ids.si_amount, 0, 0.0))
-        if sid == METAL_SHADER:
+        if sid == classids.METAL_SHADER:
             ir.metallic = Input(1.0)
     else:
         diffuse, gloss = conv.swatches.color(STD_DIFFUSE_DEFAULT), 0.1
@@ -667,45 +664,51 @@ def standard_mtl(conv, m, ir):
 
 
 def physical_mtl(conv, m, ir):
-    """Physical Material, block 0: 1 base_weight, 2 base_color, 3 reflectivity, 4 roughness, 5 roughness_inv,
-    6 metalness, 10 refl_color, 30 transparency, 31 trans_color, 33 trans_ior, 37 thin_walled, 50 emission,
-    51 emit_color, 52 emit_luminance, 60 coating, 61 coat_color, 62 coat_roughness, 63 coat_roughness_inv,
-    66 coat_ior; maps 101 base_color, 102 reflectivity, 104 roughness, 105 metalness, 109 transparency,
-    116 emission, 117 emit_color, 130 bump (amount 230, a factor), 133 cutout, each switched on by id + 50."""
-    weight = _clamp01(_num(m, 1, 0, 1.0))
-    base = tuple(c * weight for c in conv.rgb(m, 2, 0, (0.5, 0.5, 0.5)))
-    t = _clamp01(_num(m, 30, 0, 0.0))
+    """Physical Material, block 0, by the ids of PHYSICAL; each map switched on by its id + PHYSICAL_SWITCH."""
+    P = PHYSICAL
+
+    def num(name, default):
+        return _num(m, P[name], 0, default)
+
+    def slot(name, invert=False, amount=None):
+        pid = P[name + "_map"]
+        return conv.map_ref(m, pid, pid + PHYSICAL_SWITCH, None if amount is None else P[amount], 0, invert=invert,
+                            ir=ir, percent=False)
+
+    weight = _clamp01(num("base_weight", 1.0))
+    base = tuple(c * weight for c in conv.rgb(m, P["base_color"], 0, (0.5, 0.5, 0.5)))
+    t = _clamp01(num("transparency", 0.0))
     if t > 0:
-        base = _mix(base, conv.rgb(m, 31, 0, (1.0, 1.0, 1.0)), t)
-    ir.base_color = Input(base, conv.map_ref(m, 101, 151, None, 0, ir=ir))
-    inverted = _flag(m, 5, 0, False)
-    r = _clamp01(_num(m, 4, 0, 0.0))
-    ir.roughness = Input(1.0 - r if inverted else r, conv.map_ref(m, 104, 154, None, 0, invert=inverted, ir=ir))
-    ir.metallic = Input(_clamp01(_num(m, 6, 0, 0.0)), conv.map_ref(m, 105, 155, None, 0, ir=ir))
-    ir.specular = Input(_clamp01(max(0.0, _num(m, 3, 0, 1.0)) * mean(conv.rgb(m, 10, 0, (1.0, 1.0, 1.0)))),
-                        conv.map_ref(m, 102, 152, None, 0, ir=ir))
-    ir.transmission = Input(t, conv.map_ref(m, 109, 159, None, 0, ir=ir))
-    ir.ior = _ior(_num(m, 33, 0, 1.52))
-    ir.thin_walled = _flag(m, 37, 0, False)
+        base = _mix(base, conv.rgb(m, P["trans_color"], 0, (1.0, 1.0, 1.0)), t)
+    ir.base_color = Input(base, slot("base_color"))
+    inverted = _flag(m, P["roughness_inv"], 0, False)
+    r = _clamp01(num("roughness", 0.0))
+    ir.roughness = Input(1.0 - r if inverted else r, slot("roughness", invert=inverted))
+    ir.metallic = Input(_clamp01(num("metalness", 0.0)), slot("metalness"))
+    reflection = mean(conv.rgb(m, P["refl_color"], 0, (1.0, 1.0, 1.0)))
+    ir.specular = Input(_clamp01(max(0.0, num("reflectivity", 1.0)) * reflection), slot("reflectivity"))
+    ir.transmission = Input(t, slot("transparency"))
+    ir.ior = _ior(num("trans_ior", 1.52))
+    ir.thin_walled = _flag(m, P["thin_walled"], 0, False)
     # A map in a weight slot stands for the weight, one in a color slot only for the color: weight 0 and a color
     # map is no emission. The IR has no strength map, so the weight map drives the color when no color map does.
-    color_map = conv.map_ref(m, 117, 167, None, 0, ir=ir)
-    weight_map = conv.map_ref(m, 116, 166, None, 0, ir=ir)
-    emission = max(0.0, _num(m, 50, 0, 0.0))
+    color_map = slot("emit_color")
+    weight_map = slot("emission")
+    emission = max(0.0, num("emission", 0.0))
     if emission > 0 or weight_map is not None:
         if color_map is not None and weight_map is not None:
             conv.issue(m.index, "Physical Material: emission weight map %d not used beside the color map"
                        % weight_map.index, ir)
-        ir.emission_color = Input(conv.rgb(m, 51, 0, (1.0, 1.0, 1.0)), color_map or weight_map)
-        luminance = max(0.0, _num(m, 52, 0, 1500.0))
+        ir.emission_color = Input(conv.rgb(m, P["emit_color"], 0, (1.0, 1.0, 1.0)), color_map or weight_map)
+        luminance = max(0.0, num("emit_luminance", 1500.0))
         ir.emission_strength = (1.0 if weight_map is not None else emission) * luminance / LUMENS_PER_WATT
-    ir.coat_weight = _clamp01(_num(m, 60, 0, 0.0))
-    ir.coat_color = conv.rgb(m, 61, 0, (1.0, 1.0, 1.0))
-    c = _clamp01(_num(m, 62, 0, 0.0))
-    ir.coat_roughness = 1.0 - c if _flag(m, 63, 0, False) else c
-    ir.coat_ior = _ior(_num(m, 66, 0, 1.52))
-    conv.bump_slot(ir, conv.map_ref(m, 130, 180, 230, 0, ir=ir, percent=False))
-    ir.alpha = Input(1.0, conv.map_ref(m, 133, 183, None, 0, ir=ir))
+    ir.coat_weight = _clamp01(num("coating", 0.0))
+    ir.coat_color = conv.rgb(m, P["coat_color"], 0, (1.0, 1.0, 1.0))
+    c = _clamp01(num("coat_roughness", 0.0))
+    ir.coat_roughness = 1.0 - c if _flag(m, P["coat_roughness_inv"], 0, False) else c
+    ir.coat_ior = _ior(num("coat_ior", 1.52))
+    conv.bump_slot(ir, slot("bump", amount="bump_map_amt"))
+    ir.alpha = Input(1.0, slot("cutout"))
 
 
 def _corona_amount_map(conv, m, map_pid, ir, invert=False):
@@ -792,10 +795,10 @@ RULES = {
     (classids.SC_MATERIAL, classids.STANDARD_MTL): standard_mtl,
     (classids.SC_MATERIAL, classids.PHYSICAL_MTL): physical_mtl,
     (classids.SC_MATERIAL, classids.VRAY_MTL): vray_mtl,
-    (classids.SC_MATERIAL, VRAY_LIGHT_MTL): vray_light_mtl,
-    (classids.SC_MATERIAL, VRAY_FAST_SSS2): vray_fast_sss2,
-    (classids.SC_MATERIAL, VRAY_CAR_PAINT_MTL): vray_car_paint_mtl,
-    (classids.SC_MATERIAL, VRAY_CAR_PAINT_MTL2): vray_car_paint_mtl2,
+    (classids.SC_MATERIAL, classids.VRAY_LIGHT_MTL): vray_light_mtl,
+    (classids.SC_MATERIAL, classids.VRAY_FAST_SSS2): vray_fast_sss2,
+    (classids.SC_MATERIAL, classids.VRAY_CAR_PAINT_MTL): vray_car_paint_mtl,
+    (classids.SC_MATERIAL, classids.VRAY_CAR_PAINT_MTL2): vray_car_paint_mtl2,
     (classids.SC_MATERIAL, classids.CORONA_PHYSICAL_MTL): corona_physical_mtl,
     (classids.SC_MATERIAL, classids.CORONA_LEGACY_MTL): corona_legacy_mtl,
     (classids.SC_MATERIAL, classids.CORONA_LIGHT_MTL): corona_light_mtl,
@@ -803,8 +806,9 @@ RULES = {
 
 
 class MeshSlots:
-    """The material slots of one mesh: users the object indices of the nodes sharing it (MeshDescription.users);
-    slots [[MaterialIR or None per user]] per slot (None: an empty slot); indices int32 per face, its slot."""
+    """The material slots of one mesh or curve: users the object indices of the nodes sharing it
+    (MeshDescription.users, CurveDescription.users); slots [[MaterialIR or None per user]] per slot (None: an empty
+    slot); indices int32 per face, its slot (empty for a curve: every spline is on slot 0)."""
     __slots__ = ("users", "slots", "indices")
 
     def __init__(self, users, slots, indices):
@@ -812,6 +816,16 @@ class MeshSlots:
 
     def __repr__(self):
         return "MeshSlots(%d users, %d slots)" % (len(self.users), len(self.slots))
+
+
+class Slots(dict):
+    """assign()'s result: {mesh key: MeshSlots}, and curves {curve key: MeshSlots} (mesh and curve keys can be
+    equal: two dicts)."""
+    __slots__ = ("curves",)
+
+    def __init__(self):
+        super().__init__()
+        self.curves = {}
 
 
 def node_materials(scene, desc):
@@ -827,12 +841,18 @@ def node_materials(scene, desc):
 
 
 def assign(desc, materials, conv):
-    """{mesh key: MeshSlots} for the meshes of desc. materials: {node object index: material object index or None}
-    (node_materials). A mesh's distinct face IDs, ascending, are grouped by the materials its users get for them
-    (material_for, by identity): one slot per group in order of first appearance. A mesh whose only group has no
-    material gets no slot."""
+    """Slots {mesh key: MeshSlots} for the meshes of desc, its curves {curve key: MeshSlots} for the curves of desc.
+    materials: {node object index: material object index or None} (node_materials). A mesh's distinct face IDs,
+    ascending, are grouped by the materials its users get for them (material_for, by identity): one slot per group
+    in order of first appearance. A mesh whose only group has no material gets no slot. A curve's one slot holds
+    what its users get for material ID 1 (zero-based 0); a curve none of whose users gets a material is left out."""
     import numpy
-    out = {}
+    out = Slots()
+    for key, cd in desc.curves.items():
+        users = list(cd.users)
+        irs = [conv.material_for(materials.get(u), 0) for u in users]
+        if any(ir is not None for ir in irs):
+            out.curves[key] = MeshSlots(users, [irs], numpy.zeros(0, dtype=numpy.int32))
     for key, md in desc.meshes.items():
         users = list(md.users)
         faces = numpy.asarray(md.material_indices, dtype=numpy.int64).ravel()

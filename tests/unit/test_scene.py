@@ -62,6 +62,7 @@ CLASSES = classdir.ClassDirectory.parse(
     class_entry(0x7E9858FE, 0x1DBA1DF0, 0x10F0, "Base Layer") + class_entry(2, 0, 0xC00, "Standard") +
     class_entry(0x12345678, 0x9ABCDEF0, 0x810, "Some Modifier") + class_entry(0x2005, 0, 0x9008, "PRS"))
 DERIVED = scene.DERIVED_OBJECT
+WSM = scene.WSM_DERIVED_OBJECT
 
 
 def refs34(*indices):
@@ -331,6 +332,30 @@ class TestObjectStack(unittest.TestCase):
         with self.assertRaises(IndexError):
             s.object_stack(9)
 
+    def test_world_space_derived_object(self):
+        """0x2033 (stack_wsm): [world-space modifiers, the object's 0x2032 derived object or its base object]."""
+        # 0 poly, 1 mod, 2 binding, 3 derived [1, 0], 4 wsm [2, 3], 5 wsm [2, 0], 6 wsm [7], 7 derived [6] (a cycle)
+        s = make(node(C_POLY), node(C_MOD), node(C_MOD), node(DERIVED, refs34(1, 0)), node(WSM, refs34(2, 3)),
+                 node(WSM, refs34(2, 0)), node(WSM, refs34(7)), node(DERIVED, refs34(6)))
+        self.assertEqual(s.object_stack(4), scene.Stack(0, (2, 1), (4, 3)))  # top first, outermost first
+        self.assertEqual(s.object_stack(5), scene.Stack(0, (2,), (5,)))
+        self.assertTrue(s.is_derived(4) and s.is_derived(5))
+        self.assertIsNone(s.entry(4))
+        with self.assertRaises(ChunkError):
+            s.object_stack(6)
+
+    def test_0x2033_is_a_class_when_the_directory_reaches_it(self):
+        # 0x2033 entries: indices up to 0x2032 are classes, 0x2033 is still past the directory
+        reach_2032 = classdir.ClassDirectory.parse(class_entry(1, 0, 1, "Node") * WSM)
+        objects = (node(C_POLY), node(DERIVED, refs34(0)), node(WSM, refs34(0)))
+        s = scene.Scene(stream(*objects), reach_2032)
+        self.assertEqual((s.is_derived(1), s.is_derived(2)), (False, True))
+        self.assertEqual(s.object_stack(2), scene.Stack(0, (), (2,)))
+        reach_2033 = classdir.ClassDirectory.parse(class_entry(1, 0, 1, "Node") * (WSM + 1))
+        s = scene.Scene(stream(*objects), reach_2033)
+        self.assertEqual((s.is_derived(1), s.is_derived(2)), (False, False))
+        self.assertEqual(s.object_stack(2), scene.Stack(2, (), ()))
+
 
 def _oracle(path):
     with open(path[:-4] + ".oracle.json", encoding="ascii") as f:
@@ -554,7 +579,9 @@ class TestFixtures(unittest.TestCase):
                  "CamTarget.Target": 0x4800, "CamTargetOrtho.Target": 0x4800, "CamPhysShift.Target": 0x4800,
                  "CamVRayShift.Target": 0x4800, "CamVRayTarget.Target": 0x4800}
         heads = {"Node": 16, "RootNode": 16, "Texmaps": 48, "Bezier Float": 2, "Bezier Scale": 2, "Bezier Color": 2,
-                 "Boolean Controller": 2, "Grid Reference": 2, "VRayMtl": 34, "MtlBaseLib": 2,
+                 "Bezier Position": 2, "Smooth Rotation": 2, "Linear Float": 2, "Linear Position": 2,
+                 "Linear Rotation": 2, "Linear Scale": 2, "TCB Float": 2, "TCB Position": 2, "TCB Rotation": 2,
+                 "TCB Scale": 2, "Boolean Controller": 2, "Grid Reference": 2, "VRayMtl": 34, "MtlBaseLib": 2,
                  "": 2}  # Custom Curve Control's point class, nameless in the class directory (texmap_rules' Falloffs)
         varies = {"ParamBlock2"}  # the number of reference slots of its descriptor: 25 and 37 in the fixtures
         for path in FIXTURES:

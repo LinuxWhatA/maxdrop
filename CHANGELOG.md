@@ -8,6 +8,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
 
 ## [Unreleased]
 
+### Added
+
+- Shapes: an NGon's corner radius and an Ellipse's outline are drawn as 3ds Max draws them, and a shape that renders
+  with a rectangular section gets that section (a hidden bevel object beside it) instead of a round one; none of
+  them is a line in the report any more, but a rectangular section on a shape that is not flat, which may turn
+  otherwise than in 3ds Max.
+- Shapes: a shape imported as a curve gets its material (a renderable railing, cable or frame no longer renders with
+  Blender's default material); with a Multi/Sub-Object, the entry for material ID 1.
+
 ### Changed
 
 - Import: Esc while a windowed import reads a very large mesh stops the reading inside that mesh, so the next
@@ -15,6 +24,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
 
 ### Fixed
 
+- Shapes: an Arc whose from and to angles are equal is a point, not a full circle, and angles below 0 or past 360
+  are held there as 3ds Max holds them (from 10 to 370 ends at 360 instead of going round to 10).
+- Modifiers: an object with a world-space modifier (a Map Scaler or another space-warp binding) on its stack arrives
+  as its mesh, with the binding named in the report among the modifiers not applied, instead of as a placeholder of
+  an unnamed class.
+- Materials: the report names a peeled Double Sided material as 3ds Max does (it said "DoubleSided"), and a
+  VRayFastSSS2 whose subsurface color cannot be read (animated, damaged) takes V-Ray's default grey instead of white.
 - Modifiers: a Shell whose inner and outer surfaces both lie on one side of the original (inner -1 and outer 2, for
   one) arrives as a Solidify there instead of being left out, and one whose amounts add up to less than zero is
   turned inside out as 3ds Max makes it (both amounts negative used to face the wrong way). The report no longer
@@ -32,6 +48,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
   or infinite pivot rotation is reported as a non-finite transform instead of read as no rotation without a word;
   a non-finite pivot position or pivot scale is now reported too. Such a node is placed without its transform (its
   children still placed under it), or for a pivot, without its object offset, as other non-finite transforms are.
+- Transforms: an animated object in a file saved with the time slider away from frame 0 stands where 3ds Max shows
+  it at frame 0, read from its keys, instead of where it was at the saved frame. Linear Float, TCB Float and Float
+  List controllers (under Position XYZ, Euler XYZ or ScaleXYZ) are read instead of left at their default; list
+  controllers use their weights (they were taken as 100 % unless animated); the Euler orders other than XYZ are
+  applied instead of read as XYZ.
 
 ## [1.0.0] - 2026-11-21
 

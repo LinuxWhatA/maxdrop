@@ -19,7 +19,7 @@ stack first; the object can be another derived object (a reference: the modifier
 the shared ones). Its k-th 0x2500 is the modifier context of reference slot k: 0x2510 = a Matrix3 (12 x f32, rows
 1 to 4, then u32 flags) and 0x2511 = the context's box (min, max), +1e30 .. -1e30 when Max had not computed it
 before saving. A world-space modifier sits in a 0x2033 derived object, [world-space modifiers, the object's derived
-object], so it comes above every object-space modifier. A modifier keeps 0x39BF{0x0100: UTF-16 name, empty = the
+object or its base object], so it comes above every object-space modifier. A modifier keeps 0x39BF{0x0100: UTF-16 name, empty = the
 class name; 0x0110 present: off; 0x0120: off in the viewport; 0x0130: off in the renderer}. Its parameter blocks
 and gizmo controller (superclass 0x9008) are among its references. docs/FORMAT.md says which fixture shows what.
 
@@ -36,11 +36,10 @@ import math
 import struct
 
 from . import chunks, classids, pblock
+from .scene import DERIVED_IDS, DERIVED_OBJECT, WSM_DERIVED_OBJECT  # noqa: F401  (tools/census.py)
 
 ChunkError = chunks.ChunkError
 
-DERIVED_OBJECT, WSM_DERIVED_OBJECT = 0x2032, 0x2033
-DERIVED_IDS = (DERIVED_OBJECT, WSM_DERIVED_OBJECT)
 _CONTEXT, _CONTEXT_TM, _CONTEXT_BOX = 0x2500, 0x2510, 0x2511
 _INFO, _NAME, _OFF, _OFF_IN_VIEWS, _OFF_IN_RENDERS = 0x39BF, 0x0100, 0x0110, 0x0120, 0x0130
 MODIFIER_SUPERCLASSES = (classids.SC_OSMODIFIER, classids.SC_WSMODIFIER)
@@ -118,8 +117,7 @@ class Modifiers:
 
     def _derived_kind(self, i):
         """0x2032 or 0x2033 when object i is a derived object (a special id no class claims), else None."""
-        cid = self.scene.class_index(i)
-        return cid if cid in DERIVED_IDS and self.scene.entry(i) is None else None
+        return self.scene.class_index(i) if self.scene.is_derived(i) else None
 
     def _superclass(self, i):
         entry = self.scene.entry(i) if 0 <= i < len(self.scene) else None

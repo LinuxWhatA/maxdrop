@@ -22,7 +22,10 @@ oracle has no map channels or smoothing groups of a base mesh: those expectation
 shapes: each shape node a curve object (3D, FREE handles) with the oracle's splines, point counts and cyclic flags,
 its points where 3ds Max has its knots, each segment's middle (mathutils.geometry.interpolate_bezier) where 3ds Max
 interpolates it (the straight segment included), the resolution from the steps, a bevel and faces only on the
-renderable FixtureLine.
+renderable FixtureLine. shapes_more: the same for its NGon corners, Ellipse outlines and Arcs; a rectangular section
+a hidden bevel object in the import's collection, its corners where 3ds Max's render mesh has them; FixtureCurveStd's
+Standard material and FixtureCurveMulti's Multi/Sub-Object entry for ID 1 in one slot on their curves, no slot on the
+other curves.
 Converted modifiers (TurboSmooth, MeshSmooth, Shell, Symmetry): each object's Blender modifiers in 3ds Max's order with
 the description's settings and mirror empties, creases where a smoother separates by smoothing groups, and the
 evaluated mesh with 3ds Max's vertex and triangle counts, world box and shading (flat faces, smooth regions and hard
@@ -59,11 +62,15 @@ camera (lookat: FixtureCam); cameras holds eleven camera objects with a Camera e
 size and camera stay as they were.
 Each fixture's import report is published (build.report) and must say nothing was left out; the one the
 operator published for vray_wrappers lists its three peeled wrappers by class. A changed layers_more description
-checks a hidden parent layer, which no fixture has: its child layer is out of the view layer with it. A hand-made description with sheared local matrices (top-level and parented, hidden, a zero scale) checks that
-Blender's world matrices equal the products of the locals, through the helper empty for top-level ones. Material
+checks a hidden parent layer, which no fixture has: its child layer is out of the view layer with it. A hand-made
+description with sheared local matrices (top-level and parented, hidden, a zero scale) checks that Blender's world
+matrices equal the products of the locals, through the helper empty for top-level ones; controllers' FixtureScaleAxis
+(a scale along a turned axis) is such a top-level node in a fixture. Material
 slots (build with convert.materials.assign): vray_wrappers' Multi/Sub-Object box with its faces set to IDs 1, 3
 and 7 lands them on the slots of FixtureSubOne, an empty one (ID 3 is switched off) and FixtureSubSeven; the same
-mesh shared with the Shell box gets slots linked to each object; standard_physical's boxes one slot each.
+mesh shared with the Shell box gets slots linked to each object; standard_physical's boxes one slot each;
+shapes_more's FixtureCurveStd and FixtureCurveMulti made to share one curve get one empty slot on it, linked to each
+object with its own material, and FixtureBox given FixtureCurveRed shares that Blender material with the curve.
 Materials (build.materials through the operator): each face on its material's slot, each slot's material named after
 the 3ds Max material, its Principled inputs equal to the MaterialIR the same file converts to (values, or linked when
 a texture graph drives them), the render method, one Image Texture node per file; vray_maps' Mapping values by hand
@@ -120,10 +127,13 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
     "pblock_animated": ["UVMap"],
     "primitives": {"FixtureBoxNoMap": []},  # else UVMap: Generate Mapping Coords
     "shapes": ["UVMap"],  # FixtureBox; the shapes are curves
+    "shapes_more": ["UVMap"],  # FixtureBox; the shapes are curves
     "stack_basic": ["UVMap"],  # FixtureTurbo's UVW Map writes channel 1; no other modifier is applied
     "stack_convert": ["UVMap"],  # the modifiers become Blender modifiers on the base meshes
     "stack_shell": ["UVMap"],  # the Shells become Solidify on the base meshes (open boxes)
+    "stack_wsm": ["UVMap"],  # FixtureWSM's UVW Map writes channel 1; the Map Scaler bindings are not applied
     "standard_physical": ["UVMap"],
+    "standard_shaders": ["UVMap"],
     "saved_as_2017": ["UVMap"],
     "saved_as_2018": ["UVMap"],
     "saved_as_2019": ["UVMap"],
@@ -135,10 +145,12 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
     "vray_basic": ["UVMap"],
     "vray_maps": ["UVMap"],
     "vray_texmaps": ["UVMap"],
+    "vray_more": ["UVMap"],
     "vray_lights": [],  # lights and a target: no mesh
     "lights_standard": [],
     "lights_photometric": [],
     "cameras": [],  # its box, without Generate Mapping Coords
+    "controllers": [],  # boxes without Generate Mapping Coords
     "vray_wrappers": ["UVMap"],
     "uvwmap": {"FixtureUVWGizmo": ["UVMap", "UVChannel_2"], "FixtureUVWTwo": ["UVMap", "UVChannel_3"]},  # else UVMap
     "uvwmap_oblique": ["UVMap"],
@@ -355,9 +367,15 @@ def run_fixture(path, modules):
     nodes = oracle["nodes"]
     helpers = [ob for ob in bpy.data.objects if ob.get("maxdrop_helper") == "mirror"]
     mirrors = sum(1 for n in desc.nodes for m in n.converted if m.mirror is not None)
-    check("%s: one object per node, one empty per mirror object" % name,
-          len(desc.nodes) == len(nodes) == len(bpy.data.objects) - len(helpers) and len(helpers) == mirrors,
-          "%d objects, %d nodes, %d mirror empties" % (len(bpy.data.objects), len(nodes), len(helpers)))
+    shears = [ob for ob in bpy.data.objects if ob.get("maxdrop_helper") == "shear"]
+    sheared = any(n.sheared and n.parent is None for n in desc.nodes)  # controllers: FixtureScaleAxis
+    sections = [ob for ob in bpy.data.objects if ob.get("maxdrop_helper") == "section"]
+    sectioned = sum(1 for cd in desc.curves.values() if cd.section is not None)
+    check("%s: one object per node, one empty per mirror object, one for top-level sheared nodes, one per section"
+          % name, len(desc.nodes) == len(nodes) == len(bpy.data.objects) - len(helpers) - len(shears) - len(sections)
+          and len(helpers) == mirrors and len(shears) == int(sheared) and len(sections) == sectioned,
+          "%d objects, %d nodes, %d mirror empties, %d shear empties, %d sections" % (
+              len(bpy.data.objects), len(nodes), len(helpers), len(shears), len(sections)))
     check("%s: nodes in oracle order" % name, [n.name for n in desc.nodes] == [n["name"] for n in nodes])
     obs = objects_of(desc)
     meshes = {ob.data.name: ob.data for ob in obs if ob.type == 'MESH'}
@@ -484,6 +502,8 @@ def run_fixture(path, modules):
         shaped = sum(1 for o in nodes if o["shape"] is not None)
         check("shapes: one curve per shape node, one mesh", len(curves) == shaped == 13 and len(meshes) == 1,
               str(curves))
+    if name == "shapes_more":
+        check_shapes_more(obs, meters)
     if name == "hierarchy":
         mirrored = [n.name for n in desc.nodes if n.mirrored]
         check("hierarchy: FixtureLeaf is the mirrored node", mirrored == ["FixtureLeaf"], str(mirrored))
@@ -947,11 +967,14 @@ def check_curve(label, ob, shape, meters):
     steps = 12 if shape["adaptive"] else shape["steps"] + 1
     check(label + ": resolution from the steps", cu.resolution_u == steps and
           all(sp.resolution_u == steps for sp in cu.splines), "%d vs %d" % (cu.resolution_u, steps))
-    if shape["renderable"]:
+    if shape["renderable"] and shape["rectangular"]:
+        check_section(label, ob, shape, meters)
+    elif shape["renderable"]:
         check(label + ": a bevel of the thickness", abs(cu.bevel_depth - shape["thickness"] / 2 * meters) < 1e-9 and
-              cu.bevel_resolution == (shape["sides"] - 4) // 2, "%g, %d" % (cu.bevel_depth, cu.bevel_resolution))
+              cu.bevel_resolution == (shape["sides"] - 4) // 2 and cu.bevel_mode == 'ROUND',
+              "%g, %d, %s" % (cu.bevel_depth, cu.bevel_resolution, cu.bevel_mode))
     else:
-        check(label + ": no bevel", cu.bevel_depth == 0, str(cu.bevel_depth))
+        check(label + ": no bevel", cu.bevel_depth == 0 and cu.bevel_object is None, str(cu.bevel_depth))
     for k, (sp, w) in enumerate(zip(cu.splines, want)):
         pts = sp.bezier_points
         n = len(pts)
@@ -976,6 +999,78 @@ def check_curve(label, ob, shape, meters):
     faces = len(mesh.polygons)
     evaluated.to_mesh_clear()
     check(label + ": faces exactly when it renders", (faces > 0) == shape["renderable"], str(faces))
+
+
+def check_section(label, ob, shape, meters):
+    """A rectangular section: a bevel object of the width x length rectangle (any angle), hidden, unselectable, in
+    the import's collection tree (the cleanup removes that tree; an unlinked one is lost on save)."""
+    cu = ob.data
+    sec = cu.bevel_object
+    check(label + ": a bevel object, no round bevel", cu.bevel_mode == 'OBJECT' and sec is not None and
+          sec.type == 'CURVE' and cu.bevel_depth == 0, "%s %r %g" % (cu.bevel_mode, sec, cu.bevel_depth))
+    if sec is None or sec.type != 'CURVE':
+        return
+    root = bpy.data.collections.get(label.split("/")[0])  # the import's collection is named after the file
+    flags = (sec.hide_viewport, sec.hide_render, sec.hide_select, sec.get("maxdrop_helper"))
+    check(label + ": the section object hidden, marked, in the import's collection",
+          flags == (True, True, True, "section") and root is not None and sec.name in root.all_objects,
+          "%s %s" % (flags, [c.name for c in sec.users_collection]))
+    pts = [p.co for sp in sec.data.splines for p in sp.points]
+    half = math.hypot(shape["width"], shape["length"]) / 2 * meters
+    check(label + ": the section a closed 2D rectangle of width x length", sec.data.dimensions == '2D' and
+          sec.data.fill_mode == 'NONE' and len(sec.data.splines) == 1 and sec.data.splines[0].use_cyclic_u and
+          len(pts) == 4 and all(abs(math.hypot(p.x, p.y) - half) < 1e-9 for p in pts) and
+          abs((pts[0] - pts[1]).length - shape["width"] * meters) < 1e-9 and
+          abs((pts[1] - pts[2]).length - shape["length"] * meters) < 1e-9, str([tuple(p) for p in pts]))
+
+
+def check_shapes_more(obs, meters):
+    """The rectangular sections against 3ds Max's render meshes (snapshotAsMesh renderMesh:true; the fixture's
+    script): FixtureSection, a line along X with width 4, length 1 and angle 30, has at x = 0 the corners
+    (Y, Z) = (-1.48205, 1.43301), (1.98205, -0.566987), (1.48205, -1.43301), (-1.98205, 0.566987) and a cap at each
+    end; FixtureSectionLoop,
+    a circle of radius 10 with width 3, length 1.5, spans 8.49005 .. 11.5099 out from its center (3ds Max mitres at
+    its polyline points, Blender a little less) and Z -0.75 .. 0.75."""
+    by_name = {ob.name: ob for ob in obs}
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+
+    def verts(ob):
+        evaluated = ob.evaluated_get(depsgraph)
+        mesh = evaluated.to_mesh()
+        out = [Vector(v.co) / meters for v in mesh.vertices]
+        evaluated.to_mesh_clear()
+        return out
+
+    got = sorted({(round(v.y, 4), round(v.z, 4)) for v in verts(by_name["FixtureSection"]) if abs(v.x) < 1e-6})
+    want = sorted((round(y, 4), round(z, 4)) for y, z in ((-1.48205, 1.43301), (1.98205, -0.566987),
+                                                          (1.48205, -1.43301), (-1.98205, 0.566987)))
+    check("shapes_more/FixtureSection: the section's corners where 3ds Max renders them",
+          len(got) == 4 and close([c for p in got for c in p], [c for p in want for c in p], 1e-3),
+          "%s vs %s" % (got, want))
+    evaluated = by_name["FixtureSection"].evaluated_get(depsgraph)
+    mesh = evaluated.to_mesh()
+    caps = [0.0, 0.0]  # the area of the faces lying in the planes x = 0 and x = 10, in square units
+    for f in mesh.polygons:
+        xs = [mesh.vertices[i].co.x / meters for i in f.vertices]
+        for k, end in enumerate((0.0, 10.0)):
+            if all(abs(x - end) < 1e-6 for x in xs):
+                caps[k] += f.area / meters ** 2
+    evaluated.to_mesh_clear()
+    check("shapes_more/FixtureSection: capped at both ends, as 3ds Max caps it (width x length each)",
+          all(abs(a - 4.0) < 1e-4 for a in caps), str(caps))
+    loop = verts(by_name["FixtureSectionLoop"])
+    radial = [math.hypot(v.x, v.y) for v in loop]
+    zs = [v.z for v in loop]
+    check("shapes_more/FixtureSectionLoop: the section across the circle and up",
+          abs(min(radial) - 8.49005) < 0.02 and abs(max(radial) - 11.5099) < 0.02 and
+          abs(min(zs) + 0.75) < 1e-6 and abs(max(zs) - 0.75) < 1e-6,
+          "%g .. %g, z %g .. %g" % (min(radial), max(radial), min(zs), max(zs)))
+    slots = {ob.name: [(s.link, s.material and s.material.name) for s in ob.material_slots]
+             for ob in obs if ob.type == 'CURVE'}
+    want = dict.fromkeys(slots, [])
+    want.update(FixtureCurveStd=[('DATA', "FixtureCurveRed")], FixtureCurveMulti=[('DATA', "FixtureCurveSubOne")])
+    check("shapes_more: a curve's 3ds Max material in one slot on the curve (a Multi/Sub-Object's ID 1), none on "
+          "the others", slots == want and len(slots) == 15, str(slots))
 
 
 def check_modifier_pivot(obs, meters):
@@ -1229,7 +1324,7 @@ def check_fixture_materials(name, plan, desc, obs):
     the slot plan of _irs)."""
     by_index = {node.index: ob for node, ob in zip(desc.nodes, obs)}
     checked = set()
-    for slots in plan.values():
+    for slots in list(plan.values()) + list(plan.curves.values()):
         for s, irs in enumerate(slots.slots):
             for node, ir in zip(slots.users, irs):
                 ob = by_index[node]
@@ -1477,6 +1572,14 @@ def check_cancel(textured, other):
           "%s %d %s" % (ended, len(run._made), report and report.as_string()[:200]))
     run.undo()
     check("cancel: undo() after a finished run removes it", _state() == before, "%s | %s" % (_state(), before))
+
+    run = _cancel_run([os.path.join(os.path.dirname(other), "shapes_more.max")])  # its sections: hidden objects
+    steps = run.steps()
+    ended = not _advance(steps, lambda: False)
+    sections = sum(1 for ob in bpy.data.objects if ob.get("maxdrop_helper") == "section")
+    run.undo()
+    check("cancel: undo() removes the rectangular sections' objects and curves too",
+          ended and sections == 2 and _state() == before, "%d sections | %s | %s" % (sections, _state(), before))
     bpy.data.materials.remove(keep_material)
     bpy.data.images.remove(keep_image)
 
@@ -2852,8 +2955,9 @@ def check_shear(modules):
         failures.append("shear: helper left over")
 
 
-def _plan(path, edit=None):
-    """convert.scene.read of path, edit(desc) applied, then its slot plan."""
+def _plan(path, edit=None, pick=None):
+    """convert.scene.read of path, edit(desc) applied, then its slot plan; pick(desc, materials) may change the
+    {node index: material object index} the plan is made from."""
     from maxdrop.convert import materials as convert_materials
     from maxdrop.convert import scene as convert_scene
     from maxdrop.reader import cfb, materials as reader_materials, scene as reader_scene
@@ -2863,7 +2967,10 @@ def _plan(path, edit=None):
     with cfb.CompoundFile(path) as cf:
         sc = reader_scene.Scene.from_file(cf)
         conv = convert_materials.MaterialConverter(reader_materials.MaterialGraph(sc))
-        slots = convert_materials.assign(desc, convert_materials.node_materials(sc, desc), conv)
+        materials = convert_materials.node_materials(sc, desc)
+        if pick is not None:
+            pick(desc, materials)
+        slots = convert_materials.assign(desc, materials, conv)
     return desc, slots
 
 
@@ -2919,6 +3026,75 @@ def check_material_slots(modules):
     check("material slots: Standard and Physical boxes, one slot each",
           got == {"FixtureStandardBox": ["FixtureStandard"], "FixturePhysicalBox": ["FixturePhysical"]}
           and all(v == [0] * 6 for v in faces.values()), "%s %s" % (got, faces))
+    check_curve_slots(modules, make)
+
+
+def check_curve_slots(modules, make):
+    """shapes_more: FixtureCurveStd (FixtureCurveRed) and FixtureCurveMulti (ID 1: FixtureCurveSubOne) made to share
+    one curve: an empty slot on the curve, linked to each object with its own material; FixtureBox given
+    FixtureCurveRed: the mesh and the curve share one Blender material; build_steps counts the curve's slots."""
+    build_objects = modules[2]
+    nodes_of = {}
+
+    def share(desc):
+        nodes_of.update((n.name, n) for n in desc.nodes)
+        std, multi = nodes_of["FixtureCurveStd"], nodes_of["FixtureCurveMulti"]
+        del desc.curves[multi.curve]
+        multi.curve = std.curve
+        desc.curves[std.curve].users = sorted([std.index, multi.index])
+
+    def pick(desc, materials):
+        materials[nodes_of["FixtureBox"].index] = materials[nodes_of["FixtureCurveStd"].index]
+
+    empty_scene()
+    desc, slots = _plan(os.path.join(ROOT, "tests", "fixtures", "shapes_more.max"), share, pick)
+    steps = build_objects.build_steps(desc, bpy.context.scene.collection, slots=slots, material=make)
+    counts = []
+    while True:
+        try:
+            counts.append(next(steps))
+        except StopIteration as end:
+            built = end.value
+            break
+    total = build_objects.steps_of(desc, slots)
+    check("curve slots: build_steps ends at steps_of, which counts the curve plans",
+          counts[-1] == (total, total) and len(slots.curves) == 1
+          and total == build_objects.steps_of(desc, dict(slots)) + 1, "%s %d" % (counts[-1:], total))
+    obs = {n.name: built.objects[n.index] for n in desc.nodes}
+    std, multi, box = obs["FixtureCurveStd"], obs["FixtureCurveMulti"], obs["FixtureBox"]
+    got = [(s.link, s.material and s.material.name) for ob in (std, multi) for s in ob.material_slots]
+    check("curve slots: a curve shared by objects with different materials, its slot linked to each object",
+          std.data is multi.data and list(std.data.materials) == [None]
+          and got == [('OBJECT', "FixtureCurveRed"), ('OBJECT', "FixtureCurveSubOne")], str(got))
+    reds = [m.name for m in bpy.data.materials if m.name.startswith("FixtureCurveRed")]
+    check("curve slots: a mesh and a curve with the same 3ds Max material share one Blender material",
+          reds == ["FixtureCurveRed"] and box.data.materials[0] is std.material_slots[0].material, str(reds))
+    with_slots = sorted(ob.name for ob in obs.values() if ob.type == 'CURVE' and len(ob.data.materials))
+    check("curve slots: curves without a material get no slot",
+          with_slots == ["FixtureCurveMulti", "FixtureCurveStd"], str(with_slots))
+
+    def curves_only(desc):
+        share(desc)
+        box = nodes_of["FixtureBox"]
+        desc.meshes.clear()
+        desc.nodes = [n for n in desc.nodes if n is not box]  # no node is FixtureBox's child
+
+    empty_scene()
+    desc, slots = _plan(os.path.join(ROOT, "tests", "fixtures", "shapes_more.max"), curves_only)
+    steps = build_objects.build_steps(desc, bpy.context.scene.collection, slots=slots, material=make)
+    counts = []
+    while True:
+        try:
+            counts.append(next(steps))
+        except StopIteration as end:
+            built = end.value
+            break
+    total = build_objects.steps_of(desc, slots)
+    std = built.objects[nodes_of["FixtureCurveStd"].index]
+    check("curve slots: a scene without meshes (a Slots that is empty as a dict) still gets its curve slots",
+          not slots and len(slots.curves) == 1 and counts[-1] == (total, total)
+          and [s.material and s.material.name for s in std.material_slots] == ["FixtureCurveRed"],
+          "%s %s" % (counts[-1:], [s.material for s in std.material_slots]))
 
 
 def _bench():
