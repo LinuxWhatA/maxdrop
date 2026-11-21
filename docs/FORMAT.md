@@ -276,7 +276,8 @@ block's reference slots where animated. Each entry weighs as the oracle shows:
 lookat (`tools/fixtures/lookat.ms`): target cameras (one rolled 30°, one straight above its target, one under a
 Dummy turned 40° and scaled 1.5), a target spot, boxes with a Look At controller (X axis flipped with the target as
 up node and a scale of its own; Y axis rolled 15°) and boxes with a LookAt Constraint (two weighted targets and the
-Y axis flipped with a scale of its own; an up node looked at; an up node's X axis aligned with, under the Dummy).
+Y axis flipped with a scale of its own; an up node looked at; an up node's X axis aligned with, under the Dummy;
+Keep Initial Offset under the Dummy, Set Orientation, both, Set Orientation turned off after the box was turned).
 Every node's world and object transform equals the oracle within 1e-4 (`test_controllers.py`). The frames were
 found on scratch files saved by 3ds Max 2020 (one setting changed per file, compared with `tools/maxdiff.py`, and
 `node.transform` read in MAXScript); `look_frame` and `constraint_frame` are tested against those numbers.
@@ -328,8 +329,25 @@ reference is a ParamBlock2:
 | 13 | `upnode_ctrl`: 0 look at, 1 axis alignment | int |
 
 The ids were matched by the values of the three constraints and by saves that set `relative` or `set_orientation`
-alone. The constraint's own chunks `0x1001`-`0x1004` (4 x `f32`) and `0x1005` (`u32`) are not decoded (the offsets of
-`relative` and `set_orientation`, presumably: an issue when either is on). The target point is the weighted average
+alone. The constraint's own chunks hold its offsets, each a quaternion (4 x `f32`, read as a keyframe rotation's):
+
+| Chunk | Content |
+|---|---|
+| `0x1001` | the node's world rotation when the constraint was assigned (not read) |
+| `0x1002` | the node's local rotation (relative to its parent) when the constraint was assigned |
+| `0x1003` | the aimed frame when the constraint was first evaluated (a target moved before that is already in it) |
+| `0x1004` | the Set Orientation rotation: identity until the node is turned with `set_orientation` on |
+| `0x1005` | `u32`, the number of targets in every probe (not read) |
+
+They are stored values: a save after the target moved or the parent turned writes the same ones. With `L` the aimed
+frame (below) and `Qn` the matrix of chunk `0x100n`: `relative` on gives the frame `Q2 * Q3^-1 * L` (the Set
+Orientation rotation is not applied, also when it is set and `set_orientation` on), `relative` off gives
+`L * Q4`, whether `set_orientation` is on or not (a rotation set with it on stays after it is turned off). Found on
+24 boxes of scratch files (turned before the constraint or after with Set Orientation, top level and under parents
+turned and scaled, uniformly or not, the target moved and the parents turned after), each within `1e-5` of
+`node.transform`; in lookat FixtureKeepOffset (under the Dummy), FixtureSetOrientation, FixtureBothOffsets and
+FixtureOrientationOff, the target moved after all four were set. A chunk the offset needs that is missing or
+shorter than 16 bytes: the plain frame and an issue. The target point is the weighted average
 of the targets' world positions. Row `target_axis` = `n` (`-n` flipped). The up vector: axis alignment = row
 `upnode_axis` of the up node's world matrix (the world's: that unit axis); look at = from `P` to the up node's world
 position (the world's: the origin). Row `StoUP_axis` = the up vector without its part along `n`, normalized
@@ -394,7 +412,8 @@ A field whose value is zero is left out: the top of every box has mask `0x30`, t
 the oracle's `shape`: what 3ds Max's own conversion to an Editable Spline gives (knot types, segment types,
 positions and vectors within 1e-4, closed flags, interpolation and rendering settings). shapes has one node per
 case below; shapes_more the settings shapes leaves out (NGon corner radius, Ellipse outline, Arc angles out of
-range, a Rectangle's corner radius past half a side, rectangular sections). The classes, superclass `0x40` (shape):
+range, a Rectangle's corner radius past half a side, rectangular sections); arc_pie_reverse reversed pie Arcs, plain
+and extruded, beside an extruded pie, reversed arc, clockwise Line and holed Rectangle. The classes, superclass `0x40` (shape):
 
 | Class (ClassID) | Kept as |
 |---|---|
@@ -436,7 +455,7 @@ and beside it `0x1060`, an `i32`: the steps. A spline:
 |---|---|
 | `0x2900` | `u32` knot count |
 | `0x2904` | `u32`, `0` in every file; not decoded |
-| `0x290A` | the knots, 52 bytes each: `i32` knot type (0 smooth, 1 corner, 2 Bezier, 3 Bezier corner), `i32` type of the segment that starts at the knot (0 curve, 1 line), an `f32` (not decoded), then the point, the in vector and the out vector as 3 x `f32` each, in object space, and a `u32` (not decoded) |
+| `0x290A` | the knots, 52 bytes each: `i32` knot type (0 smooth, 1 corner, 2 Bezier, 3 Bezier corner), `i32` type of the segment that starts at the knot (0 curve, 1 line), an `f32` (not decoded), then the point, the in vector and the out vector as 3 x `f32` each, in object space, and a `u32` whose high 16 bits are the zero-based material ID of the segment that starts at the knot (a Line probed with IDs 1, 4, 7, 2: `0x0`, `0x30000`, `0x60000`, `0x10000`; the low 16 bits `0`, the last knot of an open spline `0`; the extrude fixture's FixtureExtShapeIDs) |
 | `0x290D` | `u32` closed |
 
 The vectors are positions, not offsets, and the file holds them for every knot type: what 3ds Max computed for a
@@ -463,7 +482,10 @@ The parametric shapes are made by the reader the way 3ds Max makes them, fitted 
   FixtureRectOver, 10 x 30 with 8; a probe with 10 x 12 and 20);
 - Arc: always 4 Bezier knots, 3 equal segments (FixtureArc 170 degrees, FixturePie 90, FixtureArcWide 350), the
   first in vector and the last out vector at their knot; pie adds the center and closes the spline; reverse runs
-  from `to` back to `from`. `from` and `to` are clamped to [0, 360] first, then a `to` below `from` adds 360:
+  from `to` back to `from`, every knot's vectors swapped; pie and reverse together reverse the closed pie but keep
+  its first knot first: `from` (its out vector now at the knot), the center, `to`, then back along the arc
+  (arc_pie_reverse's FixturePieRev 20 -> 130 and FixturePieRevWrap 300 -> 60; probes 30 -> 150, from = to, 0 -> 360
+  and 10 -> 350 alike). `from` and `to` are clamped to [0, 360] first, then a `to` below `from` adds 360:
   from = to is a zero-length arc, its knots at `from` (FixtureArcSame; also 400 -> 500 at 360, 0 -> -90 at 0),
   10 -> 370 ends at 360 (FixtureArcOver), -30 -> 60 starts at 0 (FixtureArcUnder), 100 -> 50 runs 310 degrees
   (FixtureArcWrap), 0 -> 360 and 0 -> 720 are a full turn;
@@ -489,7 +511,7 @@ against the extrude fixture's oracle) keeps its parameters in an old ParamBlock 
 | 5 | output: 0 patch, 1 mesh, 2 NURBS | 1 |
 | 6 | generate mapping coordinates | FixtureExtRect and FixtureExtAdaptive 1 |
 | 7 | generate material IDs | FixtureExtAdaptive 0, the others 1 |
-| 8 | use shape IDs | 0 |
+| 8 | use shape IDs | FixtureExtShapeIDs and FixtureExtShapeIDsRect 1, the others 0 |
 | 9 | smooth | 1 |
 
 Real-World Map Size is not in the block: the modifier's own chunk holds `0x2150 {0x0100 u32 1, 0x0110 {0x0120: 20
@@ -515,12 +537,22 @@ What 3ds Max 2020 makes of it (`snapshotAsMesh`, probed on scratch scenes and ch
   look to the right of it.
 - **Material IDs**: the cap facing +Z gets ID 1, the one facing -Z ID 2, the sides ID 3 (FixtureExtRect: the cap at
   the shape faces down and is ID 2; FixtureExtL, amount -15: the cap at the shape faces up and is ID 1); without
-  Generate Material IDs every face is ID 1.
+  Generate Material IDs every face is ID 1. Use Shape IDs (with Generate Material IDs; without it every face is still
+  ID 1): each side face takes the material ID of the spline segment it comes from, its interpolated steps too, on a
+  clockwise outline and a hole alike; the caps keep 1 and 2 (FixtureExtShapeIDs: side triangles 2, 6, 10, 4, 8 on IDs
+  4, 5, 7, 11, 12). A parametric shape's segments are ID 1 (FixtureExtShapeIDsRect). Grid caps (cap type 1) are made
+  as morph caps: no local scene has one (443 scenes, 95 Extrudes, the corpus included, 2026-11-21).
 - **Smoothing**: caps group 16; the sides change group only at a corner or Bezier-corner knot (FixtureExtMirror's
   rounded Rectangle: sharp at its 8 Bezier-corner knots), the groups alternating 1, 2 (4 where three runs meet,
-  1, 3, 2 ... along a spline with no corner).
+  1, 3, 2 ... along a spline with no corner). 3ds Max also breaks the side at a pie Arc's three corners, Bezier
+  knots with a zero-length vector (arc_pie_reverse's extruded pies: 52 hard edges, MaxDrop 46): not known why, not
+  done (maxdrop-em3.111).
 - **Mapping**: the sides U along each spline by length (0 to 1, the seam at its first point), V up the levels; the
-  caps the shape's XY box, 0 to 1. Real-World Map Size: the lengths and sizes in file units instead.
+  caps the shape's XY box, 0 to 1. Real-World Map Size: the lengths and sizes in file units instead. A closed spline
+  that runs the other way than its role (a clockwise solid, a counter-clockwise hole) is turned whole: its U starts
+  at its last interpolated point and runs back (arc_pie_reverse: FixtureClockwiseExt, FixtureHoleExt's Circle, the
+  reversed pies; `tests/unit/test_extrude.py` compares every corner with `arc_pie_reverse.maps.jsonl`, the
+  evaluated meshes 3ds Max gave, which the fixture's script writes).
 
 Scene A: 20 shapes with an Extrude (the census), all evaluated: vertex and triangle counts equal 3ds Max's on all
 20, the world box within 1e-3 plus the oracle's 6 significant digits on 16; the other 4 have an Edit Mesh or an FFD
@@ -529,7 +561,8 @@ above the Extrude, which are not evaluated.
 ## UVW Map
 
 The UVW Map modifier (ClassID `(0xF72B1, 0)`, superclass `0x810`; `convert/uvwmap.py`, `tests/unit/test_uvwmap.py`
-against the oracle's `eval_maps` of the uvwmap and uvwmap_oblique fixtures, and of modifier_pivot and stack_basic)
+against the oracle's `eval_maps` of the uvwmap, uvwmap_oblique and uvwmap_pole fixtures, and of modifier_pivot and
+stack_basic)
 references
 `[gizmo Position/Rotation/Scale, old ParamBlock]`:
 
@@ -571,8 +604,16 @@ within 1e-4 for planar and box, 1e-3 for the round types):
 - **Flip, tile**: per component, flipped (1 - value), then times its tile.
 - **Seam**: 3ds Max shares map vertices and may shift a face's U by a whole turn, also on faces that do not cross the
   seam; the image is the same. MaxDrop gives +1 to the corners below 0.5 of a face with an edge across the seam
-  (X = 0, Y > 0) and the mean U of the face to a corner on the axis. A face that goes around the axis
-  (FixtureUVWCylAxisX: 4 triangles) has no single U; there the two differ.
+  (X = 0, Y > 0) between two corners off the axis. A face that goes around the axis (FixtureUVWCylAxisX: 4
+  triangles; uvwmap_pole's 6 at a vertex pushed past the bound) has no single U; there the two differ.
+- **Axis**: a corner on the axis has no angle. Cylindrical: U 0.5, one map vertex shared by every face (MaxDrop: 1.5
+  on a face across the seam, whose other corners it moves up a turn). Spherical: the mean U of the face's other
+  corners. On the axis means within about 1e-4 of it, so that a turned gizmo's float residue (about 1e-7) is a
+  pole: cylindrical |(X, Y)| < 1e-4, spherical |X| and |Y| each < 1e-4 · r. Found by pushing an axis vertex off on
+  scratch scenes (9.5e-5 still a pole, 1.05e-4 not; (7.5e-5, 7.5e-5) not on a cylinder, (9.5e-5, 9.5e-5) still on a
+  sphere; a sphere's bound halves where Z at the pole is 0.5); exactly at 1e-4 3ds Max's single-precision results
+  disagree with each other. uvwmap_pole: the axis vertices of cylinders and spheres under turned gizmos, also pushed
+  just inside and past the bound; every corner equals 3ds Max's.
 
 Evaluated: the UVW Maps that render right above the base object or above an applied Extrude (FixtureUVWExtrude;
 FixtureUVWTwo, two in a row). One above another modifier (FixtureUVWAboveBend), a switched-off one (FixtureUVWOff)
@@ -638,12 +679,12 @@ the primitives fixture and its `primitives.mesh.jsonl`). Lengths in file units, 
 | Box `(0x10, 0)` | 0 length (Y), 1 width (X), 2 height (Z), 3 width segments, 4 length segments, 5 height segments, 6 generate mapping coords |
 | Plane `(0x081F1DFC, 0x77566F65)` | 0 length, 1 width, 2 width segments, 3 length segments, 4 density, 5 render scale, 6 mapping |
 | Pyramid `(0x76BF318A, 0x4BF37B10)` | 0 width, 1 depth, 2 height, 3 width, 4 depth, 5 height segments, 6 mapping |
-| Sphere `(0x11, 0)` | 0 radius, 1 segments, 2 smooth, 3 hemisphere, 4 squash (0 chop), 5 base to pivot, 6 mapping, 7 slice, 8 and 9 its angles |
-| GeoSphere `(0, 0x7F9E)` | 0 radius, 1 segments, 2 base type (0 tetra, 1 octa, 2 icosa), 3 hemisphere, 4 smooth, 5 base to pivot, 6 mapping |
-| Cylinder `(0x12, 0)` | 0 radius, 1 height, 2 height segments, 3 cap segments, 4 sides, 5 smooth, 6 slice, 7 and 8 its angles, 9 mapping |
-| Cone `(0xA86C23DD, 0)` | 0 radius 1, 1 radius 2, 2 height, 3 height segments, 4 cap segments, 5 sides, 6 smooth, 7 slice, 8 and 9 its angles, 10 mapping |
-| Tube `(0x7B21, 0)` | 0 radius 1, 1 radius 2, 2 height, 3 sides, 4 cap segments, 5 height segments, 6 smooth, 7 slice, 8 and 9 its angles, 10 mapping |
-| Torus `(0x20, 0)` | 0 radius 1, 1 radius 2, 2 rotation, 3 twist, 4 segments, 5 sides, 6 smooth (0 none, 1 groups alternating by side, 2 all, 3 alternating by segment), 7 slice, 8 and 9 its angles, 10 mapping |
+| Sphere `(0x11, 0)` | 0 radius, 1 segments, 2 smooth, 3 hemisphere (0 .. 1), 4 squash (0 chop), 5 base to pivot, 6 mapping, 7 slice, 8 slice from, 9 slice to |
+| GeoSphere `(0, 0x7F9E)` | 0 radius, 1 segments, 2 base type (0 tetra, 1 octa, 2 icosa), 3 hemisphere (a switch), 4 smooth, 5 base to pivot, 6 mapping |
+| Cylinder `(0x12, 0)` | 0 radius, 1 height, 2 height segments, 3 cap segments, 4 sides, 5 smooth, 6 slice, 7 slice from, 8 slice to, 9 mapping |
+| Cone `(0xA86C23DD, 0)` | 0 radius 1, 1 radius 2, 2 height, 3 height segments, 4 cap segments, 5 sides, 6 smooth, 7 slice, 8 slice from, 9 slice to, 10 mapping |
+| Tube `(0x7B21, 0)` | 0 radius 1, 1 radius 2, 2 height, 3 sides, 4 cap segments, 5 height segments, 6 smooth, 7 slice, 8 slice from, 9 slice to, 10 mapping |
+| Torus `(0x20, 0)` | 0 radius 1, 1 radius 2, 2 rotation, 3 twist, 4 segments, 5 sides, 6 smooth (0 none, 1 groups alternating by side, 2 all, 3 alternating by segment), 7 slice, **8 slice to, 9 slice from** (the other way round from the rest), 10 mapping |
 
 Real-World Map Size is not in the block: `0x2150{0x0100 u32 1, 0x0110{0x0120 the class (classA, classB,
 superclass, 4), 0x0130 u32 flag}}` in the object's chunk; there is no `0x2150` while mapping is off. Read by
@@ -692,10 +733,47 @@ center vertex and the vertex and triangle counts are 3ds Max's, which the oracle
   (4 on the last of an odd count), 3 the same by segment. UV: U = side / sides, V = segment / segments; Real-World
   Map Size: U = (1 - segment / segments) · 2π · radius 1, V = side / sides · 2π · radius 2.
 
-Not built (the node stays a placeholder, a line in the report): Slice on a Sphere, Cylinder, Cone, Tube or Torus,
-and a Sphere's or GeoSphere's hemisphere. Plane's render scale and density act at render time only (built at the
-viewport size, a line in the report). Teapot is not built. A primitive past 2^21 face corners (`MAX_CORNERS`) is
-refused: a file can ask for any number of segments.
+**Slice and hemispheres** (probed on about 300 meshes of a headless 3ds Max 2020, then the primitives fixture's
+eleven nodes for them). Slice keeps the arc From - To (in 0 .. 360 degrees, 0 a whole turn) and builds it with as many
+steps as the full turn has segments or sides:
+
+- **Sphere hemisphere**: the cut at polar angle (1 - hemisphere) · 180° (hemisphere at most 0.9999). Chopped, the
+  rings keep their places every 360° / segments down to the cut, counted in single precision (k · Δ ≤ cut), then a
+  ring at the cut: a ring that falls on the cut is doubled there, a row of flat faces. Squashed, segments // 2 - 1
+  rings spread over the cut (Δ = cut / (segments / 2 - 1)), the last on it. A base fan to a center on the cut plane,
+  ID 1, group 2 (0 unsmoothed); V by row, 1 - 2k / segments as on the full sphere, the base center one row further;
+  the base flat in real-world mode (U = x - min x, V = max y - y over its rim). Base To Pivot raises it by -radius ·
+  cos(cut), which puts the base on the pivot. Two of the 187 chopped cases probed (20 segments, hemisphere 0.1 and
+  0.3, a ring exactly on the cut) round the other way in 3ds Max: MaxDrop has a row of flat faces more or fewer.
+- **Sphere Slice**: segments + 1 points per ring from To (measured from +Y towards -X), then a point on the axis
+  per ring; each row ends with the faces of its two cut planes, the end's ID 3 group 4, the start's ID 4 group 8 (0
+  unsmoothed); a hemisphere's base fan centers on its last ring's axis point. U across the arc as a fraction of the
+  whole turn; the planes U 1 at the rim, 0 on the axis. Real-world: the planes flat, U from the axis (from the widest
+  ring on the end's plane), V up from the lowest ring; the bottom pole's two plane faces keep the sphere's UVs.
+- **GeoSphere hemisphere**: the faces above the equator of a tetrahedron whose three lower corners are raised onto
+  the equator, of the octahedron, or of the icosahedron split in four at its edges' midpoints (the corner triangles
+  from their corner of the face, the middle one from the midpoint across from the face's first corner), each split
+  in segments as before; a fan from the equator to the center, ID 1, group 2. It stands on the pivot, Base To Pivot
+  or not; the center takes U as a pole does, V 0.5.
+- **Cylinder, Cone Slice**: the profile's rings (bottom cap inside out, side, top cap outside in) from To (from
+  +X, counterclockwise), sides + 1 points each, every ring after a point on the axis, those spread evenly from the
+  bottom center to the top center. Per pair of rings: the start's plane (two triangles, ID 4, group 2), the quads,
+  the end's plane (ID 5, group 4); fans and IDs otherwise as without Slice. A negative height walks the arc back from
+  From instead of flipping the faces, and its U runs down (a face shifted down a turn while its larger U passes 1).
+  The planes' U 0.5 on the axis, V up it; real-world: the start's U from the axis, the end's back from its rim along
+  the direction of the last side step's start, both V up from the lowest point.
+- **Tube Slice**: sides + 1 columns of the profile from From (from +Y towards +X), V = column / (sides + 1); a fan
+  around the profile's middle at each end, the start's ID 5, the end's ID 6, group 1 also unsmoothed; real-world U
+  around the arc times the larger radius, the planes flat (U in from the outer radius at the start, out from the
+  inner one at the end, V up from the lowest point).
+- **Torus Slice**: segments + 1 columns from From, Twist spread over the columns (twist · (column + 1) / (segments +
+  1)); smoothing by segment alternates without a last row apart; a fan around the tube's center at each end, the
+  start's ID 2, the end's ID 3, group 8; real-world as the Tube's.
+
+A Slice whose end lands a float's rounding from U 1 (From 0 To 360, an arc of 0.01°) can give one face's U a whole
+turn from 3ds Max's. Plane's render scale and density act at render time only (built at the viewport size, a line in
+the report). Teapot is not built. A primitive past 2^21 face corners (`MAX_CORNERS`) is refused: a file can ask for
+any number of segments.
 
 ## VRayLight
 
@@ -758,11 +836,12 @@ back by the reader. All superclass `0x30`; every one shines along its local -Z.
 multiplier, 2 contrast, 3 soften diffuse edge, 4 to 7 near and far attenuation start and end, 8 decay start; Spot
 and Direct 0 color, 1 multiplier, 2, 3 the same, 4 hotspot, 5 falloff (a Spot's in degrees, a Direct's a radius in
 world units), 6 aspect, 7 to 10 attenuation, 11 decay start. Reference 3 is the shadow generator, 4 an old
-ParamBlock of shadow settings. The light object's own chunks:
+ParamBlock of shadow settings (color, density, ...; not the switch). The light object's own chunks:
 
 | Chunk | Meaning |
 |---|---|
 | `0x2580` u16 | on |
+| `0x2570` u16 | shadows on (1) or off (0); written in both states (absent: on, as MaxDrop read every light before) |
 | `0x25D0` u16 | decay: 0 none, 1 inverse, 2 inverse square (absent: none) |
 | `0x2573` u16 | cone shape (Spot, Direct): 1 circle, 0 rectangle |
 | `0x2575` (empty) | overshoot |
@@ -786,18 +865,28 @@ generator):
 | 4 | 4 affect diffuse, 5 affect specular, 6 ambient only, 11 length (a line and a rectangle along local Y, a cylinder), 12 width (a rectangle, along local X), 13 radius (disc, sphere, cylinder) |
 
 The lamp color without Kelvin is a preset MAXScript does not reach and the fixtures do not store: white is taken.
+MAXScript's `light.castShadows` is the **node's** Cast Shadows render flag (the node's `0x099C`, bit `0x200`), not the
+light's switch, which is `light.baseObject.castShadows` (saves of one change each, maxdiff); a standard or photometric
+light MAXScript makes has its shadows off, the two scenes of the corpus have them on.
 3ds Max 2020 refuses a spotlight distribution on a cylinder.
 
-**VRaySun** `(0x732C0383, 0x7D993776)`, block 0: 0 enabled, 1 turbidity, 2 intensity multiplier, 3 size multiplier,
-5 ozone, 9 invisible, 12 sky model, 14 / 19 affect diffuse / its contribution, 15 / 20 affect specular / its
-contribution, 17 filter color, 18 color mode (0 filter, 1 direct, 2 override). A targeted VRaySun is a Look At
-node. **VRayIES** `(0x2EAF2F07, 0x7EC44F31)`, block 0: 0 enabled, 1 IES file (an asset of type `Photometric`), 7
-color temperature, 8 color, 9 color mode (1 temperature), 10 power, 11 targeted, 14 / 30 affect diffuse /
-contribution, 15 / 31 affect specular / contribution, 32 intensity type (0 lm, 1 cd), 34 override intensity. With
-the intensity overridden, 10 holds the override's value in its unit; 33 (`intensity_value`) is stored stale (0).
-Reference 1 is a Target Light object of its own (no node). **Skylight** `(0x7BF61478, 0x522E4705)`: not built.
-**VRaySky** `(0x48480B4E, 0x62FF5A90)` (superclass Texmap): the environment map is RenderEnvironment's reference 5
-(the lights_standard fixture).
+**VRaySun** `(0x732C0383, 0x7D993776)`, block 0: 0 enabled, 1 turbidity, 2 intensity multiplier, 3 size multiplier, 5
+ozone, 9 invisible, 12 sky model, 14 / 19 affect diffuse / its contribution, 15 / 20 affect specular / its contribution,
+17 filter color, 18 color mode (0 filter, 1 direct, 2 override); no shadow switch in V-Ray 5.2 (16
+`cast_atmospheric_shadows` only). A targeted VRaySun is a Look At node. **VRayIES** `(0x2EAF2F07, 0x7EC44F31)`, block 0:
+0 enabled, 1 IES file (an asset of type `Photometric`), 7 color temperature, 8 color, 9 color mode (1 temperature), 10
+power, 11 targeted, 14 / 30 affect diffuse / contribution, 15 / 31 affect specular / contribution, 32 intensity type (0
+lm, 1 cd), 34 override intensity. With the intensity overridden, 10 holds the override's value in its unit; 33
+(`intensity_value`) is stored stale (0). 4 cast shadows; 5 use light shape (0 no, 1 for shadows only, 2 for illumination
+and shadows), 21 override shape (off: the IES file's shape), 22 shape, 23 height, 24 width, 25 length, 26 diameter
+(world units), 35 `shape_actual` (-1 without a file). The shapes, in the order of the panel's list (the stored value),
+with the sizes the panel enables (H W L D): 0 point; 1 rectangle H W L; 2 circle D; 3 sphere D; 4 vertical cylinder H D;
+5 / 6 horizontal cylinder along the length / width L D / W D; 7 / 8 ellipse, 9 / 10 ellipsoid (length / width), 11
+elliptic cylinder, 12 / 13 horizontal elliptic cylinder (length / width) H W L; 14 vertical circle W; 15 vertical
+ellipse H W; 16 cuboid H W L. MaxDrop gives the spot the radius of half the largest of those sizes when the shape is
+used and overridden (a sphere's exactly, another shape a line in the report). A VRayIES's reference 1 is a Target Light
+object of its own (no node). **Skylight** `(0x7BF61478, 0x522E4705)`: not built. **VRaySky** `(0x48480B4E, 0x62FF5A90)`
+(superclass Texmap): the environment map is RenderEnvironment's reference 5 (the lights_standard fixture).
 
 **Power, measured.** The calibration scene of [VRayLight](#vraylight) (a white VRayMtl floor, one light 1 m above it
 pointing down, V-Ray linear, gamma off, no GI, the mean of the 8 × 8 center pixels): V-Ray's pixel is the floor's
@@ -1254,7 +1343,7 @@ Not shown by any fixture yet, so not stated above:
   8-bit text, the code page the summary records (the machine's ANSI code page is assumed), the layer name in the
   same code page. Their FileAssetMetaData strings are still read as UTF-16, and an older `ClassDirectory` stream
   as `ClassDirectory3`.
-- Of shapes ([Shapes](#shapes)): the order of a reversed pie's knots (the center last), a rectangular section on a
+- Of shapes ([Shapes](#shapes)): a rectangular section on a
   curve that is not flat in XY (Blender's twist and 3ds Max's may differ: an issue), the section angle's sign on
   other directions than +X, a rectangular section of width or length 0 (not drawn, an issue), the angle of a round
   section (not drawn); the `f32` and the last `u32` of a knot, `0x2904`, `0x1070` of the

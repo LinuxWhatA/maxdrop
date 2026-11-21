@@ -28,7 +28,7 @@ TOLERANCE = 1e-5  # relative above 1: the oracle prints 6 significant digits
 # that compares nothing. A fixture whose graph is one Standard material compares 125; the light fixtures have no
 # material.
 FLOORS = {"vray_lights": 0, "lights_standard": 0, "lights_photometric": 0, "box_poly_standard": 120, "cameras": 120,
-          "controllers": 120,
+          "arc_pie_reverse": 120, "controllers": 120,
           "corona_layered": 630, "corona_legacy": 370, "corona_light": 180,
           "corona_maps": 950, "corona_physical": 500, "editable_mesh": 380, "extrude": 120, "gamma_swatches": 540,
           "hierarchy": 120, "instances": 120, "layers_flags": 120,
@@ -37,8 +37,8 @@ FLOORS = {"vray_lights": 0, "lights_standard": 0, "lights_photometric": 0, "box_
           "saved_as_2018": 120, "saved_as_2019": 120, "shapes": 120, "shapes_more": 120, "stack_basic": 120,
           "stack_convert": 120, "stack_shell": 120, "stack_wsm": 120, "standard_physical": 290, "standard_shaders": 1600,
           "texmap_rules": 1570, "texmap_wrappers": 1690, "units_cm": 120, "units_in": 120, "units_mm": 120, "uvwmap": 120,
-          "uvwmap_oblique": 120, "vray_basic": 190, "vray_maps": 630, "vray_more": 2500, "vray_texmaps": 2900,
-          "vray_wrappers": 2000}
+          "uvwmap_oblique": 120, "uvwmap_pole": 120, "vray_basic": 190, "vray_maps": 630, "vray_more": 2500,
+          "vray_texmaps": 2900, "vray_wrappers": 2000}
 
 
 _PKG = "maxdrop_convert_test"  # the package the convert tests make: maxdrop/__init__.py (bpy) never runs

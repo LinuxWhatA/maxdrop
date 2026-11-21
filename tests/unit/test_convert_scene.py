@@ -47,6 +47,7 @@ shapes = importlib.import_module(_PKG + ".reader.shapes")
 # From the fixture scripts (tools/fixtures/*.ms: mapcoords:true gives channel 1); the oracle has no map channels or
 # smoothing groups.
 UV_LAYERS = {
+    "arc_pie_reverse": ["UVMap"],  # every Extrude with Generate Mapping Coords; the two plain arcs are curves
     "box_poly_standard": ["UVMap"],
     "corona_layered": ["UVMap"],
     "corona_legacy": ["UVMap"],
@@ -96,6 +97,7 @@ UV_LAYERS = {
     "uvwmap": collections.defaultdict(lambda: ["UVMap"], {"FixtureUVWGizmo": ["UVMap", "UVChannel_2"],
                                                           "FixtureUVWTwo": ["UVMap", "UVChannel_3"]}),
     "uvwmap_oblique": ["UVMap"],
+    "uvwmap_pole": ["UVMap"],
 }
 SHARP_EDGES_POLY_BOX = 12  # one smoothing group per side: every edge of the box
 SHARP_EDGES_EDITABLE_MESH = 8  # group 1 on top and bottom, 2 on the sides: the rims of top and bottom
@@ -104,16 +106,28 @@ SHARP_EDGES_OPEN_BOX = 8  # stack_shell's boxes without their top: the 4 vertica
 # extrude: the vertical edges at corner knots (one per level) and both rims of every capped outline
 SHARP_EDGES_EXTRUDE = {"FixtureExtRect": 4 * 2 + 8, "FixtureExtL": 6 + 12, "FixtureExtHole": 4 + 8 + 56,
                        "FixtureExtIsland": 12 + 24, "FixtureExtOpen": 0, "FixtureExtMirror": 8 + 64,
-                       "FixtureExtAdaptive": 256, "FixtureUVWExtrude": 4 + 8}
+                       "FixtureExtAdaptive": 256, "FixtureExtShapeIDs": 11 + 30, "FixtureExtShapeIDsRect": 4 + 8,
+                       "FixtureUVWExtrude": 4 + 8,
+                       # arc_pie_reverse: both rims of a pie's 23 columns (3ds Max also breaks the side at from,
+                       # the center and to: 6 more, maxdrop-em3.111); the open arc none; the clockwise Line and
+                       # the holed cap as above
+                       "FixturePieRevExt": 46, "FixturePieRevWrapExt": 46, "FixturePieExt": 46,
+                       "FixtureArcRevExt": 0, "FixtureClockwiseExt": 4 * 2 + 8, "FixtureHoleExt": 4 * 2 + 8 + 56}
 # uvwmap: boxes of 3 x 2 x 2 segments, a group per side: 28 edges; the cylinder's two rims; the sphere is smooth
 SHARP_EDGES_UVWMAP = {"FixtureUVWCyl": 32, "FixtureUVWSphere": 0, "FixtureUVWSharedB": SHARP_EDGES_POLY_BOX,
                       # uvwmap_oblique: smooth spheres, the rims of a 10-sided cylinder
                       "FixtureUVWObliqueBox": 0, "FixtureUVWObliqueMirror": 0, "FixtureUVWObliqueCap": 20,
-                      "FixtureUVWObliqueBoxX": 0, "FixtureUVWObliquePlanarX": 0}
+                      "FixtureUVWObliqueBoxX": 0, "FixtureUVWObliquePlanarX": 0,
+                      # uvwmap_pole: the rims of 10-sided cylinders, smooth spheres
+                      "FixtureUVWPoleCylinder": 20, "FixtureUVWPoleNear": 20, "FixtureUVWPoleOff": 20,
+                      "FixtureUVWPoleDiagonal": 20, "FixtureUVWPoleSphere": 0, "FixtureUVWPoleSphereCyl": 0,
+                      "FixtureUVWPoleSphereNear": 0, "FixtureUVWPoleSphereOff": 0}
 # primitives: a group per side of a box (FixtureBox's edges in segments: 4 x 3 + 4 x 2 + 4 x 4), the rims of
 # cylinders, cones and tubes, the pyramid's four ridges of 2 segments and its base outline of 10, the torus's
 # alternating groups (every edge between two sides; on the odd one every edge between two segments), every edge of
-# the unsmoothed GeoSphere; spheres, smooth GeoSpheres and planes have none
+# the unsmoothed GeoSphere; spheres, smooth GeoSpheres and planes have none. Slice and the hemispheres: the base's
+# rim, the rims of the cut planes (their profile and the edges to the fans) and the axis between the two, and the
+# torus's rows of a smoothing group each by segment
 SHARP_EDGES_PRIMITIVES = {"FixtureBox": 36, "FixtureBoxDown": 12, "FixtureBoxNoMap": 12, "FixtureBoxSmooth": 0,
                           "FixturePlane": 0, "FixturePyramid": 4 * 2 + 10, "FixtureSphere": 0, "FixtureGeoSphere": 0,
                           "FixtureGeoOcta": 48, "FixtureCylinder": 20, "FixtureCone": 18, "FixtureTube": 32,
@@ -121,7 +135,11 @@ SHARP_EDGES_PRIMITIVES = {"FixtureBox": 36, "FixtureBoxDown": 12, "FixtureBoxNoM
                           "FixtureCylinderDown": 14, "FixtureConeTip": 14, "FixtureTubeSwap": 28,
                           "FixtureTorusOdd": 35, "FixturePlaneReal": 0, "FixturePyramidDown": 4 * 2 + 6,
                           "FixtureSphereOdd": 0, "FixtureGeoReal": 0, "FixtureCylinderReal": 14,
-                          "FixtureTubeDown": 28}
+                          "FixtureTubeDown": 28, "FixtureSphereHemi": 12, "FixtureSphereSquash": 13,
+                          "FixtureSphereSlice": 12,
+                          "FixtureSphereSliceHemi": 29, "FixtureGeoHemi": 30, "FixtureGeoHemiTetra": 6,
+                          "FixtureCylinderSlice": 30, "FixtureCylinderSliceDown": 19, "FixtureConeSlice": 26,
+                          "FixtureTubeSlice": 36, "FixtureTorusSlice": 60}
 FLAT_MESHES = {"FixtureGeoOcta"}
 # the oracle's base_class_id of the primitives MaxDrop builds (convert/primitives.py)
 PRIMITIVE_CLASSES = {("0x00000010", "0x00000000"), ("0x00000011", "0x00000000"), ("0x00000012", "0x00000000"),
@@ -161,6 +179,7 @@ ISSUES = {"uvwmap": ["uvw map: a UVW Map above Bend is not evaluated",
               "light: its line shape is a rectangle 0.01 m wide",
               "light: its line shape is not imported: a point",
               "light: its photometric web fixture_web.ies is approximated by a spot of 170 degrees",
+              "light: its rectangle light shape is a sphere 0.4 m across",
               "light: its rectangle shape is not imported: a point"],
           "vray_lights": ["light: diffuse contribution 0.5: Blender's diffuse factor, which only EEVEE uses",
                           "light: double-sided: Blender's area light shines on one side, with half the power",

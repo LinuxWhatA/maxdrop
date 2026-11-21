@@ -16,17 +16,17 @@ edge are one quad; a cap's fan stays triangles around its center vertex, so the 
 Max's), smoothing groups and material IDs as 3ds Max assigns them (a Box's sides have IDs 1 to 6), and, when
 Generate Mapping Coords is on, the map channel 1 3ds Max makes, real-world map size included (the UVs are then in
 file units). The pivot is 3ds Max's: a Box, Plane, Pyramid, Cylinder, Cone and Tube stand on it, a Sphere, GeoSphere
-and Torus are centered on it (Base To Pivot raises a Sphere or GeoSphere by its radius).
-
-Not built (PrimitiveError, the node stays a placeholder): a Sphere's hemisphere, a GeoSphere's hemisphere, Slice on a
-Sphere, Cylinder, Cone, Tube or Torus. Plane's render scale and density act only at render time: built at their
-viewport size (an issue when they are not 1).
+and Torus are centered on it (Base To Pivot raises a Sphere or GeoSphere by its radius; a hemisphere stands on it).
+Slice on a Sphere, Cylinder, Cone, Tube or Torus and the hemisphere of a Sphere (chopped or squashed) or a GeoSphere
+are built as 3ds Max builds them, their cut planes and bases with their own IDs, groups and UVs. Plane's render
+scale and density act only at render time: built at their viewport size (an issue when they are not 1).
 
 The file comes from anywhere: a missing block, an animated parameter or one that is no number or not finite raise
 PrimitiveError; segments below 3ds Max's own minimum are raised to it, a mesh past MAX_CORNERS face corners is
 refused, and so is one whose points or UVs are not finite (sizes near the float range). A size of 0 builds the flat
 or collapsed mesh 3ds Max builds (UVs that would divide by it take 0 there). No bpy; numpy is imported when a mesh is
-made, and every generator works on whole arrays of points and faces, in the order 3ds Max makes them.
+made (or a chopped hemisphere's rings are counted), and every generator works on whole arrays of points and faces, in
+the order 3ds Max makes them.
 """
 import collections
 import math
@@ -38,8 +38,8 @@ ChunkError = chunks.ChunkError
 
 SLOT_BLOCK = 0
 # Face corners one primitive may make (a file can ask for any number of segments): 524,288 quads, measured at the
-# cap in 0.1 to 0.3 s (Box, Plane and GeoSphere the slowest) and 200 MB at most, of the order of
-# convert/extrude.py's budget.
+# cap in 0.1 to 0.4 s (Box, Plane and GeoSphere the slowest; a GeoSphere's hemisphere slerps its lower half too, about
+# twice a full GeoSphere's lattice) and a few hundred MB at most, of the order of convert/extrude.py's budget.
 MAX_CORNERS = 1 << 21
 _TAU = 2.0 * math.pi
 _SEAM = 1e-6
@@ -63,11 +63,11 @@ _SPECS = {
                                    "height": (2, "f", 0.0, None), "width_segs": (3, "i", 1, 1),
                                    "depth_segs": (4, "i", 1, 1), "height_segs": (5, "i", 1, 1),
                                    "mapping": (6, "b", True, None)}),
-    # squash (chop or squash) shapes only a hemisphere, which build() refuses: read and checked, never used
     classids.SPHERE: ("Sphere", {"radius": (0, "f", 0.0, None), "segs": (1, "i", 32, 4),
                                  "smooth": (2, "b", True, None), "hemisphere": (3, "f", 0.0, None),
-                                 "squash": (4, "i", 0, None), "base_to_pivot": (5, "b", False, None),
-                                 "mapping": (6, "b", True, None), "slice": (7, "b", False, None)}),
+                                 "squash": (4, "b", False, None), "base_to_pivot": (5, "b", False, None),
+                                 "mapping": (6, "b", True, None), "slice": (7, "b", False, None),
+                                 "slice_from": (8, "f", 0.0, None), "slice_to": (9, "f", 0.0, None)}),
     classids.GEOSPHERE: ("GeoSphere", {"radius": (0, "f", 0.0, None), "segs": (1, "i", 4, 1),
                                        "base_type": (2, "i", 2, None), "hemisphere": (3, "b", False, None),
                                        "smooth": (4, "b", True, None), "base_to_pivot": (5, "b", False, None),
@@ -75,19 +75,24 @@ _SPECS = {
     classids.CYLINDER: ("Cylinder", {"radius": (0, "f", 0.0, None), "height": (1, "f", 0.0, None),
                                      "height_segs": (2, "i", 5, 1), "cap_segs": (3, "i", 1, 1),
                                      "sides": (4, "i", 18, 3), "smooth": (5, "b", True, None),
-                                     "slice": (6, "b", False, None), "mapping": (9, "b", True, None)}),
+                                     "slice": (6, "b", False, None), "slice_from": (7, "f", 0.0, None),
+                                     "slice_to": (8, "f", 0.0, None), "mapping": (9, "b", True, None)}),
     classids.CONE: ("Cone", {"radius1": (0, "f", 0.0, None), "radius2": (1, "f", 0.0, None),
                              "height": (2, "f", 0.0, None), "height_segs": (3, "i", 5, 1),
                              "cap_segs": (4, "i", 1, 1), "sides": (5, "i", 24, 3), "smooth": (6, "b", True, None),
-                             "slice": (7, "b", False, None), "mapping": (10, "b", True, None)}),
+                             "slice": (7, "b", False, None), "slice_from": (8, "f", 0.0, None),
+                             "slice_to": (9, "f", 0.0, None), "mapping": (10, "b", True, None)}),
     classids.TUBE: ("Tube", {"radius1": (0, "f", 0.0, None), "radius2": (1, "f", 0.0, None),
                              "height": (2, "f", 0.0, None), "sides": (3, "i", 18, 3), "cap_segs": (4, "i", 1, 1),
                              "height_segs": (5, "i", 5, 1), "smooth": (6, "b", True, None),
-                             "slice": (7, "b", False, None), "mapping": (10, "b", True, None)}),
+                             "slice": (7, "b", False, None), "slice_from": (8, "f", 0.0, None),
+                             "slice_to": (9, "f", 0.0, None), "mapping": (10, "b", True, None)}),
     classids.TORUS: ("Torus", {"radius1": (0, "f", 0.0, None), "radius2": (1, "f", 0.0, None),
                                "rotation": (2, "f", 0.0, None), "twist": (3, "f", 0.0, None),
                                "segs": (4, "i", 24, 3), "sides": (5, "i", 12, 3), "smooth": (6, "i", 2, None),
-                               "slice": (7, "b", False, None), "mapping": (10, "b", True, None)}),
+                               # Torus alone keeps the slice's end before its start
+                               "slice": (7, "b", False, None), "slice_to": (8, "f", 0.0, None),
+                               "slice_from": (9, "f", 0.0, None), "mapping": (10, "b", True, None)}),
 }
 
 
@@ -402,45 +407,150 @@ def _pyramid(b, p):
             _corners(np, base_uv(ox[q], oy[q]), base_uv(0.0, 0.0), base_uv(ox[q1], oy[q1])))
 
 
+def _pie(p):
+    """(start, arc) of a primitive's Slice, radians: the part kept runs arc from start counterclockwise (start the
+    slice's To angle, arc From - To in 0 .. 2 pi, 0 a whole turn); (0, 2 pi) without Slice."""
+    if not p.slice:
+        return 0.0, _TAU
+    arc = math.fmod(p.slice_from - p.slice_to, _TAU)
+    if arc <= 0.0:
+        arc += _TAU
+    return math.fmod(p.slice_to, _TAU), arc
+
+
+def _sphere_rings(p):
+    """(how many rings a Sphere has below its top pole, the polar angle in radians of its ring k (one-based), its
+    cut: pi without a hemisphere). A hemisphere cuts at (1 - hemisphere) * 180 degrees: chopped, the rings keep
+    their places every 360 / segs degrees down to the cut (counted in single precision as 3ds Max does: a ring
+    that falls on the cut is doubled there), then a ring at the cut; squashed, segs // 2 - 1 rings spread down to
+    the cut, the last on it."""
+    n = p.segs
+    h = min(max(p.hemisphere, 0.0), 0.9999)  # 3ds Max stops short of a point
+    cut = (1.0 - h) * math.pi
+    if cut >= math.pi:  # also a hemisphere too small to move the cut
+        return n // 2 - 1, lambda k: k * _TAU / n, math.pi
+    if p.squash:
+        rows = n // 2 - 1
+        step = cut / (n / 2.0 - 1.0)
+        return rows, lambda k: k * step if k < rows else cut, cut
+    import numpy
+    f32 = numpy.float32
+    cut32 = (f32(1.0) - f32(h)) * f32(math.pi)
+    delta32 = f32(2.0) * f32(math.pi) / f32(n)
+    kept = int(cut32 / delta32)
+    # a step or two either way; bounded, as segments a file stores as a huge float leave k * delta32 unchanged
+    for _ in range(4):
+        if kept > 0 and not f32(kept) * delta32 <= cut32:
+            kept -= 1
+        elif f32(kept + 1) * delta32 <= cut32:
+            kept += 1
+    return kept + 1, lambda k: k * _TAU / n if k <= kept else cut, cut
+
+
 def _sphere(b, p):
+    """Rings from the top pole down, segs points around each from +Y turning towards -X (with Slice, segs + 1
+    over the part kept, then a point on the axis); the bottom pole, a hemisphere's base center on the axis at the
+    cut (with Slice, the last ring's axis point). Faces: the top fan, the quads between rings, the bottom fan or
+    the hemisphere's base (ID 1, group 2); with Slice each row ends with the faces of its two cut planes (the
+    end's ID 3, group 4, then the start's ID 4, group 8). U across the part kept as a fraction of a whole turn, V
+    down the rows (1 - 2k / segs, a hemisphere's base center one row below its last ring); the cut planes U 0 on
+    the axis, 1 at the rim."""
     np = b.np
     r, n = p.radius, p.segs
-    rows = n // 2
-    group = 1 if p.smooth else 0
-    lift = r if p.base_to_pivot else 0.0
+    smooth = p.smooth
+    group, cap4, cap8, base_group = (1, 4, 8, 2) if smooth else (0, 0, 0, 0)
+    rows, angle, cut = _sphere_rings(p)
+    angles = [angle(k) for k in range(1, rows + 1)]
+    hemi = cut != math.pi
+    start, arc = _pie(p)
+    pie = p.slice
+    m = n + 1 if pie else n
+    if p.base_to_pivot:
+        lift = -r * math.cos(cut) if hemi else r
+    else:
+        lift = 0.0
     top = b.points((0.0, 0.0, r + lift))
-    angles = [k * _TAU / n for k in range(1, rows)]
     rho = np.array([r * math.sin(a) for a in angles], dtype=np.float64)[:, None]
     z = np.array([r * math.cos(a) for a in angles], dtype=np.float64)[:, None]
-    sin = np.array([math.sin(j * _TAU / n) for j in range(n)], dtype=np.float64)
-    cos = np.array([math.cos(j * _TAU / n) for j in range(n)], dtype=np.float64)
-    rings = b.points(_stack(np, -rho * sin, rho * cos, z + lift, dtype=np.float64))
-    bottom = b.points((0.0, 0.0, -r + lift))
+    phi = [start + j * arc / n for j in range(m)] if pie else [j * _TAU / n for j in range(n)]
+    sin = np.array([math.sin(a) for a in phi], dtype=np.float64)
+    cos = np.array([math.cos(a) for a in phi], dtype=np.float64)
+    ring = _stack(np, -rho * sin, rho * cos, np.broadcast_to(z + lift, (len(angles), m)), dtype=np.float64)
+    if pie:  # each ring's axis point after it
+        ring = np.concatenate((ring, _stack(np, 0.0, 0.0, z + lift, dtype=np.float64)), axis=1)
+    made = b.points(ring)
+    rings, axis = made[:, :m], (made[:, m] if pie else None)
+    if hemi:
+        bottom = axis[-1] if pie else b.points((0.0, 0.0, r * math.cos(cut) + lift))
+    else:
+        bottom = b.points((0.0, 0.0, -r + lift))
     su, sv = (_TAU * abs(r), math.pi * abs(r)) if p.real_world else (1.0, 1.0)
+    span = arc / _TAU if pie else 1.0
+
+    def v_of(k):
+        return 1.0 - 2.0 * k / n
 
     def uv(j, k):
-        return (j / n * su, (1.0 - 2.0 * k / n) * sv)
+        return (j / n * span * su, v_of(k) * sv)
 
     j = np.arange(n, dtype=np.int64)
-    j1 = (j + 1) % n
+    j1 = j + 1 if pie else (j + 1) % n
+    last = rows
+
+    rw = p.real_world
+    z_rows = z[:, 0].tolist()
+    rho_rows = rho[:, 0].tolist()
+    widest, lowest = (max(rho_rows), min(z_rows)) if rows else (0.0, 0.0)
+
+    def cap(k, rim, end):
+        """The UV of a cut plane's corner on ring k (-1 the top pole), at the rim or on the axis, on the end's
+        plane or the start's. Real-world: flat over the plane, U from the axis (from the widest ring on the end's
+        plane), V up from the lowest ring."""
+        if rw:
+            rh = rho_rows[k] if rim and k >= 0 else 0.0
+            return ((widest - rh) if end else rh, (r if k < 0 else z_rows[k]) - lowest)
+        return (1.0 if rim else 0.0, v_of(k + 1))
+
+    def one(verts, mat, grp, *corners):
+        b.faces(np.array([verts]), mat, grp, _corners(np, *corners)[None])
+
+    # the top fan
     b.faces(_stack(np, top, rings[0][j], rings[0][j1]), 1, group, _corners(np, uv(j, 0), uv(j, 1), uv(j + 1, 1)))
-    k = np.arange(len(rings) - 1, dtype=np.int64)[:, None]
-    j, j1 = j[None, :], j1[None, :]
-    b.faces(_stack(np, rings[k, j], rings[k + 1, j], rings[k + 1, j1], rings[k, j1]).reshape(-1, 4), 1, group,
-            _corners(np, uv(j, k + 1), uv(j, k + 2), uv(j + 1, k + 2), uv(j + 1, k + 1)).reshape(-1, 4, 2))
-    last = len(rings)
-    j, j1 = j[0], j1[0]
-    b.faces(_stack(np, bottom, rings[-1][j1], rings[-1][j]), 1, group,
-            _corners(np, uv(j, rows), uv(j + 1, last), uv(j, last)))
+    if pie:
+        one((top, rings[0][n], axis[0]), 2, cap4, cap(-1, False, True), cap(0, True, True), cap(0, False, True))
+        one((top, axis[0], rings[0][0]), 3, cap8, cap(-1, False, False), cap(0, False, False), cap(0, True, False))
+    for k in range(rows - 1):
+        b.faces(_stack(np, rings[k][j], rings[k + 1][j], rings[k + 1][j1], rings[k][j1]), 1, group,
+                _corners(np, uv(j, k + 1), uv(j, k + 2), uv(j + 1, k + 2), uv(j + 1, k + 1)))
+        if pie:
+            one((rings[k][n], rings[k + 1][n], axis[k + 1], axis[k]), 2, cap4,
+                cap(k, True, True), cap(k + 1, True, True), cap(k + 1, False, True), cap(k, False, True))
+            one((axis[k], axis[k + 1], rings[k + 1][0], rings[k][0]), 3, cap8,
+                cap(k, False, False), cap(k + 1, False, False), cap(k + 1, True, False), cap(k, True, False))
+    # the bottom fan, or a hemisphere's base
+    end = rows + 1
+    if hemi and rw:  # flat over the base's extent
+        bx, by = ring[-1, :m, 0], ring[-1, :m, 1]
+        x0, y1 = float(bx.min()), float(by.max())
+        base_uv = _corners(np, (-x0, y1), (bx[j1] - x0, y1 - by[j1]), (bx[j] - x0, y1 - by[j]))
+    else:
+        base_uv = _corners(np, uv(j, end), uv(j + 1, last), uv(j, last))
+    b.faces(_stack(np, bottom, rings[-1][j1], rings[-1][j]), 0 if hemi else 1, base_group if hemi else group,
+            base_uv)
+    if pie and not hemi:  # the bottom pole's cut-plane faces keep the sphere's own UVs, also in real-world
+        vb, vl = v_of(end) * sv, v_of(last) * sv
+        one((bottom, axis[-1], rings[-1][n]), 2, cap4, (0.0, vb), (0.0, vl), (su, vl))
+        one((bottom, rings[-1][0], axis[-1]), 3, cap8, (0.0, vb), (su, vl), (0.0, vl))
 
 
 def _seam(np, a, step):
     """(u at the face's start, at its end) of faces that start at a and span step, shifted down by whole turns
-    until they end below 1: 3ds Max's cylinder seam."""
+    until they lie below 1: 3ds Max's cylinder seam (a negative step, a sliced Cylinder of negative height, runs
+    back from its start)."""
     a = np.array(a, dtype=np.float64)
     b = a + step
     while True:
-        past = b > 1.0 - _SEAM
+        past = np.maximum(a, b) > 1.0 - _SEAM
         if not past.any():
             return a, b
         a, b = np.where(past, a - 1.0, a), np.where(past, b - 1.0, b)
@@ -530,6 +640,126 @@ def _cylinder(b, p, r1, r2):
               (_stack(np, top_center, rings[-1][j], rings[-1][j1]), 0, 1, top_uv))
 
 
+def _cylinder_pie(b, p, r1, r2):
+    """A Cylinder or Cone with Slice: the profile's rings (the bottom cap's inside out, the side's, the top cap's
+    outside in), sides + 1 points over the arc kept, each ring after a point on the axis (those spread evenly
+    from the bottom center to the top center, which centers the top fan). Faces: the bottom fan, then per pair of
+    rings the start's cut plane (two triangles, ID 4, group 2), the quads, the end's cut plane (ID 5, group 4),
+    then the top fan; IDs and groups of the rest as without Slice. U around as without Slice (0.75 at +X, the
+    seam's shift per face), the cut planes U 0.5 on the axis and V up it. Real-world map size: the side and the
+    caps as without Slice; the start's plane U from the axis, V up; the end's U back from its rim along the
+    direction of the last side step's start (3ds Max's own), V up."""
+    np = b.np
+    h, nh, nc, ns = p.height, p.height_segs, p.cap_segs, p.sides
+    smooth = 8 if p.smooth else 0
+    start, arc = _pie(p)
+    # under a negative height the arc is walked back from its end: the faces point out unflipped
+    turn = -1.0 if h < 0 else 1.0
+    first = start if turn > 0 else math.fmod(start + arc, _TAU)
+    step = turn * arc / ns
+    phi = [first + j * step for j in range(ns + 1)]
+    cos = np.array([math.cos(a) for a in phi], dtype=np.float64)
+    sin = np.array([math.sin(a) for a in phi], dtype=np.float64)
+    kc, kh = np.arange(1, nc, dtype=np.int64), np.arange(nh + 1, dtype=np.int64)
+    kt = np.arange(nc - 1, 0, -1, dtype=np.int64)
+    radii = np.concatenate((r1 * kc / nc, r1 + (r2 - r1) * kh / nh, r2 * kt / nc))
+    zs = np.concatenate((np.zeros(nc - 1), h * kh / nh, np.full(nc - 1, h)))
+    count = len(radii)
+    az = h * np.arange(count, dtype=np.int64) / (count - 1)
+    pts = np.empty((count, ns + 2, 3), dtype=np.float64)
+    pts[:, 0] = _stack(np, 0.0, 0.0, az, dtype=np.float64)
+    pts[:, 1:] = _stack(np, radii[:, None] * cos, radii[:, None] * sin, zs[:, None], dtype=np.float64)
+    made = b.points(pts)
+    axis, rings = made[:, 0], made[:, 1:]
+    rw = p.real_world
+    vs = np.concatenate((np.zeros(nc - 1), kh / nh, np.ones(nc - 1)))
+    va = np.arange(count, dtype=np.int64) / (count - 1)
+    if rw:
+        vs, va = vs * h, az
+    around = _TAU * abs(r1)
+    jj = np.arange(ns, dtype=np.int64)
+    j1 = jj + 1
+    u0 = 0.75 + (first + jj * step) / _TAU
+
+    def us(rho):
+        """(U at the start, at the end) of a fan's faces jj on a ring of radius rho, as _cylinder's."""
+        a, e = _seam(np, u0, step / _TAU)
+        if rho == 0.0:
+            a = e = np.full(ns, 0.5)
+        return (a * around, e * around) if rw else (a, e)
+
+    # real-world: each ring's points flat over the extent of its cap's rim (the arc kept), (rings, sides + 1)
+    bx0, by1 = (radii[nc - 1] * cos).min(), (radii[nc - 1] * sin).max()
+    tx0, ty0 = (radii[count - nc] * cos).min(), (radii[count - nc] * sin).min()
+    bottom_cap = (np.arange(count) < nc)[:, None]
+    fx, fy = radii[:, None] * cos, radii[:, None] * sin
+    fu, fv = np.where(bottom_cap, fx - bx0, fx - tx0), np.where(bottom_cap, by1 - fy, fy - ty0)
+
+    first_side, last_side = nc - 1, nc - 1 + nh
+    # the bottom fan
+    if rw:
+        bottom_uv = _corners(np, (-bx0, by1), (fu[0][j1], fv[0][j1]), (fu[0][jj], fv[0][jj]))
+    else:
+        a, e = us(radii[0])
+        bottom_uv = _corners(np, (0.5, vs[0]), (e, vs[0]), (a, vs[0]))
+    b.faces(_stack(np, axis[0], rings[0][j1], rings[0][jj]), 1, 1, bottom_uv)
+    last_dir = (math.cos(first + (ns - 1) * step), math.sin(first + (ns - 1) * step))
+    along_last = radii * cos[ns] * last_dir[0] + radii * sin[ns] * last_dir[1]
+    reach = along_last.max()
+
+    # per pair of rings k, k + 1 (one column each): the start's plane, the quads, the end's plane
+    k = np.arange(count - 1, dtype=np.int64)
+    on_side = (first_side <= k) & (k < last_side)
+    mats = np.where(on_side, 2, np.where(k < first_side, 0, 1))
+    groups = np.where(on_side, smooth, 1)
+    seamed = _seam(np, u0, step / _TAU)
+    plain = (u0 % 1.0, (u0 + step / _TAU) % 1.0)  # a face that closes on a point at its top: no seam's shift
+    seam = (radii[k + 1] != 0.0)[:, None]
+
+    def ring_us(q):
+        """(U at the start, at the end) of the faces of each pair's ring q (k or k + 1), (pairs, sides)."""
+        a, e = (np.where(seam, sv, pv) for sv, pv in zip(seamed, plain))
+        point = (radii[q] == 0.0)[:, None]
+        a, e = np.where(point, 0.5, a), np.where(point, 0.5, e)
+        return (a * around, e * around) if rw else (a, e)
+
+    (a0, e0), (a1, e1) = ring_us(k), ring_us(k + 1)
+    v0, v1 = vs[k], vs[k + 1]
+    if rw:  # the cut planes' V up from their lowest point
+        low = min(0.0, h)
+        ends_uv = reach - along_last
+        s0, s1 = (radii[k], zs[k] - low), (radii[k + 1], zs[k + 1] - low)
+        t0, t1 = (ends_uv[k], zs[k] - low), (ends_uv[k + 1], zs[k + 1] - low)
+        sa0, sa1 = (0.0, va[k] - low), (0.0, va[k + 1] - low)
+        ea0, ea1 = (reach, va[k] - low), (reach, va[k + 1] - low)
+    else:
+        s0, s1 = (a0[:, 0], v0), (a1[:, 0], v1)
+        t0, t1 = (e0[:, -1], v0), (e1[:, -1], v1)
+        sa0 = ea0 = (0.5, va[k])
+        sa1 = ea1 = (0.5, va[k + 1])
+    pair = (slice(None), None)
+    start_v = np.stack((_stack(np, axis[k], rings[k + 1, 0], axis[k + 1]), _stack(np, axis[k], rings[k, 0],
+                                                                                  rings[k + 1, 0])), axis=1)
+    start_uv = np.stack((_corners(np, sa0, s1, sa1), _corners(np, sa0, s0, s1)), axis=1)
+    end_v = np.stack((_stack(np, rings[k, ns], axis[k + 1], rings[k + 1, ns]), _stack(np, rings[k, ns], axis[k],
+                                                                                      axis[k + 1])), axis=1)
+    end_uv = np.stack((_corners(np, t0, ea1, t1), _corners(np, t0, ea0, ea1)), axis=1)
+    quad_v = _stack(np, rings[k][:, jj], rings[k][:, j1], rings[k + 1][:, j1], rings[k + 1][:, jj])
+    quad_uv = _corners(np, (a0, v0[pair]), (e0, v0[pair]), (e1, v1[pair]), (a1, v1[pair]))
+    if rw:  # the caps flat over their rims' extent
+        caps = _corners(np, (fu[k][:, jj], fv[k][:, jj]), (fu[k][:, j1], fv[k][:, j1]),
+                        (fu[k + 1][:, j1], fv[k + 1][:, j1]), (fu[k + 1][:, jj], fv[k + 1][:, jj]))
+        quad_uv = np.where(on_side[:, None, None, None], quad_uv, caps)
+    b.columns((start_v, 3, 2, start_uv), (quad_v, mats[:, None], groups[:, None], quad_uv), (end_v, 4, 4, end_uv))
+    # the top fan
+    if rw:
+        top_uv = _corners(np, (-tx0, -ty0), (fu[-1][jj], fv[-1][jj]), (fu[-1][j1], fv[-1][j1]))
+    else:
+        a, e = us(radii[-1])
+        top_uv = _corners(np, (0.5, vs[-1]), (a, vs[-1]), (e, vs[-1]))
+    b.faces(_stack(np, axis[-1], rings[-1][jj], rings[-1][j1]), 0, 1, top_uv)
+
+
 def _tube(b, p):
     """The profile (outer side up, top inwards, inner side down, bottom outwards) swept around from +Y: U along the
     profile, V around. The outer side's role (its material ID, the profile's start) goes to the larger radius, to the
@@ -551,25 +781,52 @@ def _tube(b, p):
     mats = np.repeat(np.array((2, 0, 3, 1), dtype=np.int64), counts)
     groups = np.repeat(np.array((sides_group, cap_group, sides_group, cap_group), dtype=np.int64), counts)
     m = len(rho)
-    sin = np.array([math.sin(j * _TAU / ns) for j in range(ns)], dtype=np.float64)[:, None]
-    cos = np.array([math.cos(j * _TAU / ns) for j in range(ns)], dtype=np.float64)[:, None]
+    pie = p.slice
+    start, arc = _pie(p)
+    first = -(start + arc)  # Slice: from the From angle, turning the tube's way
+    cols = ns + 1 if pie else ns
+    angles = [first + j * arc / ns for j in range(cols)] if pie else [j * _TAU / ns for j in range(ns)]
+    sin = np.array([math.sin(a) for a in angles], dtype=np.float64)[:, None]
+    cos = np.array([math.cos(a) for a in angles], dtype=np.float64)[:, None]
     grid = b.points(_stack(np, rho * sin, rho * cos, z, dtype=np.float64))
-    if p.real_world:
+    rw = p.real_world
+    if rw:
         steps = np.concatenate((np.full(nh, h / nh), np.full(nc, abs(r1 - r2) / nc)))
         along = np.cumsum(np.concatenate(((0.0,), steps, steps)))  # 0.0 + the first step, as before
-        around = _TAU * abs(big)
+        around = arc * abs(big)
 
         def uv(q, j):
             return ((1.0 - j / ns) * around, along[q])
     else:
+        across = ns + 1 if pie else ns  # with Slice 3ds Max divides by the columns, not the steps
+
         def uv(q, j):
-            return (q / m, j / ns)
+            return (q / m, j / across)
     j = np.arange(ns, dtype=np.int64)[:, None]
     q = np.arange(m, dtype=np.int64)[None, :]
-    j1, q1 = (j + 1) % ns, (q + 1) % m
+    j1, q1 = (j + 1 if pie else (j + 1) % ns), (q + 1) % m
     b.faces(_stack(np, grid[j, q], grid[j, q1], grid[j1, q1], grid[j1, q]).reshape(-1, 4),
             np.broadcast_to(mats[q], (ns, m)).reshape(-1), np.broadcast_to(groups[q], (ns, m)).reshape(-1),
             _corners(np, uv(q, j), uv(q + 1, j), uv(q + 1, j + 1), uv(q, j + 1)).reshape(-1, 4, 2))
+    if not pie:
+        return
+    # the cut planes: a fan around the profile's middle at each end, the start's ID 5, the end's ID 6, group 1
+    mid = (r1 + r2) / 2.0
+    centers = b.points(_stack(np, mid * sin[[0, -1], 0], mid * cos[[0, -1], 0], h / 2.0, dtype=np.float64))
+    q, q1 = q[0], q1[0]
+    if rw:  # flat, V up from the lowest point; U in from the outer radius at the start, out from the inner at the end
+        widest, narrowest, lowest = max(abs(r1), abs(r2)), min(abs(r1), abs(r2)), min(0.0, h)
+        ar = np.abs(np.append(rho, rho[0]))
+        pv = np.append(z, z[0]) - lowest
+        su, eu = widest - ar, ar - narrowest
+        mv = h / 2.0 - lowest
+        s_uv = _corners(np, (widest - abs(mid), mv), (su[q + 1], pv[q + 1]), (su[q], pv[q]))
+        e_uv = _corners(np, (abs(mid) - narrowest, mv), (eu[q], pv[q]), (eu[q + 1], pv[q + 1]))
+    else:
+        s_uv = _corners(np, (0.5, 1.0), ((q + 1) / m, 0.0), (q / m, 0.0))
+        e_uv = _corners(np, (1.0, 0.5), (q / m, ns / across), ((q + 1) / m, ns / across))
+    b.faces(_stack(np, centers[0], grid[0][q1], grid[0][q]), 4, 1, s_uv)
+    b.faces(_stack(np, centers[1], grid[-1][q], grid[-1][q1]), 5, 1, e_uv)
 
 
 def _alternate(np, k, n):
@@ -586,32 +843,61 @@ def _torus(b, p):
     np = b.np
     big, small, ns, nt = p.radius1, p.radius2, p.segs, p.sides
     rotation, twist = p.rotation, p.twist  # radians, as stored
-    s = np.arange(ns, dtype=np.int64)[:, None]
+    pie = p.slice
+    start, arc = _pie(p)
+    cols = ns + 1 if pie else ns
+    angles = [-(start + arc) + k * arc / ns for k in range(cols)] if pie else [k * _TAU / ns for k in range(ns)]
+    s = np.arange(cols, dtype=np.int64)[:, None]
     t = np.arange(nt, dtype=np.int64)[None, :]
-    sin = np.array([math.sin(k * _TAU / ns) for k in range(ns)], dtype=np.float64)[:, None]
-    cos = np.array([math.cos(k * _TAU / ns) for k in range(ns)], dtype=np.float64)[:, None]
-    psi = t * _TAU / nt + rotation + twist * (s + 1) / ns
+    sin = np.array([math.sin(a) for a in angles], dtype=np.float64)[:, None]
+    cos = np.array([math.cos(a) for a in angles], dtype=np.float64)[:, None]
+    psi = t * _TAU / nt + rotation + twist * (s + 1) / cols  # with Slice, over the columns
     rho = big + small * np.cos(psi)
-    grid = b.points(_stack(np, rho * sin, rho * cos, small * np.sin(psi), dtype=np.float64))
+    zs = small * np.sin(psi)
+    grid = b.points(_stack(np, rho * sin, rho * cos, zs, dtype=np.float64))
+    s = s[:ns]
     mode = p.smooth
     if mode == 0:
         group = np.zeros((ns, nt), dtype=np.int64)
     elif mode == 1:
         group = _alternate(np, t, nt)
-    elif mode == 3:
-        group = _alternate(np, s, ns)
+    elif mode == 3:  # with Slice the segments do not close: no last row apart
+        group = np.where(s % 2 == 0, 2, 1) if pie else _alternate(np, s, ns)
     else:
         group = np.ones((ns, nt), dtype=np.int64)
     if p.real_world:
         def uv(t, s):
-            return ((1.0 - s / ns) * _TAU * abs(big), t / nt * _TAU * abs(small))
+            return ((1.0 - s / ns) * arc * abs(big), t / nt * _TAU * abs(small))
     else:
+        across = ns + 1 if pie else ns  # with Slice 3ds Max divides by the columns, not the steps
+
         def uv(t, s):
-            return (t / nt, s / ns)
-    s1, t1 = (s + 1) % ns, (t + 1) % nt
+            return (t / nt, s / across)
+    s1, t1 = (s + 1 if pie else (s + 1) % ns), (t + 1) % nt
     b.faces(_stack(np, grid[s, t], grid[s, t1], grid[s1, t1], grid[s1, t]).reshape(-1, 4), 0,
             np.broadcast_to(group, (ns, nt)).reshape(-1),
             _corners(np, uv(t, s), uv(t + 1, s), uv(t + 1, s + 1), uv(t, s + 1)).reshape(-1, 4, 2))
+    if not pie:
+        return
+    # the cut planes: a fan around the tube's center at each end, the start's ID 2, the end's ID 3, group 8
+    centers = b.points(_stack(np, big * sin[[0, -1], 0], big * cos[[0, -1], 0], 0.0, dtype=np.float64))
+    t, t1 = t[0], t1[0]
+    if p.real_world:  # flat, V up from the lowest point; U in from the outer point at the start, out at the end
+        ends = []
+        for col, outward in ((0, False), (-1, True)):
+            rr, zz = np.append(rho[col], rho[col][0]), np.append(zs[col], zs[col][0])
+            low, inner, outer = zz.min(), rr.min(), rr.max()
+            pu = rr - inner if outward else outer - rr
+            mid = ((big - inner) if outward else (outer - big), -low)
+            ends.append((mid, pu, zz - low))
+        (sm, su, sv), (em, eu, ev) = ends
+        s_uv = _corners(np, sm, (su[t + 1], sv[t + 1]), (su[t], sv[t]))
+        e_uv = _corners(np, em, (eu[t], ev[t]), (eu[t + 1], ev[t + 1]))
+    else:
+        s_uv = _corners(np, (0.5, 1.0), ((t + 1) / nt, 0.0), (t / nt, 0.0))
+        e_uv = _corners(np, (1.0, 0.5), (t / nt, ns / across), ((t + 1) / nt, ns / across))
+    b.faces(_stack(np, centers[0], grid[0][t1], grid[0][t]), 1, 8, s_uv)
+    b.faces(_stack(np, centers[1], grid[-1][t], grid[-1][t1]), 2, 8, e_uv)
 
 
 def _f32(x):
@@ -656,16 +942,62 @@ def _slerp(np, a, b, t):
     return np.where((angle < 1e-12)[..., None], a, wa[..., None] * a + wb[..., None] * b)
 
 
+def _geo_uv(np, unit):
+    """(u, v), each (faces, 3), of triangles whose corners are the unit vectors unit (faces, 3, xyz): U = 0.5 +
+    atan2(y, x) / 360 degrees, V = 1 - polar angle / 180 degrees; a face across the seam brings its corners past 3/4
+    down by one, a pole (or the base center) takes the mean U of the face's other corners."""
+    x, y, z = unit[..., 0], unit[..., 1], unit[..., 2]
+    known = ~((np.abs(x) < 1e-6) & (np.abs(y) < 1e-6))
+    u = 0.5 + np.arctan2(y, x) / _TAU
+    v = 1.0 - np.arccos(np.clip(z, -1.0, 1.0)) / math.pi
+    across = known.any(axis=1) & (np.where(known, u, -np.inf).max(axis=1) - np.where(known, u, np.inf).min(axis=1)
+                                  > 0.5)
+    u = np.where(across[:, None] & known & (u > 0.75), u - 1.0, u)
+    count = known.sum(axis=1)
+    middle = np.where(count > 0, np.where(known, u, 0.0).sum(axis=1) / np.maximum(count, 1), 0.5)
+    return np.where(known, u, middle[:, None]), v
+
+
+def _geo_base(base_type, hemisphere):
+    """(points, triangles) of a GeoSphere's base solid. A hemisphere keeps the faces above the equator of a
+    tetrahedron whose three lower corners are raised onto the equator, of the octahedron, or of the icosahedron
+    with each face split in four at its edges' midpoints (its band then has edges on the equator; the corner
+    triangles start at their corner of the face, the middle one at the midpoint across from the face's first
+    corner)."""
+    if not hemisphere or base_type == 1:
+        return _solid(base_type)
+    if base_type == 0:
+        pts = [(0.0, 0.0, 1.0)] + [(math.cos(k * _TAU / 3), math.sin(k * _TAU / 3), 0.0) for k in range(3)]
+        return pts, [(0, 1, 2), (0, 2, 3), (0, 3, 1)]
+    pts, tris = _solid(base_type)
+
+    def mid(i, k):
+        x, y, z = (a + b for a, b in zip(pts[i], pts[k]))
+        length = math.sqrt(x * x + y * y + z * z)
+        return (x / length, y / length, z / length)
+
+    out, faces = [], []
+    for a, b, c in tris:
+        at = len(out)
+        out += [pts[a], pts[b], pts[c], mid(a, b), mid(b, c), mid(c, a)]
+        pa, pb, pc, ab, bc, ca = range(at, at + 6)
+        faces += [(pa, ab, ca), (ab, pb, bc), (ca, bc, pc), (bc, ca, ab)]
+    return out, faces
+
+
 def _geosphere(b, p):
     """Each face of the base solid split into segs x segs triangles on the sphere, from a lattice (i, j) of points
     slerped from its corners; a point on an edge of two base faces is one vertex. A point is made when a face first
-    needs it, and its UV comes from that face's lattice point."""
+    needs it, and its UV comes from that face's lattice point. A hemisphere (_geo_base) keeps the triangles above
+    the equator and closes them with a fan to the center (ID 1, group 2), standing on the pivot."""
     np = b.np
-    r, n = p.radius, p.segs
-    pts, tris = _solid(p.base_type)
+    r = p.radius
+    hemi = p.hemisphere
+    pts, tris = _geo_base(p.base_type, hemi)
+    n = p.segs
     smooth = p.smooth
     mat, group = (1, 1) if smooth else (0, 0)
-    lift = r if p.base_to_pivot else 0.0
+    lift = r if p.base_to_pivot and not hemi else 0.0
     # the lattice of one base face: (i, j) with i + j <= n, i after i
     li = np.repeat(np.arange(n + 1, dtype=np.int64), np.arange(n + 1, 0, -1))
     lj = np.concatenate([np.arange(n + 1 - i, dtype=np.int64) for i in range(n + 1)])
@@ -691,24 +1023,29 @@ def _geosphere(b, p):
     beside = _stack(np, lattice[ti + 1, tj], lattice[ti + 1, tj + 1], lattice[ti, tj + 1])
     local = _stack(np, up, beside).swapaxes(-1, -2)[_stack(np, True, ti + tj < n - 1)]  # (triangles, 3)
     stream = (np.arange(len(tris), dtype=np.int64)[:, None, None] * size + local).reshape(-1)
+    if hemi:  # the triangles above the equator (each is wholly above or below it)
+        above = (q[stream, 2].reshape(-1, 3) > -1e-9).all(axis=1)
+        stream = stream.reshape(-1, 3)[above].reshape(-1)
     first, ids = _first_use(np, vertex[stream])
     unit = q[stream[first]]
     made = b.points(_stack(np, unit[:, 0] * r, unit[:, 1] * r, unit[:, 2] * r + lift, dtype=np.float64))
-    x, y, z = unit[:, 0], unit[:, 1], unit[:, 2]
-    pole = (np.abs(x) < 1e-6) & (np.abs(y) < 1e-6)
-    known = ~pole[ids].reshape(-1, 3)
-    u = (0.5 + np.arctan2(y, x) / _TAU)[ids].reshape(-1, 3)
-    v = (1.0 - np.arccos(np.clip(z, -1.0, 1.0)) / math.pi)[ids].reshape(-1, 3)
-    # across the seam: the corners past 3/4 come round
-    across = known.any(axis=1) & (np.where(known, u, -np.inf).max(axis=1) - np.where(known, u, np.inf).min(axis=1)
-                                  > 0.5)
-    u = np.where(across[:, None] & known & (u > 0.75), u - 1.0, u)
-    count = known.sum(axis=1)
-    middle = np.where(count > 0, np.where(known, u, 0.0).sum(axis=1) / np.maximum(count, 1), 0.5)
-    u = np.where(known, u, middle[:, None])  # a pole takes the mean U of the others
+    corners = unit[ids].reshape(-1, 3, 3)
+    u, v = _geo_uv(np, corners)
     if p.real_world:
         u, v = u * _TAU * abs(r), v * math.pi * abs(r)
     b.faces(made[ids].reshape(-1, 3), mat, group, _stack(np, u, v, dtype=np.float64))
+    if not hemi:
+        return
+    # the base: a fan from each step of the equator to the center
+    ring = np.flatnonzero(np.abs(unit[:, 2]) < 1e-9)
+    ring = ring[np.argsort(np.arctan2(unit[ring, 1], unit[ring, 0]) % _TAU, kind="stable")]
+    center = b.points((0.0, 0.0, 0.0))
+    nxt = np.roll(ring, -1)
+    origin = np.zeros((len(ring), 3))
+    u, v = _geo_uv(np, np.stack((unit[nxt], unit[ring], origin), axis=1))
+    if p.real_world:
+        u, v = u * _TAU * abs(r), v * math.pi * abs(r)
+    b.faces(_stack(np, made[nxt], made[ring], center), 0, 2 if smooth else 0, _stack(np, u, v, dtype=np.float64))
 
 
 def _faces(p):
@@ -723,26 +1060,28 @@ def _faces(p):
     if c == classids.PYRAMID:
         return 2 * (v["width_segs"] + v["depth_segs"]) * (v["height_segs"] + 1)
     if c == classids.SPHERE:
-        return v["segs"] * (v["segs"] // 2)
+        if v["segs"] > MAX_CORNERS:  # refused on its segments alone (a file may store them as a huge float)
+            return v["segs"] * v["segs"]
+        rows, _angle, cut = _sphere_rings(p)
+        caps = (2 * rows + (0 if cut != math.pi else 2)) if v["slice"] else 0
+        return v["segs"] * (rows + 1) + caps
     if c == classids.GEOSPHERE:
+        if v["hemisphere"]:  # the faces above the equator, then the base's fan
+            per = {0: (3, 3), 1: (4, 4)}.get(v["base_type"], (40, 10))
+            return per[0] * v["segs"] * v["segs"] + per[1] * v["segs"]
         return len(_solid(v["base_type"])[1]) * v["segs"] * v["segs"]
     if c in (classids.CYLINDER, classids.CONE):
-        return v["sides"] * (v["height_segs"] + 2 * v["cap_segs"])
+        rings = v["height_segs"] + 2 * v["cap_segs"] - 1
+        return v["sides"] * (rings + 1) + (4 * (rings - 1) if v["slice"] else 0)
     if c == classids.TUBE:
-        return v["sides"] * 2 * (v["height_segs"] + v["cap_segs"])
-    return v["segs"] * v["sides"]
+        profile = 2 * (v["height_segs"] + v["cap_segs"])
+        return v["sides"] * profile + (2 * profile if v["slice"] else 0)
+    return v["segs"] * v["sides"] + (2 * v["sides"] if v["slice"] else 0)
 
 
 def build(p):
     """(MeshData of Params p, issues); PrimitiveError for what is not built."""
     issues = []
-    c = p.class_id
-    if p.values.get("slice"):
-        raise PrimitiveError("%s with Slice on is not built yet" % p.name)
-    if c == classids.SPHERE and p.hemisphere != 0.0:
-        raise PrimitiveError("a Sphere's hemisphere is not built yet")
-    if c == classids.GEOSPHERE and p.hemisphere:
-        raise PrimitiveError("a GeoSphere's hemisphere is not built yet")
     faces = _faces(p)
     if faces * 4 > MAX_CORNERS:  # four corners per face at most
         raise PrimitiveError("%s of %d faces refused (more than %d)" % (p.name, faces, MAX_CORNERS // 4))
@@ -770,12 +1109,10 @@ def _make(b, p, issues):
         _sphere(b, p)
     elif c == classids.GEOSPHERE:
         _geosphere(b, p)
-    elif c == classids.CYLINDER:
-        b.flip = p.height < 0
-        _cylinder(b, p, p.radius, p.radius)
-    elif c == classids.CONE:
-        b.flip = p.height < 0
-        _cylinder(b, p, p.radius1, p.radius2)
+    elif c in (classids.CYLINDER, classids.CONE):
+        b.flip = p.height < 0 and not p.slice
+        r1, r2 = (p.radius, p.radius) if c == classids.CYLINDER else (p.radius1, p.radius2)
+        (_cylinder_pie if p.slice else _cylinder)(b, p, r1, r2)
     elif c == classids.TUBE:  # under a negative height the radii trade sides: the faces point out unflipped
         _tube(b, p)
     else:

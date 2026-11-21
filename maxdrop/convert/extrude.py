@@ -23,14 +23,16 @@ segment none and a curved one 2^d - 1, d the smallest depth up to 5 at which eve
 The sides join segments + 1 copies of each polyline along the object's Z, one per level, amount * level / segments
 up; a closed polyline also gets a cap at level 0 (Cap Start) and at the last level (Cap End). Closed polylines nest
 even-odd: one inside an even number of others is a solid, inside an odd number a hole of its innermost container.
-Every solid is turned counter-clockwise and every hole clockwise seen from +Z before the sides are made, and a
-negative amount reverses the sides, so the normals point out whatever way the splines run; an open polyline keeps its
-own direction (its faces look to the right of it). A cap without holes is one n-gon, a cap with holes is ear-clipped
-after a bridge to each hole, which gives the triangle count 3ds Max gives. The cap facing +Z gets material ID 1, the
-one facing -Z ID 2, the sides ID 3 (zero-based here: 0, 1, 2) when Generate Material IDs is on, else every face
-ID 1. Smooth gives the sides smoothing groups that change only at a corner or Bezier corner knot, the caps group
-16; without it the sides have none. Mapping: the sides' U runs along each polyline (0 to 1, or its length with
-Real-World Map Size), V up the levels (0 to 1, or the height); the caps map the shape's XY box (0 to 1, or its size).
+Every solid is turned counter-clockwise and every hole clockwise seen from +Z (a turned polyline starts at its last
+point) before the sides are made, and a negative amount reverses the sides, so the normals point out whatever way the
+splines run; an open polyline keeps its own direction (its faces look to the right of it). A cap without holes is one
+n-gon, a cap with holes is ear-clipped after a bridge to each hole, which gives the triangle count 3ds Max gives. The
+cap facing +Z gets material ID 1, the one facing -Z ID 2, the sides ID 3 (zero-based here: 0, 1, 2) when Generate
+Material IDs is on, else every face ID 1; with Use Shape IDs too each side face takes the material ID of the spline
+segment it comes from (the caps keep 1 and 2). Smooth gives the sides smoothing groups that change only at a corner
+or Bezier corner knot, the caps group 16; without it the sides have none. Mapping: the sides' U runs along each
+polyline from its first point (0 to 1, or its length with Real-World Map Size), V up the levels (0 to 1, or the
+height); the caps map the shape's XY box (0 to 1, or its size).
 
 The file comes from anywhere: a parameter that is animated or no number raises ExtrudeError; segments are clamped
 to 1 .. MAX_SEGMENTS; a mesh past MAX_VERTICES raises ExtrudeError; a holed cap past MAX_CAP_POINTS or one that
@@ -81,9 +83,10 @@ class Params(collections.namedtuple("Params", "amount segments cap_start cap_end
 DEFAULT = Params(0.0, 1, True, True, CAP_MORPH, OUTPUT_MESH, False, True, False, True, False)
 
 
-class Polyline(collections.namedtuple("Polyline", "points hard closed")):
+class Polyline(collections.namedtuple("Polyline", "points hard closed ids")):
     """A spline as points (x, y, z); hard[k]: point k is a corner or Bezier corner knot (the sides' smoothing
-    changes there)."""
+    changes there); ids[k]: the zero-based material ID of the segment the column from point k belongs to (Use Shape
+    IDs)."""
     __slots__ = ()
 
 
@@ -127,8 +130,6 @@ def read_params(scene, modifier):
         issues.append("grid caps are made as morph caps")
     if p.output != OUTPUT_MESH:
         issues.append("%s output is made as a mesh" % ("patch" if p.output == OUTPUT_PATCH else "NURBS"))
-    if p.shape_ids and p.material_ids:
-        issues.append("Use Shape IDs: the shape's segment IDs are not read, the sides get ID 3")
     return p, issues
 
 
@@ -199,7 +200,7 @@ def _polyline(spline, steps, optimize, adaptive):
     knots = spline.knots
     n = len(knots)
     closed = spline.closed
-    pts, hard = [], []
+    pts, hard, ids = [], [], []
     for k in range(n if closed else n - 1):
         a, b = knots[k], knots[(k + 1) % n]
         p0, p3 = a.point, b.point
@@ -214,23 +215,28 @@ def _polyline(spline, steps, optimize, adaptive):
         hard.append(_hard(a))
         pts.extend(_bezier(p0, c1, c2, p3, s / (count + 1.0)) for s in range(1, count + 1))
         hard.extend([False] * count)
+        ids.extend([a.material] * (count + 1))
     if not closed and n:
         pts.append(knots[-1].point)
         hard.append(_hard(knots[-1]))
-    out_p, out_h = [], []
-    for p, h in zip(pts, hard):  # a zero-length segment would make faces of no area
+        ids.append(0)  # no column leaves the last point
+    out_p, out_h, out_i = [], [], []
+    for p, h, i in zip(pts, hard, ids):  # a zero-length segment would make faces of no area
         if out_p and p == out_p[-1]:
             out_h[-1] = out_h[-1] or h
+            out_i[-1] = i  # the column that leaves this point is the one that remains
             continue
         out_p.append(p)
         out_h.append(h)
+        out_i.append(i)
     if closed and len(out_p) > 1 and out_p[0] == out_p[-1]:
         out_h[0] = out_h[0] or out_h[-1]
         out_p.pop()
         out_h.pop()
+        out_i.pop()
     if closed and len(out_p) < 3:
         closed = False
-    return Polyline(out_p, out_h, closed)
+    return Polyline(out_p, out_h, closed, out_i)
 
 
 def polylines(shape):
@@ -499,7 +505,7 @@ def _estimate(shape):
 
 def _sides(numpy, pl, base, first, params, side_id):
     """(loops, groups, materials, map loops, map vertices) of the sides of a polyline: a grid of segments x columns,
-    its vertices from base, its map vertices from first."""
+    its vertices from base, its map vertices from first; side_id None: each column its segment's material ID."""
     n, segs = len(pl.points), params.segments
     columns = n if pl.closed else n - 1
     k = numpy.arange(columns, dtype=numpy.int32)  # indices stay below MAX_VERTICES
@@ -516,7 +522,10 @@ def _sides(numpy, pl, base, first, params, side_id):
     loops = numpy.stack(quads, axis=-1).reshape(-1)
     groups = numpy.tile(numpy.asarray(_side_groups(pl.hard, pl.closed, columns, params.smooth), dtype=numpy.uint32),
                         segs)
-    mats = numpy.full(segs * columns, side_id, dtype=numpy.uint16)
+    if side_id is None:
+        mats = numpy.tile(numpy.asarray(pl.ids[:columns], dtype=numpy.uint16), segs)
+    else:
+        mats = numpy.full(segs * columns, side_id, dtype=numpy.uint16)
     if not params.mapping:
         return loops, groups, mats, None, None
     p = numpy.asarray(pl.points, dtype=numpy.float64)
@@ -589,8 +598,10 @@ def extrude(shape, params):
         for j in closed:
             if (_area(closed[j]) > 0) != (j in solids):
                 pl = lines[j]
-                pts, hard = pl.points[::-1], pl.hard[::-1]
-                lines[j] = Polyline(pts[-1:] + pts[:-1], hard[-1:] + hard[:-1], True)  # the first point first
+                # the whole polyline turned, its last point now first, as 3ds Max turns it (arc_pie_reverse: the
+                # side U starts there); column k now runs where column n - 2 - k ran, the last where it ran
+                ids = pl.ids[::-1]
+                lines[j] = Polyline(pl.points[::-1], pl.hard[::-1], True, ids[1:] + ids[:1])
                 closed[j] = [(p[0], p[1]) for p in lines[j].points]
 
     base, start = [], 0
@@ -606,7 +617,7 @@ def extrude(shape, params):
     if not (numpy.abs(positions) < float(numpy.finfo(numpy.float32).max)).all():
         raise ExtrudeError("the mesh does not fit single precision (amount %g)" % params.amount)
 
-    side_id = SIDE_ID if params.material_ids else 0
+    side_id = (None if params.shape_ids else SIDE_ID) if params.material_ids else 0
     loop_parts, total_parts, group_parts, mat_parts, map_parts, uvw_parts = [], [], [], [], [], []
     mapped = 0
     for j, pl in enumerate(lines):

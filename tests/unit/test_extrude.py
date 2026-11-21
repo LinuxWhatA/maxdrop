@@ -44,11 +44,11 @@ reader_modifiers = importlib.import_module(_PKG + ".reader.modifiers")
 rules = importlib.import_module(_PKG + ".convert.modifiers")
 
 CAPPED = ("FixtureExtRect", "FixtureExtL", "FixtureExtHole", "FixtureExtIsland", "FixtureExtMirror",
-          "FixtureExtAdaptive")
+          "FixtureExtAdaptive", "FixtureExtShapeIDs", "FixtureExtShapeIDsRect")
 # V - E + F of each mesh: a box-like solid 2, a solid with a tunnel (the round hole) 0, the island's ring and its
 # core 0 + 2
 EULER = {"FixtureExtRect": 2, "FixtureExtL": 2, "FixtureExtHole": 0, "FixtureExtIsland": 2, "FixtureExtMirror": 2,
-         "FixtureExtAdaptive": 2}
+         "FixtureExtAdaptive": 2, "FixtureExtShapeIDs": 0, "FixtureExtShapeIDsRect": 2}
 
 
 def _edges(md):
@@ -91,19 +91,52 @@ def _face_area(md, f):
     return 0.5 * float(numpy.linalg.norm(numpy.cross(p, numpy.roll(p, -1, axis=0)).sum(axis=0)))
 
 
+def _check_eval_mesh(test, data, md, want, name):
+    """data (the reader MeshData: object space, before the object offset, as the oracle takes it back to) and md
+    (its MeshDescription) against the oracle's eval_mesh of the node."""
+    hist = {}
+    for f in range(len(data.loop_starts)):
+        z = _face_area_z(data, f)  # the winding normal's z, times the polygon's area
+        if abs(z) <= 1e-4 * _face_area(data, f):
+            side = 3
+        else:
+            side = 1 if z > 0 else 2
+        row = hist.setdefault(int(_mats(data)[f]) + 1, [0, 0, 0])
+        row[side - 1] += int(data.loop_totals[f]) - 2  # 3ds Max counts triangles
+    test.assertEqual([[i] + hist[i] for i in sorted(hist)], want["material_ids"], name)
+    channel = data.maps.get(1)
+    test.assertEqual(channel is None, want["map_channel_1"] is None, name)
+    if channel is None:
+        return
+    uvw = numpy.asarray(channel.uvw, dtype=numpy.float64)
+    used = uvw[numpy.unique(channel.indices)]
+    test.assertEqual(len(uvw), want["map_channel_1"]["count"], name)
+    for got, key in ((used.min(axis=0), "min"), (used.max(axis=0), "max")):  # 6 significant digits
+        numpy.testing.assert_allclose(got, want["map_channel_1"][key], rtol=1e-5, atol=1e-6, err_msg=name)
+    uv = dict(md.uv_layers)["UVMap"]  # what Blender gets: u and v of the same vertices
+    for got, key in ((uv.min(axis=0), "min"), (uv.max(axis=0), "max")):
+        numpy.testing.assert_allclose(got, want["map_channel_1"][key][:2], rtol=1e-5, atol=1e-6, err_msg=name)
+
+
+def _read_meshes(path):
+    """(scene description, {node name: reader MeshData}) of a fixture: the MeshData keeps its map vertices."""
+    data = {}
+    real = conv.mesh_description
+
+    def describing(key, name, d, *args, **kw):
+        data[name] = d
+        return real(key, name, d, *args, **kw)
+
+    with mock.patch.object(conv, "mesh_description", describing):
+        desc = conv.read(path)
+    return desc, data
+
+
 @unittest.skipIf(numpy is None, "numpy missing")
 class Fixture(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.data = {}  # the reader MeshData of each mesh, by name: its map channels keep their map vertices
-        real = conv.mesh_description
-
-        def describing(key, name, data, *args, **kw):
-            cls.data[name] = data
-            return real(key, name, data, *args, **kw)
-
-        with mock.patch.object(conv, "mesh_description", describing):
-            cls.desc = conv.read(FIXTURE)
+        cls.desc, cls.data = _read_meshes(FIXTURE)  # the reader MeshData of each mesh, by name
         with open(FIXTURE[:-4] + ".oracle.json", encoding="utf-8") as f:
             cls.oracle = {n["name"]: n for n in json.load(f)["nodes"]}
         cls.nodes = {n.name: n for n in cls.desc.nodes}
@@ -174,31 +207,7 @@ class Fixture(unittest.TestCase):
         """Per material ID the triangles facing +Z, -Z and sideways in object space, and map channel 1's vertex
         count and range, as 3ds Max's evaluated mesh has them (docs/ORACLE.md, eval_mesh)."""
         for name in CAPPED + ("FixtureExtOpen",):
-            _node, md = self.mesh(name)
-            data = self.data[name]  # object space, before the object offset, as the oracle takes it back to
-            want = self.oracle[name]["eval_mesh"]
-            hist = {}
-            for f in range(len(data.loop_starts)):
-                z = _face_area_z(data, f)  # the winding normal's z, times the polygon's area
-                if abs(z) <= 1e-4 * _face_area(data, f):
-                    side = 3
-                else:
-                    side = 1 if z > 0 else 2
-                row = hist.setdefault(int(_mats(data)[f]) + 1, [0, 0, 0])
-                row[side - 1] += int(data.loop_totals[f]) - 2  # 3ds Max counts triangles
-            self.assertEqual([[i] + hist[i] for i in sorted(hist)], want["material_ids"], name)
-            channel = data.maps.get(1)
-            self.assertEqual(channel is None, want["map_channel_1"] is None, name)
-            if channel is None:
-                continue
-            uvw = numpy.asarray(channel.uvw, dtype=numpy.float64)
-            used = uvw[numpy.unique(channel.indices)]
-            self.assertEqual(len(uvw), want["map_channel_1"]["count"], name)
-            for got, key in ((used.min(axis=0), "min"), (used.max(axis=0), "max")):  # 6 significant digits
-                numpy.testing.assert_allclose(got, want["map_channel_1"][key], rtol=1e-5, atol=1e-6, err_msg=name)
-            uv = dict(md.uv_layers)["UVMap"]  # what Blender gets: u and v of the same vertices
-            for got, key in ((uv.min(axis=0), "min"), (uv.max(axis=0), "max")):
-                numpy.testing.assert_allclose(got, want["map_channel_1"][key][:2], rtol=1e-5, atol=1e-6, err_msg=name)
+            _check_eval_mesh(self, self.data[name], self.mesh(name)[1], self.oracle[name]["eval_mesh"], name)
 
     def test_mapping_coordinates(self):
         _node, md = self.mesh("FixtureExtRect")
@@ -217,7 +226,7 @@ class Fixture(unittest.TestCase):
         off = self.nodes["FixtureExtOff"]  # switched off: the curve, the modifier not applied
         self.assertEqual((off.kind, off.applied, off.modifiers), (conv.CURVE, (), ("Extrude",)))
         rep = importlib.import_module(_PKG + ".convert.report").gather(self.desc)
-        self.assertEqual(dict(rep.modifiers_applied), {"Extrude": 7})
+        self.assertEqual(dict(rep.modifiers_applied), {"Extrude": 9})
         self.assertEqual(dict(rep.modifiers), {"Extrude": 1})
 
     def test_a_modifier_below_the_extrude_keeps_the_curve(self):
@@ -232,14 +241,14 @@ class Fixture(unittest.TestCase):
 
         with mock.patch.object(reader_modifiers.Modifiers, "object_stack", below):
             desc = conv.read(FIXTURE)
-        self.assertEqual([n.kind for n in desc.nodes], [conv.CURVE] * 8)
-        self.assertEqual(len([r for _i, r in desc.issues if r.startswith("extrude: an Extrude above ")]), 7)
+        self.assertEqual([n.kind for n in desc.nodes], [conv.CURVE] * 10)
+        self.assertEqual(len([r for _i, r in desc.issues if r.startswith("extrude: an Extrude above ")]), 9)
 
     def test_an_extrude_that_cannot_be_read_keeps_the_curve(self):
         with mock.patch.object(extrude, "read_params", side_effect=extrude.ExtrudeError("refused")):
             desc = conv.read(FIXTURE)
-        self.assertEqual([n.kind for n in desc.nodes], [conv.CURVE] * 8)
-        self.assertEqual([r for _i, r in desc.issues], ["extrude: refused"] * 7)
+        self.assertEqual([n.kind for n in desc.nodes], [conv.CURVE] * 10)
+        self.assertEqual([r for _i, r in desc.issues], ["extrude: refused"] * 9)
         self.assertEqual(desc.meshes, {})
 
     def test_extruded_data_is_released_after_its_last_node(self):
@@ -259,15 +268,15 @@ class Fixture(unittest.TestCase):
         with mock.patch.object(extrude, "extrude", extruding), mock.patch.object(conv, "mesh_description",
                                                                                  describing):
             conv.read(FIXTURE)
-        self.assertEqual(len(made), 7)
-        self.assertEqual(alive, [1] * 7)  # only the extrusion being described
+        self.assertEqual(len(made), 9)
+        self.assertEqual(alive, [1] * 9)  # only the extrusion being described
 
     def test_a_scene_wide_budget_keeps_the_rest_curves(self):
         with mock.patch.object(conv, "MAX_BUILT_CORNERS", 1):
             desc = conv.read(FIXTURE)
-        self.assertEqual(sorted(n.kind for n in desc.nodes), [conv.CURVE] * 7 + [conv.MESH])
+        self.assertEqual(sorted(n.kind for n in desc.nodes), [conv.CURVE] * 9 + [conv.MESH])
         spent = [r for _i, r in desc.issues if r.startswith("extrude: not made: the primitives and extrusions ")]
-        self.assertEqual(len(spent), 6)
+        self.assertEqual(len(spent), 8)
 
     def test_conversion_issues_wait_for_a_made_extrude(self):
         """A converted modifier's issues are named on the first node whose Extrude is made: one whose Extrude
@@ -309,6 +318,77 @@ class Fixture(unittest.TestCase):
         self.assertEqual(len(named), 1)
         kinds = {n.index: n.kind for n in desc.nodes}
         self.assertEqual(kinds[named[0]], conv.MESH)
+
+
+PIES = os.path.join(ROOT, "tests", "fixtures", "arc_pie_reverse.max")
+
+
+def _corners(faces):
+    """[(position, unit face normal, uvw, material ID)] of every corner of [(positions, uvws, material ID)]."""
+    out = []
+    for p, uvw, mat in faces:
+        p = numpy.asarray(p, dtype=numpy.float64)
+        normal = numpy.cross(p, numpy.roll(p, -1, axis=0)).sum(axis=0)  # Newell: a triangle or a flat polygon
+        normal /= numpy.linalg.norm(normal)
+        out.extend((q, normal, numpy.asarray(w, dtype=numpy.float64), mat) for q, w in zip(p, uvw))
+    return out
+
+
+def _unmatched(a, b):
+    """The corners of a with none of b at the same position, facing the same way, with the same map vertex and
+    material ID: independent of the face order and of how a polygon is cut into triangles."""
+    return [c for c in a if not any(numpy.abs(c[0] - d[0]).max() < 1e-4 and c[1].dot(d[1]) > 0.9999
+                                    and numpy.abs(c[2] - d[2]).max() < 1e-4 and c[3] == d[3] for d in b)]
+
+
+@unittest.skipIf(numpy is None, "numpy missing")
+@unittest.skipUnless(os.path.exists(PIES), "no arc_pie_reverse fixture")
+class ReversedPies(unittest.TestCase):
+    """arc_pie_reverse: reversed pie Arcs (their outline runs clockwise), a pie, a reversed open arc, a clockwise
+    Line and a Circle hole under an Extrude with mapping coordinates, against 3ds Max's evaluated meshes
+    (arc_pie_reverse.maps.jsonl, written by tools/fixtures/arc_pie_reverse.ms) and the oracle's eval_mesh."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.desc, cls.data = _read_meshes(PIES)
+        with open(PIES[:-4] + ".oracle.json", encoding="utf-8") as f:
+            cls.oracle = {n["name"]: n for n in json.load(f)["nodes"]}
+        with open(PIES[:-4] + ".maps.jsonl", encoding="ascii") as f:
+            cls.dump = {d["name"]: d for d in (json.loads(line) for line in f if line.strip())}
+
+    def test_the_dump_names_every_extruded_node(self):
+        self.assertEqual(sorted(self.dump), sorted(n for n in self.data if n.endswith("Ext")))
+        self.assertEqual(len(self.dump), 6)
+
+    def test_eval_mesh_equals_the_oracle(self):
+        nodes = {n.name: n for n in self.desc.nodes}
+        for name, data in self.data.items():
+            md = self.desc.meshes[nodes[name].mesh]
+            _check_eval_mesh(self, data, md, self.oracle[name]["eval_mesh"], name)
+
+    def test_hard_edges_equal_the_oracle(self):
+        """The smoothing groups' hard edges, as the oracle's eval_mesh.smoothing counts them; a pie's side is one
+        smooth group here, 3ds Max also breaks it at from, the center and to (6 edges, maxdrop-em3.111)."""
+        nodes = {n.name: n for n in self.desc.nodes}
+        for name in self.data:
+            md = self.desc.meshes[nodes[name].mesh]
+            want = self.oracle[name]["eval_mesh"]["smoothing"]["hard_edges"]
+            self.assertEqual(len(md.sharp_edges), want - 6 if name.startswith("FixturePie") else want, name)
+
+    def test_every_corner_equals_3ds_max(self):
+        """Position, face normal, map vertex and material ID of every corner, both ways: the side U starts where
+        3ds Max starts it (a reversed pie at the arc point after from, a turned outline at its last point)."""
+        for name, want in self.dump.items():
+            data = self.data[name]
+            starts = data.loop_starts.tolist() + [len(data.loop_vertices)]
+            ch = data.maps[1]
+            faces = [(data.positions[data.loop_vertices[s:e]], [ch.uvw[i] for i in ch.indices[s:e]],
+                      int(data.material_ids[f]) + 1) for f, (s, e) in enumerate(zip(starts, starts[1:]))]
+            got = _corners(faces)
+            theirs = _corners([(f["p"], f["uv"], f["mat"]) for f in want["faces"]])
+            self.assertEqual(len(theirs), 3 * len(want["faces"]), name)
+            self.assertEqual(_unmatched(theirs, got), [], name)
+            self.assertEqual(_unmatched(got, theirs), [], name)
 
 
 def _knots(points, kind=shapes.CORNER):
@@ -480,7 +560,8 @@ class Parameters(unittest.TestCase):
     def test_clamped_and_approximated(self):
         p, issues = extrude.read_params(FakeScene(), _modifier({1: 0, 4: 1, 5: 0, 7: 1, 8: 1}))
         self.assertEqual(p.segments, 1)
-        self.assertEqual(len(issues), 4)  # segments, grid caps, patch output, shape IDs
+        self.assertEqual(len(issues), 3)  # segments, grid caps, patch output (shape IDs are read)
+        self.assertTrue(p.shape_ids)
         p, _issues = extrude.read_params(FakeScene(), _modifier({1: 10 ** 9}))
         self.assertEqual(p.segments, extrude.MAX_SEGMENTS)
 
@@ -516,6 +597,23 @@ class Synthetic(unittest.TestCase):
         self.assertEqual(issues, [])
         self.assertAlmostEqual(_volume(data.positions, data), 80.0, places=4)
 
+    def test_a_turned_outline_starts_at_its_last_point(self):
+        """3ds Max turns the whole polyline: the side U starts at the last point of a clockwise outline
+        (arc_pie_reverse's FixtureClockwiseExt), then runs counter-clockwise."""
+        data, _issues = extrude.extrude(_shape([self.square(4, clockwise=True)]), self.params(mapping=True))
+        ch = data.maps[1]
+        us = {}
+        for f in range(len(data.loop_starts)):
+            s, t = int(data.loop_starts[f]), int(data.loop_totals[f])
+            p = data.positions[data.loop_vertices[s:s + t]]
+            if numpy.ptp(p[:, 2]) == 0:  # a cap
+                continue
+            for v, i in zip(data.loop_vertices[s:s + t].tolist(), ch.indices[s:s + t].tolist()):
+                if data.positions[v][2] == 0:
+                    at = tuple(float(c) for c in data.positions[v][:2])
+                    us.setdefault(at, set()).add(round(float(ch.uvw[i][0]), 6))
+        self.assertEqual(us, {(0.0, 0.0): {0.0, 1.0}, (4.0, 0.0): {0.25}, (4.0, 4.0): {0.5}, (0.0, 4.0): {0.75}})
+
     def test_negative_amount_and_segments(self):
         data, _issues = extrude.extrude(_shape([self.square(4)]), self.params(amount=-5.0, segments=3))
         self.assertEqual(len(data.positions), 16)
@@ -529,6 +627,103 @@ class Synthetic(unittest.TestCase):
         self.assertEqual(set(data.smoothing_groups.tolist()), {0})
         data, _issues = extrude.extrude(_shape([self.square(4)]), self.params(cap_start=False))
         self.assertEqual(sorted(set(_mats(data).tolist())), [extrude.TOP_ID, extrude.SIDE_ID])
+
+    def side_ids(self, data):
+        """{(axis, coordinate): {material IDs}} of the side faces of an axis-aligned square mesh, by the vertical
+        plane each lies in (x = c or y = c)."""
+        out = {}
+        for f in range(len(data.loop_starts)):
+            s, t = int(data.loop_starts[f]), int(data.loop_totals[f])
+            p = data.positions[data.loop_vertices[s:s + t]].astype(numpy.float64)
+            for axis in (0, 1):
+                if numpy.ptp(p[:, axis]) < 1e-6 and numpy.ptp(p[:, 2]) > 0:
+                    out.setdefault((axis, round(float(p[0, axis]), 4)), set()).add(int(_mats(data)[f]))
+        return out
+
+    def id_square(self, pts, ids, kind=shapes.CORNER):
+        return shapes.Spline(tuple(shapes.Knot(kind, shapes.LINE, p, p, p, i) for p, i in zip(pts, ids)), True)
+
+    def test_use_shape_ids(self):
+        """3ds Max 2020 (probe): with Generate Material IDs and Use Shape IDs each side face takes its segment's ID
+        (3ds Max IDs 1 4 7 2 on a counter-clockwise square: y=0 1, x=10 4, y=10 7, x=0 2); the caps keep 1 and 2."""
+        sq = self.id_square([(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0)], (0, 3, 6, 1))
+        data, issues = extrude.extrude(_shape([sq]), self.params(shape_ids=True))
+        self.assertEqual(issues, [])
+        self.assertEqual(self.side_ids(data), {(1, 0.0): {0}, (0, 10.0): {3}, (1, 10.0): {6}, (0, 0.0): {1}})
+        for f in range(len(data.loop_starts)):
+            z = _face_area_z(data, f)
+            if abs(z) > 1e-6:
+                self.assertEqual(int(_mats(data)[f]), extrude.TOP_ID if z > 0 else extrude.BOTTOM_ID)
+        data, _issues = extrude.extrude(_shape([sq]), self.params(amount=-5.0, shape_ids=True))  # probe E
+        self.assertEqual(self.side_ids(data), {(1, 0.0): {0}, (0, 10.0): {3}, (1, 10.0): {6}, (0, 0.0): {1}})
+        self.assertAlmostEqual(_volume(data.positions, data), 500.0, places=3)
+
+    def test_use_shape_ids_on_a_turned_outline(self):
+        """A clockwise outline is turned before the sides are made: each face keeps the ID of the segment it lies
+        on (probe C: IDs 3 5 6 9 from (0,0) up to (0,10), across, down: x=0 3, y=10 5, x=10 6, y=0 9)."""
+        sq = self.id_square([(0, 0, 0), (0, 10, 0), (10, 10, 0), (10, 0, 0)], (2, 4, 5, 8))
+        data, _issues = extrude.extrude(_shape([sq]), self.params(shape_ids=True, segments=2))
+        self.assertEqual(self.side_ids(data), {(0, 0.0): {2}, (1, 10.0): {4}, (0, 10.0): {5}, (1, 0.0): {8}})
+        self.assertAlmostEqual(_volume(data.positions, data), 500.0, places=3)
+
+    def test_use_shape_ids_on_a_hole(self):
+        """A hole drawn counter-clockwise is turned clockwise: its faces keep their segments' IDs."""
+        outer = self.id_square([(0, 0, 0), (20, 0, 0), (20, 20, 0), (0, 20, 0)], (1, 1, 1, 1))
+        hole = self.id_square([(5, 5, 0), (15, 5, 0), (15, 15, 0), (5, 15, 0)], (10, 11, 12, 13))
+        data, _issues = extrude.extrude(_shape([outer, hole]), self.params(shape_ids=True))
+        got = self.side_ids(data)
+        self.assertEqual({k: got[k] for k in ((1, 5.0), (0, 15.0), (1, 15.0), (0, 5.0))},
+                         {(1, 5.0): {10}, (0, 15.0): {11}, (1, 15.0): {12}, (0, 5.0): {13}})
+        self.assertAlmostEqual(_volume(data.positions, data), (400 - 100) * 5.0, places=3)
+
+    def test_use_shape_ids_on_interpolated_and_open_splines(self):
+        """Probe D: an open line of two curved segments (IDs 2, 3), steps 2: every face of a segment takes its ID;
+        a zero-length segment leaves its column to the next segment's ID."""
+        k = shapes.Knot
+        line = shapes.Spline((k(shapes.CORNER, shapes.CURVE, (0, 0, 0), (0, 0, 0), (3, 4, 0), 1),
+                              k(shapes.SMOOTH, shapes.CURVE, (10, 5, 0), (6, 5, 0), (14, 5, 0), 2),
+                              k(shapes.CORNER, shapes.CURVE, (20, 0, 0), (17, 4, 0), (20, 0, 0), 0)), False)
+        data, _issues = extrude.extrude(_shape([line], steps=2), self.params(shape_ids=True))
+        mats = _mats(data).tolist()
+        self.assertEqual(mats, [1, 1, 1, 2, 2, 2])
+        pts = [(0, 0, 0), (4, 0, 0), (4, 0, 0), (4, 4, 0)]
+        sq = shapes.Spline(tuple(k(shapes.CORNER, shapes.LINE, p, p, p, i) for p, i in zip(pts, (5, 6, 7, 8))), True)
+        lines = extrude.polylines(_shape([sq]))
+        self.assertEqual((lines[0].points, lines[0].ids), ([(0, 0, 0), (4, 0, 0), (4, 4, 0)], [5, 7, 8]))
+
+    def test_use_shape_ids_on_a_turned_outline_with_a_closing_knot_and_steps(self):
+        """A clockwise outline whose last knot lies on its first (a zero-length closing segment), with a curved
+        segment in steps: the closing column goes, every other face keeps its segment's ID after the turn."""
+        k = shapes.Knot
+        c, ln = shapes.CURVE, shapes.LINE
+        outline = shapes.Spline((k(shapes.CORNER, ln, (0, 0, 0), (0, 0, 0), (0, 0, 0), 4),
+                                 k(shapes.BEZIER_CORNER, c, (0, 10, 0), (0, 10, 0), (4, 14, 0), 5),
+                                 k(shapes.BEZIER_CORNER, ln, (10, 10, 0), (6, 14, 0), (10, 10, 0), 6),
+                                 k(shapes.CORNER, ln, (10, 0, 0), (10, 0, 0), (10, 0, 0), 7),
+                                 k(shapes.CORNER, ln, (0, 0, 0), (0, 0, 0), (0, 0, 0), 9)), True)
+        lines = extrude.polylines(_shape([outline], steps=3))
+        self.assertEqual(len(lines[0].points), 7)  # 4 knots and 3 steps, the closing knot dropped
+        self.assertEqual(lines[0].ids, [4, 5, 5, 5, 5, 6, 7])
+        data, _issues = extrude.extrude(_shape([outline], steps=3), self.params(shape_ids=True))
+        got = self.side_ids(data)
+        self.assertEqual({key: got[key] for key in ((0, 0.0), (0, 10.0), (1, 0.0))},
+                         {(0, 0.0): {4}, (0, 10.0): {6}, (1, 0.0): {7}})
+        curved = [int(_mats(data)[f]) for f in range(len(data.loop_starts))
+                  if abs(_face_area_z(data, f)) <= 1e-6 and data.positions[data.loop_vertices[
+                      int(data.loop_starts[f]):int(data.loop_starts[f]) + 4]][:, 1].min() > 10.0 - 1e-6
+                  and data.positions[data.loop_vertices[
+                      int(data.loop_starts[f]):int(data.loop_starts[f]) + 4]][:, 1].max() > 10.0 + 1e-6]
+        self.assertEqual(curved, [5] * 4)
+        self.assertNotIn(9, set(_mats(data).tolist()))
+
+    def test_shape_ids_need_generated_material_ids(self):
+        """Probe B: Use Shape IDs without Generate Material IDs gives every face ID 1; Generate Material IDs alone
+        gives the sides ID 3."""
+        sq = self.id_square([(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0)], (0, 3, 6, 1))
+        data, _issues = extrude.extrude(_shape([sq]), self.params(shape_ids=True, material_ids=False))
+        self.assertEqual(set(_mats(data).tolist()), {0})
+        data, _issues = extrude.extrude(_shape([sq]), self.params())
+        self.assertEqual({i for ids in self.side_ids(data).values() for i in ids}, {extrude.SIDE_ID})
 
     def test_smoothing_changes_only_at_corners(self):
         k = shapes.Knot

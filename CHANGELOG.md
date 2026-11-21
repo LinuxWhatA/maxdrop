@@ -16,6 +16,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
   otherwise than in 3ds Max.
 - Shapes: a shape imported as a curve gets its material (a renderable railing, cable or frame no longer renders with
   Blender's default material); with a Multi/Sub-Object, the entry for material ID 1.
+- Extrude: Use Shape IDs is read: each side face gets the material ID of the shape segment it comes from, as in
+  3ds Max, so a Multi/Sub-Object puts its sub-materials on the right sides; it is no longer a line in the report.
+- Primitives: Slice on a Sphere, Cylinder, Cone, Tube or Torus and the hemisphere of a Sphere (chopped or squashed)
+  or a GeoSphere are imported as the mesh 3ds Max builds, cut planes and bases with their material IDs, smoothing
+  groups and UVs, instead of a placeholder with a line in the report.
+- LookAt Constraint: Keep Initial Offset and Set Orientation are applied, so a constrained object keeps the turn
+  it was given in 3ds Max instead of facing its target straight; neither is a line in the report any more.
+- Lights: a standard, photometric or VRayIES light whose shadows are off in 3ds Max casts no shadow in Blender;
+  a VRayIES with an overridden light shape gets a spot radius from it (soft shadows), a shape other than a sphere
+  drawn as a sphere of its largest size, a line in the report.
 
 ### Changed
 
@@ -24,6 +34,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
 
 ### Fixed
 
+- Bitmap, CoronaBitmap, VRayBitmap: Mirror is drawn as 3ds Max draws it, two copies per tile with the second one
+  mirrored (a cropped image too), and it wins over Tile: a mirrored map with the default tiling is no longer drawn
+  as a plain repeat. Tile, mirror and neither are kept per direction also without a crop (Tile U only no longer
+  repeats in V).
+- Shapes: an Arc with both Pie Slice and Reverse on starts where 3ds Max starts it (at its From angle, then the
+  center), so its first vertex and an Extrude's side UVs on it are 3ds Max's.
+- Extrude: the side UVs of a closed spline drawn the other way round (a clockwise outline, a counter-clockwise hole)
+  start where 3ds Max starts them, instead of one step along.
+- UVW Map: a corner on the axis of a cylindrical or spherical map (the pole of a sphere, the center of a cap) gets
+  the U 3ds Max gives it: a turned gizmo no longer gives it an arbitrary angle (a texture smeared at the pole), and
+  on a cylindrical map it takes U 0.5 as in 3ds Max instead of the mean of its face.
 - Shapes: an Arc whose from and to angles are equal is a point, not a full circle, and angles below 0 or past 360
   are held there as 3ds Max holds them (from 10 to 370 ends at 360 instead of going round to 10).
 - Modifiers: an object with a world-space modifier (a Map Scaler or another space-warp binding) on its stack arrives

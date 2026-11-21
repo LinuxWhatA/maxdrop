@@ -7,9 +7,10 @@
 The primitives fixture (tools/fixtures/primitives.ms): each node's parameters as the script set them; each mesh equal
 to the TriMesh 3ds Max built for it (tests/fixtures/primitives.mesh.jsonl, written by the same script): the same
 points (order aside), its triangles merged across hidden edges into the same polygons with the same winding, material
-IDs, smoothing groups and channel 1 UVs; through convert.scene, the vertex and triangle counts and the world box of
-the oracle (tests/fixtures/primitives.oracle.json). Hand-made blocks: defaults, a minimum, an animated parameter, a
-parameter that is no number, too many faces, the options not built (Slice, hemispheres), the Plane's render scale.
+IDs, smoothing groups and channel 1 UVs, Slice and the hemispheres included; through convert.scene, the vertex and
+triangle counts and the world box of the oracle (tests/fixtures/primitives.oracle.json). Hand-made blocks: defaults,
+a minimum, an animated parameter, a parameter that is no number, too many faces, the Plane's render scale, Slice and
+the hemispheres closed and with hostile values.
 
     python -I -m unittest discover tests
 """
@@ -77,6 +78,24 @@ EXPECTED = {
     "FixtureSphereOdd": ("Sphere", dict(radius=6.0, segs=13, base_to_pivot=True), True),
     "FixtureGeoReal": ("GeoSphere", dict(radius=6.0, segs=4, base_type=0), True),
     "FixtureTubeDown": ("Tube", dict(radius1=5.0, radius2=3.0, height=-8.0, sides=7), True),
+    # Slice and the hemispheres: From and To apart, so a swapped id shows (Torus keeps To in 8, From in 9)
+    "FixtureSphereHemi": ("Sphere", dict(radius=8.0, segs=12, hemisphere=0.5, squash=False, slice=False), False),
+    "FixtureSphereSquash": ("Sphere", dict(radius=6.0, segs=13, hemisphere=0.3, squash=True, base_to_pivot=True),
+                            True),
+    "FixtureSphereSlice": ("Sphere", dict(segs=9, slice=True, slice_from=30 * DEG, slice_to=250 * DEG), False),
+    "FixtureSphereSliceHemi": ("Sphere", dict(segs=12, hemisphere=0.4, squash=True, slice=True,
+                                              slice_from=200 * DEG, slice_to=30 * DEG), True),
+    "FixtureGeoHemi": ("GeoSphere", dict(radius=8.0, segs=3, base_type=2, hemisphere=True), False),
+    "FixtureGeoHemiTetra": ("GeoSphere", dict(segs=2, base_type=0, hemisphere=True, base_to_pivot=True), True),
+    "FixtureCylinderSlice": ("Cylinder", dict(height_segs=2, cap_segs=2, sides=7, slice=True, slice_from=20 * DEG,
+                                              slice_to=250 * DEG), False),
+    "FixtureCylinderSliceDown": ("Cylinder", dict(height=-8.0, sides=6, slice=True, slice_from=300 * DEG,
+                                                  slice_to=45 * DEG), True),
+    "FixtureConeSlice": ("Cone", dict(radius1=6.0, radius2=2.0, sides=8, slice=True, slice_from=40 * DEG,
+                                      slice_to=160 * DEG), True),
+    "FixtureTubeSlice": ("Tube", dict(sides=7, slice=True, slice_from=20 * DEG, slice_to=250 * DEG), False),
+    "FixtureTorusSlice": ("Torus", dict(segs=9, sides=6, twist=45 * DEG, smooth=3, slice=True, slice_from=20 * DEG,
+                                        slice_to=250 * DEG), True),
 }
 
 
@@ -207,7 +226,7 @@ class FixtureTest(unittest.TestCase):
         cls.cf.close()
 
     def test_every_node_is_a_primitive(self):
-        self.assertEqual(len(self.bases), 26)
+        self.assertEqual(len(self.bases), 37)
         for name, base in self.bases.items():
             self.assertTrue(prim.is_primitive(self.scene, base), name)
 
@@ -237,7 +256,7 @@ class FixtureTest(unittest.TestCase):
     def test_counts_and_world_boxes_equal_the_oracle(self):
         desc = conv.read(FIXTURE, meters=1.0)
         self.assertEqual((dict(desc.placeholders), desc.issues), ({}, []))
-        self.assertEqual(len(desc.meshes), 25)  # FixtureBoxCopy shares FixtureBox's
+        self.assertEqual(len(desc.meshes), 36)  # FixtureBoxCopy shares FixtureBox's
         for node in desc.nodes:
             o = self.oracle[node.name]
             md = desc.meshes[node.mesh]
@@ -264,7 +283,7 @@ class FixtureTest(unittest.TestCase):
         built = {n.mesh[0] for n in desc.nodes if n.kind == conv.MESH}
         self.assertEqual(len(built), 1)  # the first primitive, with its instance if it has one
         spent = [r for _i, r in desc.issues if r.startswith("primitive: not built: the primitives and extrusions ")]
-        self.assertEqual(len(spent), 24)  # 25 primitive objects
+        self.assertEqual(len(spent), 35)  # 36 primitive objects
         self.assertEqual(sum(desc.placeholders.values()), sum(n.kind == conv.EMPTY for n in desc.nodes))
 
 
@@ -338,18 +357,23 @@ class HandMadeTest(unittest.TestCase):
             self.assertEqual(h.hexdigest()[:16], want, "%s %s" % (name, values))
 
     def test_every_class_at_the_corner_cap_builds_fast(self):
-        """A file may set segments to thousands: each class just under MAX_CORNERS face corners builds in about 0.1
-        to 0.3 s (built per corner in Python it took 1.3 to 3.4 s). Bound at 2 s, the best of two runs, so a busy
-        CI runner does not fail it."""
+        """A file may set segments to thousands: each class, and each option, just under MAX_CORNERS face corners
+        builds in about 0.1 to 0.4 s (built per corner in Python it took 1.3 to 3.4 s; a Cylinder's Slice built
+        pair of rings by pair 7.6 s). Bound at 2 s, the best of two runs, so a busy CI runner does not fail it."""
         import time
-        cap = {classids.BOX: {3: 295, 4: 295, 5: 295}, classids.PLANE: {2: 724, 3: 724},
-               classids.PYRAMID: {3: 250, 4: 250, 5: 523}, classids.SPHERE: {1: 1024},
-               classids.GEOSPHERE: {1: 161}, classids.CYLINDER: {2: 500, 3: 10, 4: 1000},
-               classids.CONE: {3: 500, 4: 10, 5: 1000}, classids.TUBE: {3: 1000, 4: 10, 5: 250},
-               classids.TORUS: {4: 724, 5: 724}}
+        cap = [(classids.BOX, {3: 295, 4: 295, 5: 295}), (classids.PLANE, {2: 724, 3: 724}),
+               (classids.PYRAMID, {3: 250, 4: 250, 5: 523}), (classids.SPHERE, {1: 1024}),
+               (classids.GEOSPHERE, {1: 161}), (classids.CYLINDER, {2: 500, 3: 10, 4: 1000}),
+               (classids.CONE, {3: 500, 4: 10, 5: 1000}), (classids.TUBE, {3: 1000, 4: 10, 5: 250}),
+               (classids.TORUS, {4: 724, 5: 724}),
+               # the options: a Slice of many rows, a Cylinder Slice of many thin rings, a GeoSphere's hemisphere
+               (classids.SPHERE, {1: 1023, 7: 1, 8: 0.3, 9: 2.0}),
+               (classids.CYLINDER, {2: 74000, 3: 1, 4: 3, 6: 1, 7: 0.3, 8: 2.0}),
+               (classids.GEOSPHERE, {1: 114, 3: 1}), (classids.TUBE, {3: 1000, 4: 10, 5: 250, 7: 1}),
+               (classids.TORUS, {4: 722, 5: 724, 7: 1})]
         sizes = {classids.SPHERE: {0: 1.0}, classids.GEOSPHERE: {0: 1.0}, classids.CONE: {0: 1.0, 1: 0.5, 2: 1.0},
                  classids.TUBE: {0: 1.0, 1: 0.5, 2: 1.0}, classids.TORUS: {0: 1.0, 1: 0.25}}
-        for class_id, segments in cap.items():
+        for class_id, segments in cap:
             values = dict(sizes.get(class_id, {0: 1.0, 1: 1.0, 2: 1.0}))
             values.update(segments)
             p, _ = prim.params_of(class_id, Block(values), real_world=True)
@@ -364,16 +388,6 @@ class HandMadeTest(unittest.TestCase):
                     break
             self.assertLessEqual(len(data.loop_vertices), prim.MAX_CORNERS, p.name)
             self.assertLess(best, 2.0, p.name)
-
-    def test_options_not_built(self):
-        cases = ((classids.SPHERE, {0: 1.0, 7: 1}, "Slice"), (classids.SPHERE, {0: 1.0, 3: 0.5}, "hemisphere"),
-                 (classids.GEOSPHERE, {0: 1.0, 3: 1}, "hemisphere"), (classids.CYLINDER, {0: 1.0, 6: 1}, "Slice"),
-                 (classids.CONE, {0: 1.0, 7: 1}, "Slice"), (classids.TUBE, {0: 1.0, 7: 1}, "Slice"),
-                 (classids.TORUS, {0: 1.0, 7: 1}, "Slice"))
-        for class_id, values, word in cases:
-            p, _ = prim.params_of(class_id, Block(values))
-            with self.assertRaisesRegex(prim.PrimitiveError, word):
-                prim.build(p)
 
     def test_plane_render_scale_and_density_are_named(self):
         p, _ = prim.params_of(classids.PLANE, Block({0: 2.0, 1: 2.0, 4: 2.0, 5: 3.0}))
@@ -506,6 +520,76 @@ class HandMadeTest(unittest.TestCase):
                 self.assertEqual(len(open_edges), 16, p.name)
             else:
                 self.assertEqual(open_edges, [], p.name)
+
+    @staticmethod
+    def _edges(data):
+        lv = data.loop_vertices.tolist()
+        starts = data.loop_starts.tolist() + [len(lv)]
+        edges = collections.Counter()
+        for f in range(len(starts) - 1):
+            loop = lv[starts[f]:starts[f + 1]]
+            for a, b in zip(loop, loop[1:] + loop[:1]):
+                edges[(a, b)] += 1
+        return edges
+
+    def test_slices_and_hemispheres_build_closed(self):
+        """Slice and the hemispheres (odd and even segments, a negative height, a cone's tip, a reversed and a
+        whole-turn slice, every GeoSphere base): every edge has two faces wound against each other, and the
+        polygons are as many as _faces counts (its MAX_CORNERS check)."""
+        deg = math.pi / 180.0
+        cut = {8: 20 * deg, 9: 250 * deg}  # Sphere, Cone, Tube: From 20, To 250; Cylinder 7 / 8; Torus To 8, From 9
+        cases = [(classids.SPHERE, {0: 1.0, 1: 9, 7: 1, **cut}), (classids.SPHERE, {0: 1.0, 1: 12, 3: 0.5}),
+                 (classids.SPHERE, {0: 1.0, 1: 13, 3: 0.3, 4: 1, 5: 1}),
+                 (classids.SPHERE, {0: 1.0, 1: 12, 3: 0.4, 7: 1, 8: 200 * deg, 9: 30 * deg}),
+                 (classids.CYLINDER, {0: 1.0, 1: 2.0, 2: 2, 3: 2, 4: 7, 6: 1, 7: 20 * deg, 8: 250 * deg}),
+                 (classids.CYLINDER, {0: 1.0, 1: -2.0, 4: 5, 6: 1, 7: 0.0, 8: 360 * deg}),
+                 (classids.CONE, {0: 1.0, 1: 0.0, 2: 2.0, 3: 2, 4: 2, 5: 6, 7: 1, **cut}),
+                 (classids.CONE, {0: 1.0, 1: 0.5, 2: -2.0, 5: 6, 7: 1, **cut}),
+                 (classids.TUBE, {0: 1.0, 1: 0.5, 2: 2.0, 3: 6, 4: 2, 5: 2, 7: 1, **cut}),
+                 (classids.TUBE, {0: 0.5, 1: 1.0, 2: -2.0, 3: 6, 7: 1, **cut}),
+                 (classids.TORUS, {0: 1.0, 1: 0.25, 3: 1.0, 4: 9, 5: 6, 6: 3, 7: 1, 8: 250 * deg, 9: 20 * deg})]
+        cases += [(classids.GEOSPHERE, {0: 1.0, 1: segs, 2: base, 3: 1}) for base in (0, 1, 2) for segs in (1, 3)]
+        for class_id, values in cases:
+            with self.subTest(cls=class_id, values=values):
+                p, _ = prim.params_of(class_id, Block(values))
+                data, _ = prim.build(p)
+                edges = self._edges(data)
+                self.assertTrue(all(n == 1 for n in edges.values()))
+                self.assertEqual([e for e in edges if (e[1], e[0]) not in edges], [])
+                self.assertEqual(len(data.loop_starts), prim._faces(p))
+
+    def test_hostile_slices_and_hemispheres(self):
+        """Slice angles near the float range or many turns, a hemisphere below 0, past 1 or too small to move the cut,
+        the fewest segments, segments stored as huge floats: a MeshData with finite points and UVs, or a
+        PrimitiveError, at once."""
+        slices = {classids.SPHERE: (7, 8, 9), classids.CYLINDER: (6, 7, 8), classids.CONE: (7, 8, 9),
+                  classids.TUBE: (7, 8, 9), classids.TORUS: (7, 8, 9)}
+        sizes = {classids.SPHERE: {0: 1.0, 1: 4}, classids.CYLINDER: {0: 1.0, 1: 1.0, 4: 3},
+                 classids.CONE: {0: 1.0, 1: 0.5, 2: 1.0, 5: 3}, classids.TUBE: {0: 1.0, 1: 0.5, 2: 1.0, 3: 3},
+                 classids.TORUS: {0: 1.0, 1: 0.25, 4: 3, 5: 3}}
+        cases = []
+        for class_id, (on, a, b) in slices.items():
+            for x, y in ((1e30, -3e38), (3e38, 3e38), (0.0, 1e-30), (-7.0 * math.pi, 41.0), (1e-7, 0.0)):
+                cases.append((class_id, {**sizes[class_id], on: 1, a: x, b: y}))
+        for h in (-5.0, 5.0, 0.9999, 1e30, 1e-30, 1e-17):
+            for squash in (0, 1):
+                cases.append((classids.SPHERE, {0: 1.0, 1: 5, 3: h, 4: squash, 5: 1, 7: 1, 8: 1.0, 9: 2.0}))
+        # segments stored as a huge float: refused at once, not counted ring by ring
+        for segs in (1e20, 3e38, 1e39, float(2 ** 31 - 1)):
+            for squash in (0, 1):
+                cases.append((classids.SPHERE, {0: 1.0, 1: segs, 3: 0.5, 4: squash, 7: 1}))
+            cases.append((classids.GEOSPHERE, {0: 1.0, 1: segs, 3: 1}))
+            cases.append((classids.CYLINDER, {0: 1.0, 1: 1.0, 2: segs, 4: segs, 6: 1}))
+        for class_id, values in cases:
+            with self.subTest(cls=class_id, values=values):
+                p, _ = prim.params_of(class_id, Block(values))
+                try:
+                    data, _ = prim.build(p)
+                except prim.PrimitiveError:
+                    continue
+                self.assertTrue(numpy.isfinite(data.positions).all())
+                self.assertTrue(numpy.isfinite(data.maps[1].uvw).all())
+                self.assertEqual(len(data.loop_starts), prim._faces(p))
 
 
 if __name__ == "__main__":

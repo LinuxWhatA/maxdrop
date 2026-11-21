@@ -52,7 +52,8 @@ the double-sided plane's half), its color, the off light hidden in viewport and 
 the camera and glossy rays; the instance shares the plane's light, the disc's instance scaled 2, 1.5, 1 has its
 own, three times as strong; imported again with Light Strength 2, twice the
 power. lights_standard, lights_photometric (and lookat's target spot): each light of the type, spot cone, power and
-color of the rules (STOCK_LIGHTS), its -Z axis along the oracle's, its flags; the Skylight an empty.
+color of the rules (STOCK_LIGHTS), its -Z axis along the oracle's, its flags, its shadow switch (STOCK_SHADOWS);
+the Skylight an empty.
 Cameras (cameras, lookat): each camera node a camera object of the description's type, sensor fit HORIZONTAL, sensor,
 lens, shift, clipping and orthographic width, Blender's horizontal field of view (angle_x) within 0.05 degrees of 3ds
 Max's (the oracle's EvalCameraState), depth of field off, its -Z axis and +Y up along the oracle's; cameras' shifts and
@@ -80,7 +81,8 @@ image in its color space, one datablock per file and color space, the report cou
 texmap_wrappers draws each wrapper with its nodes: Layer Weight, Fresnel, blend types, Separate / Combine Color);
 hand-made IRs check shared images, a missing file, the materials counted by class, Thin Wall (set on 5.x, counted on
 4.x), a name clash, BLENDED / DITHERED and every node kind, the wrappers' links and values (Facing, blend modes and
-masks, rewiring, Adjust, Tint); a crop repeating per axis (wrap, ping-pong, clip), map channel 0 drawn on
+masks, rewiring, Adjust, Tint); a crop repeating per axis (wrap, ping-pong, clip), a mirrored axis drawn as
+3ds Max renders it (two copies per tile, the nodes evaluated at its sample points), map channel 0 drawn on
 channel 1 and reported, a texture file without image data reported, a material whose build raises removed and
 reported; a material conversion that raises leaves the scene imported without materials, the report says why.
 Images already in the file (an earlier import's) are reused by file and color space, unless modified, packed,
@@ -108,6 +110,7 @@ argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 MATRIX_TOLERANCE = 1e-4
 BBOX_TOLERANCE = 1e-3
 UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: test_convert_scene reads it with ast
+    "arc_pie_reverse": ["UVMap"],  # every Extrude with Generate Mapping Coords; the two plain arcs are curves
     "box_poly_standard": ["UVMap"],
     "corona_layered": ["UVMap"],
     "corona_legacy": ["UVMap"],
@@ -154,6 +157,7 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
     "vray_wrappers": ["UVMap"],
     "uvwmap": {"FixtureUVWGizmo": ["UVMap", "UVChannel_2"], "FixtureUVWTwo": ["UVMap", "UVChannel_3"]},  # else UVMap
     "uvwmap_oblique": ["UVMap"],
+    "uvwmap_pole": ["UVMap"],
 }
 # editable_mesh: group 1 on top and bottom, 2 on the sides; a box with a group per side: 12; modifier_pivot's box of
 # four height segments: 4 x 4 vertical side edges and both rims
@@ -166,13 +170,20 @@ SHARP_EDGES = {"editable_mesh": 8, "modifier_pivot": {"FixtureSmooth": 0, None: 
                "uvwmap": {"FixtureUVWCyl": 32, "FixtureUVWSphere": 0, "FixtureUVWSharedB": 12, None: 28},
                # smooth spheres, the rims of a 10-sided cylinder
                "uvwmap_oblique": {"FixtureUVWObliqueCap": 20, None: 0},
+               # the rims of 10-sided cylinders, smooth spheres
+               "uvwmap_pole": {"FixtureUVWPoleCylinder": 20, "FixtureUVWPoleNear": 20, "FixtureUVWPoleOff": 20,
+                               "FixtureUVWPoleDiagonal": 20, None: 0},
                # primitives (tests/unit/test_convert_scene.py, SHARP_EDGES_PRIMITIVES); the TurboSmooth smooths
                "primitives": {"FixtureBox": 36, "FixtureBoxCopy": 36, "FixtureBoxDown": 12, "FixtureBoxNoMap": 12,
                               "FixtureBoxSmooth": 0, "FixturePyramid": 18, "FixtureGeoOcta": 48,
                               "FixtureCylinder": 20, "FixtureCone": 18, "FixtureTube": 32, "FixtureTorus": 96,
                               "FixtureBoxInside": 16, "FixtureCylinderDown": 14, "FixtureConeTip": 14,
                               "FixtureTubeSwap": 28, "FixtureTorusOdd": 35, "FixturePyramidDown": 14,
-                              "FixtureCylinderReal": 14, "FixtureTubeDown": 28, None: 0}}
+                              "FixtureCylinderReal": 14, "FixtureTubeDown": 28,
+                              "FixtureSphereHemi": 12, "FixtureSphereSquash": 13, "FixtureSphereSlice": 12,
+                              "FixtureSphereSliceHemi": 29, "FixtureGeoHemi": 30, "FixtureGeoHemiTetra": 6,
+                              "FixtureCylinderSlice": 30, "FixtureCylinderSliceDown": 19, "FixtureConeSlice": 26,
+                              "FixtureTubeSlice": 36, "FixtureTorusSlice": 60, None: 0}}
 SHARP_EDGES_DEFAULT = 12
 # the class directory's name of a placeholder (maxdrop_class) where it is not MAXScript's (the oracle's)
 CLASS_NAMES = {"Targetobject": "Target", "Targetcamera": "Target"}
@@ -251,20 +262,37 @@ STOCK_GREY = ("StdOmniSquare", "StdOmniInverse", "StdOmniNegative", "StdOmniNoDi
               "StdSpotRect", "StdTargetSpot", "StdTargetDirect", "FixtureSpot")  # a standard light's default 180
 STOCK_FLAGS = {"StdOmniNoDiffuse": (True, False, True, 0.0, 1.0), "StdSpotRect": (True, True, False, 1.0, 0.0),
                "PhCylinder": (True, True, False, 1.0, 0.0), "IesOverride": (True, True, False, 1.0, 0.0)}
+# the stock lights that cast shadows (Light.use_shadow): a light MAXScript makes has them off, the scripts switch these
+# on; a VRayIES has them on but IesOverride; a VRaySun has no switch
+STOCK_SHADOWS = {"StdOmni", "StdOmniInst", "StdSpot", "StdTargetDirect", "StdSun", "PhPoint", "PhPointInst",
+                 "PhSpot", "IesPower"}
 # hollow: a tube's inner side and a torus's inner half face the box center; closed, they enclose a positive volume
 # the oracle's base_class_id of the primitives MaxDrop builds (convert/primitives.py)
 PRIMITIVE_CLASSES = {("0x00000010", "0x00000000"), ("0x00000011", "0x00000000"), ("0x00000012", "0x00000000"),
                      ("0x00000020", "0x00000000"), ("0xa86c23dd", "0x00000000"), ("0x00007b21", "0x00000000"),
                      ("0x00000000", "0x00007f9e"), ("0x081f1dfc", "0x77566f65"), ("0x76bf318a", "0x4bf37b10")}
-HOLLOW = {"FixtureTube", "FixtureTubeSwap", "FixtureTubeDown", "FixtureTorus", "FixtureTorusOdd"}
+# closed meshes checked by their volume: tubes and tori have no inside point, a Slice's cut planes run through the
+# axis (beside the box center), a chopped hemisphere has a ring of flat faces
+HOLLOW = {"FixtureTube", "FixtureTubeSwap", "FixtureTubeDown", "FixtureTorus", "FixtureTorusOdd", "FixtureSphereHemi",
+          "FixtureSphereSquash", "FixtureSphereSlice", "FixtureSphereSliceHemi", "FixtureGeoHemi",
+          "FixtureGeoHemiTetra", "FixtureCylinderSlice", "FixtureCylinderSliceDown", "FixtureConeSlice",
+          "FixtureTubeSlice", "FixtureTorusSlice"}
 # extrude (Generate Mapping Coords on two nodes); sharp edges: the vertical edges at corner knots, one per level, and
 # both rims of every capped outline; V - E + F: a solid 2, one with a round tunnel 0, a ring and its island 0 + 2
 EXTRUDE_UV_LAYERS = {"FixtureExtRect": ["UVMap"], "FixtureExtAdaptive": ["UVMap"],
-                     "FixtureUVWExtrude": ["UVMap"]}  # uvwmap: no mapping from the Extrude, the UVW Map's
+                     "FixtureUVWExtrude": ["UVMap"],  # uvwmap: no mapping from the Extrude, the UVW Map's
+                     "FixturePieRevExt": ["UVMap"], "FixturePieRevWrapExt": ["UVMap"], "FixturePieExt": ["UVMap"],
+                     "FixtureArcRevExt": ["UVMap"], "FixtureClockwiseExt": ["UVMap"], "FixtureHoleExt": ["UVMap"]}
 EXTRUDE_SHARP_EDGES = {"FixtureExtRect": 16, "FixtureExtL": 18, "FixtureExtHole": 68, "FixtureExtIsland": 36,
-                       "FixtureExtOpen": 0, "FixtureExtMirror": 72, "FixtureExtAdaptive": 256, "FixtureUVWExtrude": 12}
+                       "FixtureExtOpen": 0, "FixtureExtMirror": 72, "FixtureExtAdaptive": 256,
+                       "FixtureExtShapeIDs": 41, "FixtureExtShapeIDsRect": 12, "FixtureUVWExtrude": 12,
+                       "FixturePieRevExt": 46, "FixturePieRevWrapExt": 46, "FixturePieExt": 46,
+                       "FixtureArcRevExt": 0, "FixtureClockwiseExt": 16, "FixtureHoleExt": 72}
 EXTRUDE_EULER = {"FixtureExtRect": 2, "FixtureExtL": 2, "FixtureExtHole": 0, "FixtureExtIsland": 2,
-                 "FixtureExtOpen": None, "FixtureExtMirror": 2, "FixtureExtAdaptive": 2, "FixtureUVWExtrude": 2}
+                 "FixtureExtOpen": None, "FixtureExtMirror": 2, "FixtureExtAdaptive": 2, "FixtureExtShapeIDs": 0,
+                 "FixtureExtShapeIDsRect": 2, "FixtureUVWExtrude": 2, "FixturePieRevExt": 2,
+                 "FixturePieRevWrapExt": 2, "FixturePieExt": 2, "FixtureArcRevExt": None, "FixtureClockwiseExt": 2,
+                 "FixtureHoleExt": 0}
 VALUE_TOLERANCE = 1e-4
 SPECULAR_LEVEL = 0.5  # the IR's specular is a reflection weight: 1 is Blender's Specular IOR Level 0.5
 DEG = math.pi / 180.0
@@ -495,8 +523,8 @@ def run_fixture(path, modules):
         check_modifier_pivot(obs, meters)
     if name == "extrude":
         kinds = [ob.type for ob in obs]
-        check("extrude: seven meshes, the switched-off Extrude a curve", kinds == ['MESH'] * 7 + ['CURVE'],
-              str(kinds))
+        check("extrude: nine meshes, the switched-off Extrude a curve",
+              kinds == ['MESH'] * 7 + ['CURVE'] + ['MESH'] * 2, str(kinds))
     if name == "shapes":
         curves = sorted(c.name for c in bpy.data.curves)
         shaped = sum(1 for o in nodes if o["shape"] is not None)
@@ -704,8 +732,8 @@ def check_light(label, ob, ld, o):
 
 def check_stock_light(label, ob, ld, o):
     """lights_standard, lights_photometric, lookat's target spot: the light's type, spot cone, size or radius as the
-    description says, energy the watts of STOCK_LIGHTS times the default Light Strength, color, flags; its -Z axis
-    (where a spot, an area light and a sun shine in both programs) along the oracle's."""
+    description says, energy the watts of STOCK_LIGHTS times the default Light Strength, color, flags, shadows
+    (STOCK_SHADOWS); its -Z axis (where a spot, an area light and a sun shine in both programs) along the oracle's."""
     from maxdrop import ops
     light = ob.data
     kind, cone, blend, watts = STOCK_LIGHTS[o["name"]]
@@ -735,6 +763,8 @@ def check_stock_light(label, ob, ld, o):
              round(light.specular_factor, 6))
     want = STOCK_FLAGS.get(o["name"], (True, True, True, 1.0, 1.0))
     check(label + ": camera, diffuse and glossy visibility, diffuse and specular factors", flags == want, str(flags))
+    check(label + ": shadows as in 3ds Max", light.use_shadow == ld.shadow == (o["name"] in STOCK_SHADOWS),
+          "%s, %s" % (light.use_shadow, ld.shadow))
 
 
 def check_light_strength(path):
@@ -1961,9 +1991,11 @@ def check_found_textures():
                 uv = [n for n in m.node_tree.nodes if n.bl_idname == "ShaderNodeUVMap"]
                 comb = _from(_from(cropped.inputs["Vector"]).inputs["Vector"])
                 ops = [getattr(_from(comb.inputs[a]), "operation", None) for a in ("X", "Y")] if comb else []
-                check("texmap_rules: place_crop.png on map channel 3, cropped, mirrored in U and clipped in V",
-                      cropped.extension == 'CLIP' and any(n.uv_map == "UVChannel_3" for n in uv)
-                      and ops == ['PINGPONG', 'MULTIPLY_ADD'],
+                double = _from(_from(_from(comb.inputs["X"]).inputs[0]).inputs["Vector"]) if comb else None
+                check("texmap_rules: place_crop.png on map channel 3, cropped, mirrored (U doubled) in U and clipped "
+                      "in V", cropped.extension == 'CLIP' and any(n.uv_map == "UVChannel_3" for n in uv)
+                      and ops == ['PINGPONG', 'MULTIPLY_ADD'] and getattr(double, "operation", None) == 'MULTIPLY'
+                      and close(list(_input(double, "Vector_001").default_value), [2.0, 1.0, 1.0], 1e-6),
                       "%s %s %s" % (cropped.extension, [n.uv_map for n in uv], ops))
                 check("texmap_rules: place_place.png on map channel 0 drawn on UV channel 1, reported",
                       not any(n.uv_map == "UVChannel_0" for mat in bpy.data.materials
@@ -2345,17 +2377,26 @@ def check_builder_debt():
         tex, comb = _crop_case(builder, cm, tx, found, "CropMirrorU",
                                tx.Mapping(tile=(True, True), mirror=(True, False)), crop)
         chain = [_from(comb.inputs[a]) for a in ("X", "Y")]
-        check("builder debt: a crop mirrored in U, tiled in V: ping-pong on X, wrap 0..1 on Y, image EXTEND",
+        double = _from(_from(chain[0].inputs[0]).inputs["Vector"])
+        check("builder debt: a crop mirrored in U, tiled in V: U doubled, ping-pong on X, wrap 0..1 on Y, image "
+              "EXTEND",
               tex.extension == 'EXTEND' and chain[0].operation == 'PINGPONG'
               and chain[0].inputs[1].default_value == 1.0 and chain[1].operation == 'WRAP'
-              and chain[1].inputs[1].default_value == 1.0 and chain[1].inputs[2].default_value == 0.0,
-              "%s %s" % (tex.extension, [n.operation for n in chain]))
+              and chain[1].inputs[1].default_value == 1.0 and chain[1].inputs[2].default_value == 0.0
+              and double.bl_idname == "ShaderNodeVectorMath" and double.operation == 'MULTIPLY'
+              and close(list(_input(double, "Vector_001").default_value), [2.0, 1.0, 1.0], 1e-6),
+              "%s %s %s" % (tex.extension, [n.operation for n in chain], double.bl_idname))
 
         tex, comb = _crop_case(builder, cm, tx, found, "CropMirrorNoTile",
                                tx.Mapping(tile=(False, False), mirror=(True, True)), crop)
-        chain = [_from(comb.inputs[a]).operation for a in ("X", "Y")]
-        check("builder debt: mirror on with tile off still mirrors (mirror tiles), image EXTEND",
-              tex.extension == 'EXTEND' and chain == ['PINGPONG', 'PINGPONG'], "%s %s" % (tex.extension, chain))
+        pings = [_from(comb.inputs[a]) for a in ("X", "Y")]
+        chain = [n.operation for n in pings]
+        double = _from(_from(pings[0].inputs[0]).inputs["Vector"])
+        check("builder debt: mirror on with tile off still mirrors (mirror tiles), both axes doubled, image EXTEND",
+              tex.extension == 'EXTEND' and chain == ['PINGPONG', 'PINGPONG']
+              and double.bl_idname == "ShaderNodeVectorMath" and double.operation == 'MULTIPLY'
+              and close(list(_input(double, "Vector_001").default_value), [2.0, 2.0, 1.0], 1e-6),
+              "%s %s %s" % (tex.extension, chain, double.bl_idname))
 
         tex, comb = _crop_case(builder, cm, tx, found, "PlaceMixed", tx.Mapping(tile=(True, False)),
                                tx.Crop(0.25, 0.0, 0.5, 0.25, place=True))
@@ -2438,6 +2479,212 @@ def check_builder_debt():
               got is None and len(bpy.data.materials) == materials and "Broken" not in bpy.data.materials
               and new == ("material Broken", "material not built (RuntimeError: maxdrop test: tree fails)")
               and builder.classes["test"] == 8, "%s %s %s" % (got, new, dict(builder.classes)))
+    finally:
+        empty_scene()
+        for img in list(bpy.data.images):
+            bpy.data.images.remove(img)
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+_ONE_MIRROR = ("8 24 40 55 72 88 104 119 136 152 168 184 200 216 231 248 248 231 216 200 184 168 152 136 119 104 88 72 "
+               "55 40 24 8")
+# 3ds Max 2020 renderMap (scanline, filter off, Bitmap filtering none) of a 64 x 64 ramp, red 4 x its column, green
+# 4 x its row from the top (bead maxdrop-em3.60): (label, Mapping keywords, crop (u, v, w, h, place) or None, render
+# size, 'row' at y or 'col' at x, that index, the channel, its values; '-' black: outside the image)
+_MIRROR_ROWS = (
+    ("mirror U, tiling 1", dict(mirror=(True, False)), None, (32, 8), "row", 4, "R",
+     _ONE_MIRROR),
+    ("mirror U, tile off", dict(tile=(False, True), mirror=(True, False)), None, (32, 8), "row", 4, "R",
+     _ONE_MIRROR),
+    ("mirror U, tiling 0.5", dict(tiling=(0.5, 1.0), mirror=(True, False)), None, (32, 8), "row", 4, "R",
+     "131 139 147 156 164 171 180 187 195 204 212 220 228 235 244 252 252 244 235 228 220 212 204 195 187 180 171 164 "
+     "156 147 139 131"),
+    ("mirror U, tiling 2", dict(tiling=(2.0, 1.0), mirror=(True, False)), None, (32, 8), "row", 4, "R",
+     "239 208 176 144 112 80 48 16 16 48 80 112 144 176 208 239 239 208 176 144 112 80 48 16 16 48 80 112 144 176 208 "
+     "239"),
+    ("mirror U, offset 0.1", dict(offset=(0.1, 0.0), mirror=(True, False)), None, (32, 32), "row", 16, "R",
+     "40 24 8 4 19 36 52 68 84 100 116 131 147 164 180 195 212 228 244 248 231 216 200 184 168 152 136 119 104 88 72 "
+     "55"),
+    ("mirror U, crop", dict(mirror=(True, False)), (0.25, 0.0, 0.5, 1.0, False), (32, 32), "row", 16, "R",
+     "68 75 84 91 100 108 116 124 131 139 147 156 164 171 180 187 187 180 171 164 156 147 139 131 124 116 108 100 91 "
+     "84 75 68"),
+    ("mirror U, placed", dict(mirror=(True, False)), (0.25, 0.0, 0.5, 1.0, True), (32, 8), "row", 4, "R",
+     "- - - - 16 48 80 112 144 176 208 239 - - - - - - - - 239 208 176 144 112 80 48 16 - - - -"),
+    ("mirror both, along U", dict(mirror=(True, True)), None, (32, 32), "row", 16, "R",
+     _ONE_MIRROR),
+    ("mirror both, along V", dict(mirror=(True, True)), None, (32, 32), "col", 3, "G",
+     "248 231 216 200 184 168 152 136 119 104 88 72 55 40 24 8 8 24 40 55 72 88 104 119 136 152 168 184 200 216 231 "
+     "248"),
+    ("mirror V", dict(mirror=(False, True)), None, (32, 32), "col", 3, "G",
+     "248 231 216 200 184 168 152 136 119 104 88 72 55 40 24 8 8 24 40 55 72 88 104 119 136 152 168 184 200 216 231 "
+     "248"),
+    ("mirror V, along U", dict(mirror=(False, True)), None, (32, 32), "row", 16, "R",
+     "4 12 19 28 36 44 52 60 68 75 84 91 100 108 116 124 131 139 147 156 164 171 180 187 195 204 212 220 228 235 244 "
+     "252"),
+    ("mirror U, V clipped at tiling 2, along U", dict(tiling=(1.0, 2.0), tile=(True, False), mirror=(True, False)),
+     None, (32, 32), "row", 16, "R", _ONE_MIRROR),
+    ("mirror U, V clipped at tiling 2, along V", dict(tiling=(1.0, 2.0), tile=(True, False), mirror=(True, False)),
+     None, (32, 32), "col", 3, "G",
+     "- - - - - - - - 8 24 40 55 72 88 104 119 136 152 168 184 200 216 231 248 - - - - - - - -"),
+    ("crop, mirror U, V clipped at tiling 2, along U",
+     dict(tiling=(1.0, 2.0), tile=(True, False), mirror=(True, False)), (0.25, 0.25, 0.5, 0.5, False), (32, 32),
+     "row", 16, "R",
+     "68 75 84 91 100 108 116 124 131 139 147 156 164 171 180 187 187 180 171 164 156 147 139 131 124 116 108 100 91 "
+     "84 75 68"),
+    ("crop, mirror U, V clipped at tiling 2, along V",
+     dict(tiling=(1.0, 2.0), tile=(True, False), mirror=(True, False)), (0.25, 0.25, 0.5, 0.5, False), (32, 32),
+     "col", 3, "G",
+     "- - - - - - - - 68 75 84 91 100 108 116 124 131 139 147 156 164 171 180 187 - - - - - - - -"),
+    ("mirror U, W 90, along V", dict(angle=(0.0, 0.0, math.pi / 2), mirror=(True, False)), None, (16, 16), "col", 8,
+     "R", "16 48 80 112 144 176 208 239 239 208 176 144 112 80 48 16"),
+    ("mirror U, W 90, along U", dict(angle=(0.0, 0.0, math.pi / 2), mirror=(True, False)), None, (16, 16), "row", 8,
+     "G", "248 231 216 200 184 168 152 136 119 104 88 72 55 40 24 8"),
+)
+
+
+def _pingpong(a, b):
+    """Blender's Math PINGPONG (pingpongf)."""
+    if not b:
+        return 0.0
+    t = (a - b) / (b * 2)
+    return abs((t - math.floor(t)) * b * 2 - b)
+
+
+def _sample_vector(socket, uv):
+    """The vector a node tree gives an input at the UV uv, as Blender evaluates the node kinds the texture placement
+    uses (Texture Coordinate / UV Map, Mapping, Vector Math, Separate / Combine XYZ, Math)."""
+    from mathutils import Euler
+    if not socket.is_linked:
+        return None
+    link = socket.links[0]
+    n, out = link.from_node, link.from_socket.identifier
+    if n.bl_idname in ("ShaderNodeTexCoord", "ShaderNodeUVMap"):
+        return Vector((uv[0], uv[1], 0.0))
+    if n.bl_idname == "ShaderNodeSeparateXYZ":
+        return _sample_vector(n.inputs["Vector"], uv)["XYZ".index(out)]
+    if n.bl_idname == "ShaderNodeCombineXYZ":
+        return Vector([_sample_value(n.inputs[a], uv) for a in "XYZ"])
+    if n.bl_idname == "ShaderNodeMath":
+        a, b, c = (_sample_value(n.inputs[i], uv) for i in range(3))
+        return {'PINGPONG': lambda: _pingpong(a, b), 'FLOOR': lambda: math.floor(a),
+                'WRAP': lambda: a - (b - c) * math.floor((a - c) / (b - c)), 'MULTIPLY_ADD': lambda: a * b + c,
+                }[n.operation]()
+    v = _sample_vector(n.inputs["Vector"], uv)
+    if n.bl_idname == "ShaderNodeVectorMath":
+        if n.operation == 'MULTIPLY':
+            return Vector([x * f for x, f in zip(v, _input(n, "Vector_001").default_value)])
+        if n.operation == 'FRACTION':
+            return Vector([x - math.floor(x) for x in v])
+    if n.bl_idname == "ShaderNodeMapping":
+        loc, scale = Vector(n.inputs["Location"].default_value), Vector(n.inputs["Scale"].default_value)
+        rot = Euler(n.inputs["Rotation"].default_value, 'XYZ').to_matrix()
+        if n.vector_type == 'POINT':
+            return loc + rot @ Vector([x * s for x, s in zip(v, scale)])
+        if n.vector_type == 'TEXTURE':
+            return Vector([x / s for x, s in zip(rot.transposed() @ (v - loc), scale)])
+    raise AssertionError("not evaluated: %s %s" % (n.bl_idname, getattr(n, "operation", "")))
+
+
+def _sample_value(socket, uv):
+    return _sample_vector(socket, uv) if socket.is_linked else socket.default_value
+
+
+def _sample_image(tex, uv):
+    """The image coordinate (x, y) an Image Texture node reads at uv, its extension applied; None outside a CLIP
+    image."""
+    v = _sample_vector(tex.inputs["Vector"], uv)
+    v = Vector((uv[0], uv[1], 0.0)) if v is None else v
+    xy = []
+    for x in v[:2]:
+        if tex.extension == 'REPEAT':
+            x -= math.floor(x)
+        elif tex.extension == 'MIRROR':
+            x = _pingpong(x, 1.0)
+        elif tex.extension == 'EXTEND':
+            x = min(max(x, 0.0), 1.0)
+        elif not 0.0 <= x <= 1.0:
+            return None
+        xy.append(x)
+    return xy
+
+
+def check_builder_mirror():
+    """MaterialBuilder on hand-made IRs (bead maxdrop-em3.60): a mirrored axis shows two copies per tile, the second
+    mirrored (ping-pong of twice the placed coordinate), mirror winning over tile, with and without a crop; the
+    nodes evaluated at 3ds Max's sample points give the image coordinates 3ds Max rendered; one extension where both
+    axes agree, per-axis nodes where they differ."""
+    from maxdrop.build import materials as build_materials
+    from maxdrop.convert import materials as cm
+    from maxdrop.convert import texmaps as tx
+    from maxdrop.convert import textures as ct
+    empty_scene()
+    for img in list(bpy.data.images):
+        bpy.data.images.remove(img)
+    scratch = tempfile.mkdtemp(prefix="maxdrop-builder-mirror-")
+    try:
+        png = os.path.join(scratch, "shared.png")
+        _write_png(png)
+        found = ct.Found(png, ct.SCENE)
+        builder = build_materials.MaterialBuilder()
+
+        def tex_of(name, mapping, crop=None):
+            ir = cm.MaterialIR(30, name, "test", base_color=cm.Input((0.5, 0.5, 0.5), cm.MapRef(1)))
+            img = tx.Image(1, "shared.png", "shared.png", "", found, mapping=mapping, crop=crop)
+            ir.textures = {"base_color": tx.TextureGraphIR(img, tx.COLOR)}
+            return _from(_principled(builder.make(ir)).inputs["Base Color"])
+
+        for label, kw, crop, (w, h), sweep, fixed, channel, values in _MIRROR_ROWS:
+            tex = tex_of("Mirror " + label, tx.Mapping(**kw), tx.Crop(*crop) if crop else None)
+            bad = []
+            for i, value in enumerate(values.split()):
+                x, y = (i, fixed) if sweep == "row" else (fixed, i)
+                got = _sample_image(tex, ((x + 0.5) / w, 1.0 - (y + 0.5) / h))
+                if value == "-":
+                    if got is not None:
+                        bad.append((i, value, got))
+                    continue
+                want = (int(value) / 4 + 0.5) / 64
+                want = want if channel == "R" else 1.0 - want
+                if got is None or abs(got[0 if channel == "R" else 1] - want) > 1.0 / 64:
+                    bad.append((i, value, got))
+            check("builder mirror: %s: the nodes read the image where 3ds Max rendered it" % label, not bad,
+                  "%s %s" % (tex.extension, bad[:4]))
+
+        def double(node, factor):
+            return (node is not None and node.bl_idname == "ShaderNodeVectorMath" and node.operation == 'MULTIPLY'
+                    and close(list(_input(node, "Vector_001").default_value), factor, 1e-6))
+
+        tex = tex_of("MirrorTileBoth", tx.Mapping(tile=(True, True), mirror=(True, True)))
+        mul = _from(tex.inputs["Vector"])
+        check("builder mirror: mirror and tile on both axes, no placement: UV -> times (2, 2, 1) -> image MIRROR",
+              tex.extension == 'MIRROR' and double(mul, [2.0, 2.0, 1.0])
+              and _from(mul.inputs["Vector"]).bl_idname == "ShaderNodeTexCoord",
+              "%s %s" % (tex.extension, mul and mul.bl_idname))
+
+        tex = tex_of("MirrorUTileV", tx.Mapping(tile=(True, True), mirror=(True, False)))
+        comb = _from(tex.inputs["Vector"])
+        x, y = (_from(comb.inputs[a]) for a in ("X", "Y")) if comb is not None else (None, None)
+        sep = x and _from(x.inputs[0])
+        check("builder mirror: mirror U, tile V: times (2, 1, 1) -> ping-pong X, wrap Y -> image EXTEND (REPEAT "
+              "would bleed the opposite edge into the mirror line)",
+              tex.extension == 'EXTEND' and comb.bl_idname == "ShaderNodeCombineXYZ" and x.operation == 'PINGPONG'
+              and y.operation == 'WRAP' and _from(y.inputs[0]) == sep and sep.bl_idname == "ShaderNodeSeparateXYZ"
+              and double(_from(sep.inputs["Vector"]), [2.0, 1.0, 1.0]),
+              "%s %s" % (tex.extension, comb and comb.bl_idname))
+
+        tex = tex_of("TileUOnly", tx.Mapping(tile=(True, False)))
+        comb = _from(tex.inputs["Vector"])
+        x, y = (_from(comb.inputs[a]) for a in ("X", "Y")) if comb is not None else (None, None)
+        check("builder mirror: tile U only: wrap X, Y straight through -> image CLIP",
+              tex.extension == 'CLIP' and x is not None and x.operation == 'WRAP'
+              and y.bl_idname == "ShaderNodeSeparateXYZ", "%s %s" % (tex.extension, comb and comb.bl_idname))
+
+        tex = tex_of("TileBoth", tx.Mapping())
+        check("builder mirror: tile both, no placement: no vector, image REPEAT",
+              tex.extension == 'REPEAT' and not tex.inputs["Vector"].is_linked, tex.extension)
+        tex = tex_of("TileNone", tx.Mapping(tile=(False, False)))
+        check("builder mirror: tile off both, no placement: no vector, image CLIP",
+              tex.extension == 'CLIP' and not tex.inputs["Vector"].is_linked, tex.extension)
     finally:
         empty_scene()
         for img in list(bpy.data.images):
@@ -2630,7 +2877,8 @@ def check_builder_wiring(ma, mb, builder, cm, tx, srgb, data, lost, gamma):
     comb = _from(crop.inputs["Vector"])
     pings = [_from(comb.inputs[axis]) for axis in ("X", "Y")]
     sep = _from(pings[0].inputs[0])
-    place = _from(sep.inputs["Vector"])
+    double = _from(sep.inputs["Vector"])
+    place = _from(double.inputs["Vector"])
     uv = _from(place.inputs["Vector"])
     from maxdrop.build import materials as build_materials
     want = build_materials.uv_transform(tx.Mapping(tiling=(2.0, 1.0), angle=(0.0, 0.0, 0.5)))
@@ -2640,14 +2888,16 @@ def check_builder_wiring(ma, mb, builder, cm, tx, srgb, data, lost, gamma):
                                                           1e-6)
           and close(list(_input(level, "Vector_002").default_value), [-0.1] * 3, 1e-6)
           and out_inv.bl_idname == "ShaderNodeInvert")
-    check("wiring: a placed crop mirrored both ways: UVChannel_2 -> placement -> ping-pong per axis -> Mapping "
-          "TEXTURE at (0.1, 0.3) x 0.5",
+    check("wiring: a placed crop mirrored both ways: UVChannel_2 -> placement -> times (2, 2, 1) -> ping-pong per "
+          "axis -> Mapping TEXTURE at (0.1, 0.3) x 0.5",
           crop.bl_idname == "ShaderNodeMapping" and crop.vector_type == 'TEXTURE'
           and close(list(crop.inputs["Location"].default_value), [0.1, 0.3, 0.0], 1e-6)
           and close(list(crop.inputs["Scale"].default_value), [0.5, 0.5, 1.0], 1e-6)
           and comb.bl_idname == "ShaderNodeCombineXYZ" and sep.bl_idname == "ShaderNodeSeparateXYZ"
           and all(n.operation == 'PINGPONG' and n.inputs[1].default_value == 1.0 for n in pings)
           and _from(pings[1].inputs[0]) == sep
+          and double.bl_idname == "ShaderNodeVectorMath" and double.operation == 'MULTIPLY'
+          and close(list(_input(double, "Vector_001").default_value), [2.0, 2.0, 1.0], 1e-6)
           and place.bl_idname == "ShaderNodeMapping" and place.vector_type == 'POINT'
           and close(list(place.inputs["Location"].default_value), list(want[0]), 1e-6)
           and close(list(place.inputs["Rotation"].default_value), [0.0, 0.0, 0.5], 1e-6)
@@ -3144,7 +3394,8 @@ def main():
             check("modifiers ignored: no exception", False)
         for label, run_check in (("material slots", lambda: check_material_slots(modules)),
                                  ("found textures", check_found_textures), ("builder", check_builder),
-                                 ("builder debt", check_builder_debt), ("linear fallback", check_linear_fallback),
+                                 ("builder debt", check_builder_debt), ("builder mirror", check_builder_mirror),
+                                 ("linear fallback", check_linear_fallback),
                                  ("image reuse", check_image_reuse), ("double import", check_double_import),
                                  ("worker errors", check_worker_errors),
                                  ("read cancel", lambda: check_read_cancel(
