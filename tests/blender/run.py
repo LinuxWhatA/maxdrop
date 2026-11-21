@@ -113,6 +113,8 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
     "arc_pie_reverse": ["UVMap"],  # every Extrude with Generate Mapping Coords; the two plain arcs are curves
     "box_poly_standard": ["UVMap"],
     "corona_layered": ["UVMap"],
+    "corona_mix_ops": ["UVMap"],
+    "corona_more": ["UVMap"],
     "corona_legacy": ["UVMap"],
     "corona_light": ["UVMap"],
     "corona_maps": ["UVMap"],
@@ -1203,6 +1205,23 @@ def _principled(material):
     return nodes[0] if len(nodes) == 1 else None
 
 
+def _layers_of(ir):
+    """Every Layer of a MaterialIR, its layers' layers included, in the order the builder draws them."""
+    out = []
+    for layer in ir.layers:
+        out.append(layer)
+        out.extend(_layers_of(layer.ir))
+    return out
+
+
+def _alpha_of(ir, present):
+    """(alpha linked, the constant alpha or None) the builder gives a Principled BSDF filled from ir."""
+    folded = _fold(ir.textures["alpha"].root, present) if "alpha" in ir.textures else LOST
+    if folded is MAP:
+        return True, None
+    return False, _mean(ir.alpha.value if folded is LOST else folded)
+
+
 def _value_ok(socket, want):
     got = socket.default_value
     if isinstance(want, (tuple, list)):
@@ -1215,10 +1234,14 @@ def _mean(v):
 
 
 def _images_of(ir):
-    """The texmaps.Image nodes of every texture graph of an IR, each once."""
+    """The texmaps.Image nodes of every texture graph of an IR, its layers' and their masks' included, each once."""
     from maxdrop.convert import texmaps as tx
     seen, out = set(), []
     stack = [g.root for g in ir.textures.values()]
+    for layer in _layers_of(ir):
+        stack.extend(g.root for g in layer.ir.textures.values())
+        if layer.graph is not None:
+            stack.append(layer.graph.root)
     while stack:
         n = stack.pop()
         if id(n) in seen:
@@ -1258,6 +1281,14 @@ def _fold(n, present):
         if MAP in (a, b):
             return MAP
         return tuple(x * y for x, y in zip(a, b)) if isinstance(a, tuple) else a * b
+    if isinstance(n, tx.Blend):
+        a, b = _fold(n.a, present), _fold(n.b, present)
+        if LOST in (a, b):
+            other = b if a is LOST else a
+            return MAP if other is MAP else LOST
+        if MAP in (a, b):
+            return MAP
+        return tx.blend_value(n.op, a, b, n.gamma)
     if isinstance(n, tx.ColorCorrect):
         v = _fold(n.input, present)
         changes = n.hue % 1.0 != 0.0 or n.saturation != 1.0 or n.brightness or n.contrast or n.gain != 1.0 \
@@ -1297,10 +1328,16 @@ def check_principled(label, material, ir, present=False):
     """A Blender material against its MaterialIR: every Principled input (linked when a node drives it, else the
     value the graph folds to, or the IR's when its images are missing), the render method, one Image Texture node
     per file. present: whether the texture files were found."""
-    p = _principled(material) if material is not None and material.node_tree else None
-    check(label + ": one Principled BSDF", p is not None)
+    layers = _layers_of(ir)
+    bsdfs = [n for n in material.node_tree.nodes if n.bl_idname == "ShaderNodeBsdfPrincipled"] \
+        if material is not None and material.node_tree else []
+    p = bsdfs[0] if len(bsdfs) == 1 + len(layers) else None
+    check(label + ": one Principled BSDF, and one per layer", p is not None, "%d for %d layers" % (len(bsdfs),
+                                                                                              len(layers)))
     if p is None:
         return
+    if layers:
+        check_layers(label, material, layers, present)
     tex = ir.textures
     wants = [
         ("Base Color", "base_color", ir.base_color.value, None),
@@ -1329,6 +1366,11 @@ def check_principled(label, material, ir, present=False):
     values = [("IOR", ir.ior), ("Emission Strength", ir.emission_strength), ("Coat Weight", ir.coat_weight),
               ("Coat Roughness", ir.coat_roughness), ("Coat IOR", ir.coat_ior), ("Coat Tint", ir.coat_color),
               ("Subsurface Weight", ir.subsurface_weight)]
+    if ir.subsurface_weight > 0:
+        values += [("Subsurface Radius", ir.subsurface_color), ("Subsurface Scale", ir.subsurface_radius)]
+    if ir.sheen_weight > 0:
+        values += [("Sheen Weight", ir.sheen_weight), ("Sheen Tint", ir.sheen_color),
+                   ("Sheen Roughness", ir.sheen_roughness)]
     for socket, want in values:
         check("%s: %s" % (label, socket), _value_ok(p.inputs[socket], want),
               "%r vs %r" % (p.inputs[socket].default_value, want))
@@ -1337,7 +1379,9 @@ def check_principled(label, material, ir, present=False):
     thin = p.inputs.get("Thin Wall")
     check(label + ": Thin Wall", (thin is None and bpy.app.version < (5, 0, 0)) or
           (thin is not None and bool(thin.default_value) == ir.thin_walled))
-    method = 'BLENDED' if alpha is not None and alpha < 1.0 else 'DITHERED'
+    alphas = [(alpha is None, alpha)] + [_alpha_of(layer.ir, present) for layer in layers]
+    method = 'DITHERED' if any(linked for linked, _v in alphas) else \
+        'BLENDED' if any(v is not None and v < 1.0 for _l, v in alphas) else 'DITHERED'
     check(label + ": surface_render_method", material.surface_render_method == method,
           "%s vs %s" % (material.surface_render_method, method))
     want_images = sorted({img.name for img in _images_of(ir)})
@@ -1347,6 +1391,28 @@ def check_principled(label, material, ir, present=False):
     loose = [n.label for n in material.node_tree.nodes if n.bl_idname == "ShaderNodeTexImage" and n.image is None
              and any(o.is_linked for o in n.outputs)]
     check(label + ": an Image Texture node without an image feeds nothing", loose == [], str(loose))
+
+
+def check_layers(label, material, layers, present=False):
+    """A layered material: a Mix Shader per layer, the last one into the output; a layer whose mask graph a node
+    drives has a linked factor, any other its amount (times the mask's constant)."""
+    nodes = material.node_tree.nodes
+    mixes = [n for n in nodes if n.bl_idname == "ShaderNodeMixShader"]
+    check(label + ": a Mix Shader per layer", len(mixes) == len(layers), "%d for %d" % (len(mixes), len(layers)))
+    out = next(n for n in nodes if n.bl_idname == "ShaderNodeOutputMaterial")
+    surface = out.inputs["Surface"]
+    check(label + ": the top Mix Shader is the surface",
+          surface.is_linked and surface.links[0].from_node.bl_idname == "ShaderNodeMixShader")
+    plain = []
+    for layer in layers:
+        folded = _fold(layer.graph.root, present) if layer.graph is not None else LOST
+        if folded is not MAP:
+            plain.append(round(min(1.0, layer.amount * (1.0 if folded is LOST else _mean(folded))), 5))
+    plain.sort()
+    got = sorted(round(m.inputs[0].default_value, 5) for m in mixes if not m.inputs[0].is_linked)
+    linked = sum(1 for m in mixes if m.inputs[0].is_linked)
+    check(label + ": the layers' amounts, masks linked", got == plain and linked == len(layers) - len(plain),
+          "%s vs %s, %d linked" % (got, plain, linked))
 
 
 def check_fixture_materials(name, plan, desc, obs):
@@ -2008,6 +2074,8 @@ def check_found_textures():
                       {"ShaderNodeMix", "ShaderNodeHueSaturation", "ShaderNodeGamma"} <= kinds, str(sorted(kinds)))
             if name == "texmap_wrappers":
                 check_wrapper_nodes()
+            if name == "vray_texmaps":
+                check_reflection_falloff()
         check("found textures: a linear color image (VRayBitmap transfer function None) imported in Linear Rec.709",
               "vtx_linear.png" in linear, str(linear))
     finally:
@@ -2110,6 +2178,64 @@ def check_builder():
         check("builder: the viewport color is the base color", close(list(ma.diffuse_color)[:3], [0.5] * 3, 1e-6))
         check_builder_wiring(ma, mb, builder, cm, tx, srgb, data, lost, gamma)
         check_wrapper_wiring(builder, cm, tx, srgb, data)
+    finally:
+        empty_scene()
+        for img in list(bpy.data.images):
+            bpy.data.images.remove(img)
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def check_builder_blend():
+    """Blend nodes (CoronaMix operations, bead maxdrop-em3.28): Gamma nodes of 1 / 2.2 on both sides and 2.2 after a
+    Mix node of the operation, not clamped; subtract floored by a Vector Math MAXIMUM; two constants folded; a
+    layered IR as a Principled BSDF per layer under Mix Shaders, the mask's graph times the amount on the factor."""
+    from maxdrop.build import materials as build_materials
+    from maxdrop.convert import materials as cm
+    from maxdrop.convert import texmaps as tx
+    from maxdrop.convert import textures as ct
+    empty_scene()
+    scratch = tempfile.mkdtemp(prefix="maxdrop-blend-")
+    try:
+        png = os.path.join(scratch, "blend.png")
+        _write_png(png)
+        img = tx.Image(1, "blend.png", "blend.png", "", ct.Found(png, ct.SCENE))
+        c = tx.Constant((0.2, 0.4, 0.6))
+        ir = cm.MaterialIR(20, "Blends", "test", base_color=cm.Input((0.5,) * 3, cm.MapRef(1)),
+                           emission_color=cm.Input((0.0,) * 3, cm.MapRef(1)), emission_strength=1.0,
+                           specular=cm.Input(0.5, cm.MapRef(1)))
+        ir.textures = {"base_color": tx.TextureGraphIR(tx.Blend(tx.BLEND_ADD, c, img, 2.2), tx.COLOR),
+                       "emission_color": tx.TextureGraphIR(tx.Blend(tx.BLEND_SUBTRACT, img, c), tx.COLOR),
+                       "specular": tx.TextureGraphIR(tx.Blend(tx.BLEND_MAX, c, tx.Constant((0.5, 0.1, 0.9))),
+                                                     tx.COLOR)}
+        layer = cm.MaterialIR(21, "Top", "test", base_color=cm.Input((1.0, 0.0, 0.0)), sheen_weight=0.5)
+        mask = tx.TextureGraphIR(tx.Mix(tx.Constant(1.0), img, 0.5), tx.DATA)
+        ir.layers = [cm.Layer(layer, 0.4), cm.Layer(layer, 0.8, cm.MapRef(1, 0.5), mask)]
+        builder = build_materials.MaterialBuilder()
+        m = builder.make(ir)
+        nodes = m.node_tree.nodes
+        mixes = [n for n in nodes if n.bl_idname == "ShaderNodeMix" and n.blend_type in ('ADD', 'SUBTRACT')]
+        add = next((n for n in mixes if n.blend_type == 'ADD'), None)
+        gammas = sorted(round(n.inputs[1].default_value, 4) for n in nodes if n.bl_idname == "ShaderNodeGamma")
+        check("blend: add between Gamma 1 / 2.2 and 2.2, unclamped",
+              add is not None and not add.clamp_result and gammas == [round(1 / 2.2, 4)] * 2 + [2.2], str(gammas))
+        floor = [n for n in nodes if n.bl_idname == "ShaderNodeVectorMath" and n.operation == 'MAXIMUM']
+        check("blend: subtract floored at 0", len(floor) == 1)
+        pb = next(n for n in nodes if n.bl_idname == "ShaderNodeBsdfPrincipled")
+        spec = pb.inputs["Specular IOR Level"]
+        check("blend: two constants folded (max), the mean times 0.5", not spec.is_linked
+              and abs(spec.default_value - (0.5 + 0.4 + 0.9) / 3 * 0.5) < 1e-5, str(spec.default_value))
+        bsdfs = [n for n in nodes if n.bl_idname == "ShaderNodeBsdfPrincipled"]
+        shaders = [n for n in nodes if n.bl_idname == "ShaderNodeMixShader"]
+        check("layers: a Principled BSDF and a Mix Shader per layer", len(bsdfs) == 3 and len(shaders) == 2)
+        plain = [n for n in shaders if not n.inputs[0].is_linked]
+        masked = [n for n in shaders if n.inputs[0].is_linked]
+        check("layers: amount 0.4 as the factor, the masked one linked through a multiply by 0.8",
+              len(plain) == 1 and abs(plain[0].inputs[0].default_value - 0.4) < 1e-6 and len(masked) == 1
+              and masked[0].inputs[0].links[0].from_node.bl_idname == "ShaderNodeMath")
+        out = next(n for n in nodes if n.bl_idname == "ShaderNodeOutputMaterial")
+        check("layers: the top Mix Shader into the output", out.inputs["Surface"].links[0].from_node in masked)
+        top = bsdfs[1]
+        check("layers: the layer's sheen set", abs(top.inputs["Sheen Weight"].default_value - 0.5) < 1e-6)
     finally:
         empty_scene()
         for img in list(bpy.data.images):
@@ -2946,6 +3072,32 @@ def _node_kinds(material):
     return out
 
 
+def _upstream(socket):
+    """Every node that feeds socket, directly or further up."""
+    out, todo = {}, [socket]
+    while todo:
+        for link in todo.pop().links:
+            n = link.from_node
+            if n.name not in out:
+                out[n.name] = n
+                todo.extend(n.inputs)
+    return list(out.values())
+
+
+def check_reflection_falloff():
+    """vray_texmaps imported: a Falloff in a VRayMtl's reflection drives Specular IOR Level by the angle (Layer
+    Weight for perpendicular / parallel, the Fresnel node for Fresnel), not its color 1."""
+    for name, kind in (("FixtureVReflPerp", "ShaderNodeLayerWeight"), ("FixtureVReflFresnel", "ShaderNodeFresnel")):
+        m = bpy.data.materials.get(name)
+        socket = _principled(m).inputs["Specular IOR Level"] if m is not None else None
+        nodes = _upstream(socket) if socket is not None else []
+        by_facing = [n for n in nodes if n.bl_idname == "ShaderNodeMix"
+                     and getattr(_from(_input(n, "Factor_Float")), "bl_idname", None) == kind]
+        check("vray_texmaps/%s: the reflection Falloff into Specular IOR Level, a Mix by %s" % (name, kind),
+              socket is not None and socket.is_linked and len(by_facing) == 1,
+              str(sorted(n.bl_idname for n in nodes)))
+
+
 def check_wrapper_nodes():
     """texmap_wrappers imported with its textures found: the node types and links each wrapper is drawn with."""
     wants = {
@@ -3395,6 +3547,7 @@ def main():
         for label, run_check in (("material slots", lambda: check_material_slots(modules)),
                                  ("found textures", check_found_textures), ("builder", check_builder),
                                  ("builder debt", check_builder_debt), ("builder mirror", check_builder_mirror),
+                                 ("builder blend", check_builder_blend),
                                  ("linear fallback", check_linear_fallback),
                                  ("image reuse", check_image_reuse), ("double import", check_double_import),
                                  ("worker errors", check_worker_errors),

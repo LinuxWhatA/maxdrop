@@ -26,14 +26,38 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
 - Lights: a standard, photometric or VRayIES light whose shadows are off in 3ds Max casts no shadow in Blender;
   a VRayIES with an overridden light shape gets a spot radius from it (soft shadows), a shape other than a sphere
   drawn as a sphere of its largest size, a line in the report.
+- Corona: a CoronaLayeredMtl mixes its layers over its base (each by its amount and mask, a Mix Shader per layer)
+  instead of giving the base alone. CoronaPhysicalMtl brings its sheen, subsurface scattering and a metal's complex
+  IOR, CoronaMtl its subsurface scattering; CoronaSkinMtl is imported (simplified: one subsurface layer), and a
+  CoronaRaySwitchMtl or CoronaSelectMtl gives the material the camera sees or the one selected, instead of grey.
+  Translucency, volumetric absorption, a metal edge color and CoronaMtl's glossiness with PBR mode off are named in
+  the report.
+- CoronaMix: the Add, Subtract, Divide, Minimum, Maximum and Difference operations are imported as nodes, in gamma
+  2.2 when "mix in sRGB" is on as Corona does it, and the layer multipliers and offsets are applied, instead of the
+  first bitmap below and a line in the report.
 
 ### Changed
+
+- CoronaColor: a temperature takes Corona's own color (measured) instead of an approximate curve that was up to
+  0.04 off.
 
 - Import: Esc while a windowed import reads a very large mesh stops the reading inside that mesh, so the next
   import can start at once (one mesh of 5.6 million face corners kept it busy for about a second more).
 
 ### Fixed
 
+- Images and the scene's gamma: in a scene saved with the gamma on and a file input gamma other than 2.2, a Bitmap
+  with automatic gamma (and a VRayBitmap whose transfer function is From 3ds Max) is read with that input gamma, as
+  3ds Max reads it (input gamma 1.0: linear, where MaxDrop read it as sRGB). In a scene saved with the gamma off, a
+  Bitmap's gamma override does nothing, as in 3ds Max: the image is read as sRGB (an override of 1.0 made it too
+  bright). Measured in V-Ray 5.2 renders; the report names an input gamma other than 2.2.
+- CoronaColor: a temperature in a scene saved with the gamma off is decoded from sRGB like every other color there
+  (and like VRayColor's temperature), as V-Ray renders it: 3000 K showed too pale.
+- Maps in a scene saved with the gamma off: a colored constant on a mask (a VRayColor, a CoronaColor, a Mix's or
+  Falloff's own color) takes the mean of its swatch before the sRGB curve, as V-Ray renders a mask: a red mask over
+  a black-to-white Mix gives 0.09 instead of 0.33, which showed much too bright. Other data inputs (roughness,
+  metallic) follow the same rule, not yet checked against V-Ray. Grey constants and scenes with the gamma on are
+  unchanged.
 - Bitmap, CoronaBitmap, VRayBitmap: Mirror is drawn as 3ds Max draws it, two copies per tile with the second one
   mirrored (a cropped image too), and it wins over Tile: a mirrored map with the default tiling is no longer drawn
   as a plain repeat. Tile, mirror and neither are kept per direction also without a crop (Tile U only no longer
