@@ -46,8 +46,9 @@ An object points to others by object index.
   the Editable Mesh of editable_mesh one.
 - `0x2035`: a `u32`, then `(u32 slot, i32 index)` pairs. The first value is the number of reference slots: 16
   for Node and RootNode, 48 for Texmaps and 2 for Bezier Float, Bezier Scale, Bezier Color, Boolean Controller and
-  Grid Reference in every fixture, 2 for MtlBaseLib in stack_basic (and for the point class of Custom Curve
-  Control, nameless in the class directory: texmap_rules' Falloff curves), 34 for VRayMtl (vray_basic,
+  Grid Reference in every fixture, 2 for MtlBaseLib in stack_basic, the point count for the curve of a Custom
+  Curve Control (nameless in the class directory: 2 for a default Falloff curve, 3 and 4 in falloff_curve; see
+  [The Falloff mix curve](#the-falloff-mix-curve)), 34 for VRayMtl (vray_basic,
   vray_maps, vray_wrappers: what the SDK's `NumRefs` reports for a VRayMtl), and for a ParamBlock2 the number of
   its reference slots (25 and 37 in
   standard_physical and vray_wrappers; 37 for the VRayBlendMtl block, see [Parameter blocks](#parameter-blocks)).
@@ -790,9 +791,12 @@ units:
 | 9, 10 | double-sided; invisible |
 | 18, 19 | texmap (a map reference), texmap on |
 | 25, 26, 30 | affect diffuse, affect specular, affect reflections |
+| 27 | dome spherical (`dome_spherical`; V-Ray 5.2's default on; off: the half above the dome's local XY plane) |
+| 34 | mesh source (`mesh_source`, a node reference) |
 | 36 | directional (`lightDistribution`) |
 | 38, 39 | color temperature (K); color mode: 0 color, 1 temperature |
 | 43 | targeted (the node has a Look At controller and a Target, [Look At](#look-at)) |
+| 49 | texture locked to the dome (`texmap_locktodome`; default 0) |
 | 53, 54 | diffuse contribution, specular contribution |
 
 In temperature mode V-Ray also stores its own color of that temperature in 7 (3500 K: 1.0, 0.584, 0.256); MaxDrop
@@ -808,10 +812,52 @@ default units it does not. Blender's area light shines on one side: a double-sid
 
 **A scaled node.** V-Ray grows the emitting area with the node's scale; in the units that follow the area (default,
 lm/m²/sr, W/m²/sr) the flux grows with it, in lm and W it does not. Measured on lights scaled 2, 1.5, 1 (the scratch
-scene below): plane and disc 3 × the unscaled flux (X × Y scale), sphere 4 × (its largest scale squared; X and the
-largest are the same there). Blender scales an area light's size with its object and keeps its power, so the power
-takes that factor (`area_scale`), and instances of one light with different scales get a light each. The
-vray_lights fixture's FixtureDiscScaled is such an instance.
+scene below): plane and disc 3 × the unscaled flux (X × Y scale). A sphere takes its X scale alone and stays round
+(a W/m²/sr sphere above a white floor: 4 × at (2, 2, 2) and (2, 1.5, 1), 1 × at (1, 2, 1), (1, 1, 2) and
+(1, 2, 3); seen by the camera, twice as wide at (2, 1, 1), half at (0.5, 1, 1), unchanged at (1, 3, 1)): radius
+size0 × X scale, area × X². Blender scales an area light's size with its object and keeps its power, so the power
+takes that factor (`area_scale`), and instances of one light with different scales get a light each. Blender's
+point light keeps its radius whatever its object's scale (Blender 4.2.23, 4.5.16 and 5.2: a camera-visible light in
+Cycles 0.48 m across at every scale, EEVEE's penumbra unchanged), so a sphere's radius takes the X scale, in every
+units mode (its key holds X² there too). The vray_lights fixture's FixtureDiscScaled and the vray_dome fixture's
+FixtureSphereWide (2, 1, 1, in W: radius twice, flux the same) and FixtureSphereTall (1, 1, 2.5: as unscaled) are
+such nodes.
+
+**Mesh light.** Not imported yet: an empty and a line in the report, naming the node parameter 34 refers to when it
+is one of the scene. Measured with `mesh_source` set by a script (a 20 × 40 box, an orthographic camera looking
+down): V-Ray 5.2 emits that node's mesh as it is now (the box made 60 wide afterwards emits 60 wide), placed at the
+light node's transform (the footprint follows the light's position and its turn about Z; where the box itself
+stands does not matter), and nothing once the box is deleted. What a Pick mesh in V-Ray's panel with Replace mesh on
+(which deletes the picked node) leaves in the file is not known.
+
+**Dome light → World.** The first dome node that is on becomes the scene's World (a new World, assigned to the
+scene; the one before is kept, with a fake user when it has no other, and the report says so; in an import of
+several files the first file's dome); another dome node, an instance of it too, or one that is off is a line in the
+report; dome nodes stay empties (not placeholders). A World that cannot be built is a line in the report, the scene
+is imported all the same. Measured in V-Ray 5.2 (scratch scenes): a white
+floor under a white dome of multiplier 1 renders 1.00018 in the default units, 0.00213024 in lm and lm/m²/sr, 1.43109
+in W and W/m²/sr (a dome has no area: the flux and the radiance units agree); Cycles renders a white floor under a
+white World of strength S at S (1.00002 for 1). So the World's strength is the multiplier × 1500 / (683 π), ×
+1 / 671.8 (0.00213024 / 1.43109) or × 1 in the three pairs, times Light Strength: in the default units 0.9997 of
+V-Ray's at 1.43. A texture replaces the color (a dome color 255, 64, 64 leaves a white texel white) and takes the
+same multiplier and units. With spherical off only the half above the dome's local XY plane shines (a downward-facing
+white plane gets 0; the camera sees 0 below; turned 180° about X the lower half shines; the position does not
+matter): a Math node masks the strength by the local Z of the direction. Invisible: World camera rays off (Cycles'
+`cycles_visibility`); affect diffuse / specular / reflections as a light's.
+
+The texture: a VRayBitmap in spherical mapping (`mapType` 2; block 0: 3 horizontal rotation, 4 vertical rotation, 36
+axial rotation, in radians; 5 horizontal flip, 6 vertical flip, 26 ground projection, read from a probe scene) gives u = 0.5 + φ / 2π + h / 360 (φ = atan2(y, x) of the direction in the texture's frame, h the horizontal
+rotation in degrees) and v up the image; a Bitmap in spherical environment mapping (UVGen `0x9005` 1, `0x9009` 1, see
+[Materials and maps](#materials-and-maps)) u = 0.75 + φ / 2π, as a VRayBitmap of h = 90. Lock to dome 0: the world's frame; 1: the dome
+node's rotation (turned 90° about Z, the texture turns with it). Measured with a self-authored image of eight
+colored blocks seen through cameras at ±X, ±Y and ±20° elevation. Blender's Environment Texture runs the other way
+round (u = 0.5 − φ / 2π): the direction (Texture Coordinate Generated) goes through a Mapping node of scale
+(1, −1, 1) and rotation Rz(−h) F T F (F the mirror in Y, T the axis conversion and lock turn into the texture's
+frame). The vray_dome fixture (h 30, locked, its node turned 90° about Z, a hemisphere) and a tilted copy imported
+with Y up give the same texels as V-Ray's renders. Other projections are drawn as spherical; the vertical and axial
+rotation, the flips, the ground projection, an Output other than its amount, a gamma other than automatic or 1, crop or placement and a Bitmap's offset, tiling
+or angle are left out (a line each); a root other than an image map or a file not found leaves the World its color
+(a line).
 
 **Calibration of Light Strength (1.43).** A scratch scene (not committed): a white Lambert floor (VRayMtl diffuse
 255, no reflection; in Blender a Diffuse BSDF of 1.0), an invisible VRayLight 1 m above it, plane, disc and sphere
@@ -876,9 +922,10 @@ ozone, 9 invisible, 12 sky model, 14 / 19 affect diffuse / its contribution, 15 
 `cast_atmospheric_shadows` only). A targeted VRaySun is a Look At node. **VRayIES** `(0x2EAF2F07, 0x7EC44F31)`, block 0:
 0 enabled, 1 IES file (an asset of type `Photometric`), 7 color temperature, 8 color, 9 color mode (1 temperature), 10
 power, 11 targeted, 14 / 30 affect diffuse / contribution, 15 / 31 affect specular / contribution, 32 intensity type (0
-lm, 1 cd), 34 override intensity. With the intensity overridden, 10 holds the override's value in its unit; 33
-(`intensity_value`) is stored stale (0). 4 cast shadows; 5 use light shape (0 no, 1 for shadows only, 2 for illumination
-and shadows), 21 override shape (off: the IES file's shape), 22 shape, 23 height, 24 width, 25 length, 26 diameter
+lm, 1 cd), 34 override intensity. 10 is lumens in both units of the override (the panel converts a cd value with
+the IES file: an isotropic 100 cd file rated 500 lm stores 100 cd as 500; the photometric fixture, whose file does
+not exist, stored its 300 cd as 300); 33 (`intensity_value`) is stored stale (0). 4 cast shadows; 5 use light shape
+(0 no, 1 for shadows only, 2 for illumination and shadows), 21 override shape (off: the IES file's shape), 22 shape, 23 height, 24 width, 25 length, 26 diameter
 (world units), 35 `shape_actual` (-1 without a file). The shapes, in the order of the panel's list (the stored value),
 with the sizes the panel enables (H W L D): 0 point; 1 rectangle H W L; 2 circle D; 3 sphere D; 4 vertical cylinder H D;
 5 / 6 horizontal cylinder along the length / width L D / W D; 7 / 8 ellipse, 9 / 10 ellipsoid (length / width), 11
@@ -906,6 +953,17 @@ as bright as V-Ray:
 - a standard Direct: a sun of 1500 m / 683 W/m²; a VRaySun: 146.4 m W/m² (the rules source's 100 klx / 683);
 - a VRayIES: its lumens / 683 W, on a spot of 170° and hotspot 100° (the rules source's wide spot), as a
   photometric web.
+
+**VRayIES power, measured** (the same scene, an isotropic LM-63 file of 100 cd, whose flux is 1256.6 lm, with rated
+lumens of 1256.6, 500 or -1 in its header): with the intensity override off V-Ray scales the file's candelas by power /
+rated lumens. Rated 1256.6: power 1256.6 (what loading the file sets) 0.0667 (100 cd), power 1000 0.0531 (1000 lm).
+Rated 500: power 500 (set on load) 0.0667, power 1000 0.1334 (200 cd, not 1000 lm). Rated -1: loading sets the
+power to the file's flux, 1256.64 (0.0667); power 1000 0.0531. With the override on, the power is the flux whatever the header says: rated 500,
+1000 lm 0.0531; 100 cd (the panel stores 500 lm) 0.0265; rated 1256.6, 100 cd (stored 1256.6) 0.0667. Power 0 renders
+black, override on or off, with every file. So the power is the light's flux with the override on, and without it only
+when the file's rated lumens are its flux (an absolute file's -1, or a relative one of a luminaire without losses);
+MaxDrop does not read the file and takes the power as the flux either way, a line in the report when the override is
+off. A file V-Ray cannot find renders otherwise (power 1000 lm, override off: 1.689): not modeled.
 
 **Spot cones.** Blender's spot size is the falloff; its blend is set so that full intensity ends at the hotspot, as in
 3ds Max: Blender blends in cosine space (full intensity where cos θ ≥ cos(size / 2) + (1 − cos(size / 2)) · blend),
@@ -1189,7 +1247,9 @@ reader's children.
   (texmap_rules and probe scenes saved by 3ds Max 2020, one setting changed per Bitmap): `0x9002` flags (bit 0 U
   tile, 1 V tile, 2 U mirror, 3 V mirror, 27 real-world scale; bit 30 set in every file), `0x9003` axis (0 UV, 1 VW,
   2 WU), `0x9005` mapping type (0 texture, 1 environment), `0x9006` coordinate source (0 explicit map channel, 1
-  planar from object XYZ, 2 vertex color channel, 3 planar from world XYZ), `0x900B` the map channel. Its old
+  planar from object XYZ, 2 vertex color channel, 3 planar from world XYZ), `0x900B` the map channel, `0x9009` the
+  environment projection (1 spherical, 2 cylindrical, 3 shrink-wrap, 4 screen; kept in texture mode too, 4 there by
+  default: a probe scene with one Bitmap per projection). Its old
   ParamBlock adds 4 U angle and 5 V angle (radians). A mirrored axis has its tile bit clear.
 - The Output part (superclass TexOutput, class `(0x100, 0)`): an old ParamBlock, 0 RGB level, 1 RGB offset, 2 output
   amount, 3 bump amount, and a leaf `0x0002` `u32` flags, bit 1 (`2`) invert.
@@ -1255,18 +1315,55 @@ The maps of texmap_rules (block 0 each; `convert/texmaps.py`):
 | Class (ClassID) | Parameters |
 |---|---|
 | Bitmap `(0x240, 0)` | 6 apply (cropping / placement on), 9 monoOutput (1 alpha), 10 rgbOutput (1 alpha as gray), 11 alphaSource |
-| Falloff `(0x6EC3730C, 0)` | 0 color1, 1 map1Amount, 2 map1, 3 map1On, 4 color2, 5 map2Amount, 6 map2, 7 map2On, 8 type (0 towards / away, 1 perpendicular / parallel, the default, 2 Fresnel, 3 shadow / light, 4 distance blend), 9 direction (0 viewing), 10 node, 11 mtlIOROverride, 12 ior, 13 extrapolateOn, 14 nearDistance, 15 farDistance (texmap_wrappers); its Output part; the MixCurve is a Curve Control reference, not in the block |
+| Falloff `(0x6EC3730C, 0)` | 0 color1, 1 map1Amount, 2 map1, 3 map1On, 4 color2, 5 map2Amount, 6 map2, 7 map2On, 8 type (0 towards / away, 1 perpendicular / parallel, the default, 2 Fresnel, 3 shadow / light, 4 distance blend), 9 direction (0 viewing), 10 node, 11 mtlIOROverride, 12 ior, 13 extrapolateOn, 14 nearDistance, 15 farDistance (texmap_wrappers); its Output part; the MixCurve is a Curve Control reference, not in the block (below) |
 | VRayDirt `(0x2F567899, 0x090D5EA4)` | 12 occluded_color, 13 unoccluded_color, 17 texmap_unoccluded_color, 18 its on, 19 its multiplier |
 | VRayColor2Bump `(0x31E15D1D, 0x7D7E2810)` | 0 map, 1 height (world units), 2 bump delta scale |
 | VRayColor `(0x58F82B74, 0x73B75D7F)` (vray_texmaps) | 9 color_mode (0 RGB, 1 temperature: V-Ray writes the temperature's color into color), 8 temperature, 0 / 1 / 2 red / green / blue (color again), 4 rgb_multiplier, 3 alpha, 5 color, 10 color_gamma (applied after the multiplier), 11 rgb_primaries; block 1 (6 gamma_correction, 7 gamma_value) is transient |
 | Output `(0x2B0, 0)` | 0 map1, 1 map1Enabled, 2 output (its Output part) |
 | RGB Tint `(0x224, 0)` | 0 red, 1 green, 2 blue, 3 map1, 4 map1Enabled |
-| Mix `(0x230, 0)` | 0 mixAmount (fraction), 1 lower, 2 upper, 3 useCurve, 4 color1, 5 color2, 6 map1, 7 map2, 8 mask, 9 / 10 / 11 their switches |
+| Mix `(0x230, 0)` | 0 mixAmount (fraction), 1 lower, 2 upper (fractions, the defaults 0.3 and 0.7), 3 useCurve, 4 color1, 5 color2, 6 map1, 7 map2, 8 mask, 9 / 10 / 11 their switches; Use Curve below |
 | RGB Multiply `(0x290, 0)` | 0 color1, 1 color2, 2 map1, 3 map2, 4 / 5 their switches, 6 alphaFrom |
 | Color Correction `(0x2D0, 0)` | 0 color, 1 map, 2 rewireMode (0 normal, 1 monochrome, 2 invert, 3 custom), 3..6 rewireR, G, B, A (0..2 R, G, B, 3 A, 4..7 their inverse, 8 monochrome, 9 one, 10 zero; modes 1 and 2 store (8, 8, 8, 3) and (4, 5, 6, 3): texmap_wrappers), 7 hueShift (degrees), 8 saturation (%), 9 tint, 10 tintStrength, 11 lightnessMode (1 advanced), 12 brightness, 13 contrast, 14 exposureMode, 15..17 enableR, G, B, 18 gainRGB (%), 22 gammaRGB |
 | Composite `(0x280, 0)` | tables: 1 mapEnabled, 3 maskEnabled, 5 blendMode (0 normal, 1 average, 2 addition, 3 subtract, 4 darken, 5 multiply, 6 color burn, 7 linear burn, 8 lighten, 9 screen, 10 color dodge, 11 linear dodge, 12 spotlight, 13 spotlight blend, 14 overlay, 15 soft light, 16 hard light, 17 pin light, 18 hard mix, 19 difference, 20 exclusion, 21 hue, 22 saturation, 23 color, 24 value: measured with renderMap), 6 layerName, 8 opacity (%), 9 mapList, 10 mask; 0, 2 and 4 have no name and are empty tables, not saved. As a constructor keyword `name` is the layer names; assigned afterwards it is the map's name (texmap_wrappers names its three) |
 | Normal Bump `(0x243E22C6, 0x63F6A014)` | 0 mult_spin, 1 bump_spin, 2 normal_map, 3 bump_map, 4 / 5 their switches, 6 method (0 tangent), 7 flipred, 8 flipgreen, 9 swap_rg |
 | CoronaNormal `(0x2870CEAA, 0xCC18437C)` | 500 normalMap, 501 multiplier, 502 addGamma, 503 flipRed, 504 flipGreen, 505 swapRedGreen, 507 additionalBump, 508 additionalBumpStrength, 509 additionalBumpOn |
+
+Empty wrappers, measured (maxdrop-em3.76; 3ds Max 2020, gamma off, renderMap and V-Ray 5.2 renders with linear
+color mapping, a plane under an orthographic camera). An Output or RGB Tint with map1 unset or map1Enabled off renders
+exactly as the same map over an opaque white map: white through its Output part (level 0.8, offset 0.1, amount 0.5
+gave the same pixel as over white) or its tint ((128, 0, 0), (0, 64, 0), (0, 0, 32) gave 0.502, 0.251, 0.125). A
+VRayColor2Bump without a map renders (0.5, 0.5, 1), opaque, in a color slot (over a white map: white); it has no map
+switch. On an opacity input V-Ray takes the mean (1, 0.293, 0.667). In a VRayMtl bump slot each one is flat; inside
+a VRayNormalMap's normal slot the white of an empty Output or RGB Tint tilts the normal as a white map does, the
+VRayColor2Bump's color is flat. Corona renders do not run on the machine of the measurement: not measured. MAXScript
+`copy` of an Output map loses map1Enabled (the copy renders its map).
+
+### The Falloff mix curve
+
+A Falloff references a Custom Curve Control `(0x14585773, 0x483A7DCF)`, superclass `0x100`, DLL
+`curvecontrol.dlu` (slot 6 in the fixtures; MaxDrop finds it by its ClassID). Its reference 0 is its curve
+`(0x5F2D3A0A, 0x4BE75269)`, superclass `0x100`, nameless in the class directory (falloff_curve; maxdrop-em3.84):
+
+| Chunk | Content |
+|---|---|
+| `0x1000` | `u32` the point count (2 for the default curve); the head of the curve's `0x2035` is the same number |
+| `0x1030` | one per point, in x order: a container holding `0x1000`, 28 bytes: `f32` x, y of the point, x, y of its in handle, x, y of its out handle (each handle as a position: the point plus the offset MAXScript and the SDK give), `u32` flags (seen: `0x102` the first point, `0x100` the last, `2` and `4` for points set as Bezier and corner) |
+| `0x1020`, `0x1040` | not decoded (a `u32` 0; 28 bytes, the same in every falloff_curve curve) |
+
+The default curve is (0, 0) to (1, 1), its handles on its points: linear. How 3ds Max 2020 evaluates it
+(`ICurve.GetValue` through .NET, matched to 1e-6; falloff_curve's `.curves.jsonl`): segment i is the cubic Bezier
+of point i, its out handle, the in handle of point i + 1 and point i + 1, taken at its x. The flags do not change
+it (0, 1, 2, 3, 4, 8 and 16 give the same values). A point whose y is outside 0..1 is evaluated at the nearest
+bound, its handles moved with it (also after the file is loaded again); between the points the curve is not
+clamped (a handle took it to 1.195). The Falloff renders lerp(color 1, color 2, curve(ratio)), not clamped either
+(Scanline: 152.8 where color 2 is 128 and the curve 1.195), for Perpendicular / Parallel, Towards / Away and Fresnel
+alike (within 8-bit rounding of the renders without the curve put through it). MAXScript reaches the control only
+as `mixCurve.Curve_1` without its points; the fixture's script sets them through the .NET `ICurve` (`Insert`,
+`SetPoint`; `GetPoint`'s point fails to cast in 3ds Max 2020, its handles and flags read).
+
+A Mix's Use Curve has no curve control: renderMap of a Mix of black and white gives, by the mix amount and by a mask
+alike, 0 below lower, 1 from upper on and smoothstep of (x - lower) / (upper - lower) between (lower 0.3, upper 0.7:
+0.04295 at 0.35, 0.15624 at 0.4); with lower at or above upper it is a step at lower.
 
 The Corona classes of corona_physical, corona_legacy, corona_maps, corona_layered, corona_light, corona_more and
 corona_mix_ops (3ds Max 2020 + Corona 12, DLL `coronamaxutils2020.dlt`; block 0 each). CoronaPhysicalMtl's class-directory name starts with a

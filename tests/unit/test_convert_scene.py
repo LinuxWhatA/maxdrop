@@ -58,6 +58,7 @@ UV_LAYERS = {
     "corona_physical": ["UVMap"],
     "editable_mesh": ["UVMap"],
     # per mesh (named after its first node): Extrude makes channel 1 only with Generate Mapping Coords.
+    "falloff_curve": ["UVMap"],
     "extrude": {"FixtureExtRect": ["UVMap"], "FixtureExtAdaptive": ["UVMap"]},
     "gamma_swatches": ["UVMap"],
     "hierarchy": [],
@@ -90,6 +91,7 @@ UV_LAYERS = {
     "vray_texmaps": ["UVMap"],
     "vray_more": ["UVMap"],
     "vray_lights": [],  # lights and a target: no mesh
+    "vray_dome": [],  # lights and a box without Generate Mapping Coords
     "lights_standard": [],
     "lights_photometric": [],
     "cameras": [],  # its box, without Generate Mapping Coords; the cameras are no mesh
@@ -181,12 +183,16 @@ ISSUES = {"uvwmap": ["uvw map: a UVW Map above Bend is not evaluated",
               "light: its line shape is a rectangle 0.01 m wide",
               "light: its line shape is not imported: a point",
               "light: its photometric web fixture_web.ies is approximated by a spot of 170 degrees",
+              "light: its power is taken as its flux: V-Ray scales the IES file's candelas by the power over "
+              "the file's rated lumens, which are not read",
               "light: its rectangle light shape is a sphere 0.4 m across",
               "light: its rectangle shape is not imported: a point"],
           "vray_lights": ["light: diffuse contribution 0.5: Blender's diffuse factor, which only EEVEE uses",
                           "light: double-sided: Blender's area light shines on one side, with half the power",
-                          "light: not built: a dome light is not imported yet (dome -> World is later work)",
-                          "light: not built: a mesh light is not imported yet"]}
+                          "light: not built: a mesh light is not imported yet"],
+          "vray_dome": ["light: a second dome light: not imported (Blender has one World, FixtureDome's)",
+                        "light: not built: a mesh light is not imported yet (V-Ray emits the mesh of "
+                        "FixtureMeshSource at the light's place)"]}
 # the oracle's base_class_id of the lights MaxDrop builds: VRayLight, VRaySun, VRayIES, the standard and the
 # photometric lights
 LIGHT_CLASSES = {("0x3c5575a1", "0x5fd602df"), ("0x732c0383", "0x7d993776"), ("0x2eaf2f07", "0x7ec44f31"),
@@ -196,8 +202,9 @@ LIGHT_CLASSES = {("0x3c5575a1", "0x5fd602df"), ("0x732c0383", "0x7d993776"), ("0
                  ("0x7ca93582", "0x1abb6b32"), ("0x46f634e3", "0x0a327aaf"), ("0x658d4f97", "0x72cd4259"),
                  ("0x45076885", "0x40791449"), ("0x71794f9d", "0x70ae52f2"), ("0x38732348", "0x201758b3"),
                  ("0x33fc7ae9", "0x54433dc5"), ("0x7c8b5b10", "0x4bd33e86")}
-# not built yet: vray_lights' mesh and dome lights, lights_standard's Skylight (not in LIGHT_CLASSES)
-UNBUILT_LIGHTS = {"FixtureMesh", "FixtureDome"}
+# not built as lights: vray_lights' and vray_dome's mesh lights and domes (a dome is the World), lights_standard's
+# Skylight (not in LIGHT_CLASSES)
+UNBUILT_LIGHTS = {"FixtureMesh", "FixtureDome", "FixtureDomeColor", "FixtureMeshLight"}
 # meshes under a converted smoother with Smooth Result: no sharp edge (modifier_pivot's reference, stack_basic's box)
 SHARP_EDGES_SMOOTHED = {"FixtureSmooth": 0, "FixtureTurbo": 0, "FixtureTurboOne": 0, "FixtureMeshSmooth": 0,
                         "FixtureOrder": 0}

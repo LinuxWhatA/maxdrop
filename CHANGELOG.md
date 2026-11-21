@@ -10,6 +10,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
 
 ### Added
 
+- Maps: a Falloff's edited mix curve is drawn as a Float Curve on its ratio, as 3ds Max evaluates it (a curve that
+  bends a reflection or sheen ramp no longer renders linear), and a Mix's Use Curve as its transition zone (a Map
+  Range over the mask, or folded into the mix amount) instead of a line in the report.
 - Shapes: an NGon's corner radius and an Ellipse's outline are drawn as 3ds Max draws them, and a shape that renders
   with a rectangular section gets that section (a hidden bevel object beside it) instead of a round one; none of
   them is a line in the report any more, but a rectangular section on a shape that is not flat, which may turn
@@ -32,6 +35,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
   CoronaRaySwitchMtl or CoronaSelectMtl gives the material the camera sees or the one selected, instead of grey.
   Translucency, volumetric absorption, a metal edge color and CoronaMtl's glossiness with PBR mode off are named in
   the report.
+- Lights: a VRayLight dome becomes the scene's World instead of an empty: its color or temperature, or its
+  spherical texture (VRayBitmap or Bitmap) turned and locked as V-Ray shows it, its strength as bright as V-Ray 5.2
+  times Light Strength, a hemisphere when spherical is off, invisible and the affect switches. The World before is
+  kept (with a fake user, so saving keeps it) and the report names both; a second dome, also one in a later file of
+  the same import, is a line in the report. A mesh light's report line names the
+  node whose mesh it emits.
 - CoronaMix: the Add, Subtract, Divide, Minimum, Maximum and Difference operations are imported as nodes, in gamma
   2.2 when "mix in sRGB" is on as Corona does it, and the layer multipliers and offsets are applied, instead of the
   first bitmap below and a line in the report.
@@ -40,12 +49,29 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
 
 - CoronaColor: a temperature takes Corona's own color (measured) instead of an approximate curve that was up to
   0.04 off.
+- Materials: an Output or RGB Tint map without a map of its own (or with it switched off) is drawn as 3ds Max and
+  V-Ray 5.2 render it, white through its own output levels or tint, and a VRayColor2Bump without a map as the
+  color (0.5, 0.5, 1) it renders (flat in a bump slot), instead of being left out with a line in the report.
+  Measured in 3ds Max 2020 and V-Ray 5.2; Corona not measured. In a normal map's normal slot such an empty map is
+  still left out with a line in the report (V-Ray tilts the normal by that white).
 
 - Import: Esc while a windowed import reads a very large mesh stops the reading inside that mesh, so the next
   import can start at once (one mesh of 5.6 million face corners kept it busy for about a second more).
 
 ### Fixed
 
+- Lights: a VRayIES whose intensity is overridden in cd is as bright as V-Ray renders it: its stored power is
+  already the flux in lumens, it was taken as candelas (4π times too bright). Without the override, a line in the
+  report says the power is taken as the flux (V-Ray scales the IES file by the power over the file's rated lumens,
+  which are not read), and power 0 says the light is dark in V-Ray too, not that V-Ray takes the file's own
+  intensity. Measured in V-Ray 5.2.
+- Lights: a scaled V-Ray sphere light takes its X scale alone, as V-Ray does: its radius grows with it (Blender's
+  point light keeps its radius whatever its object's scale), its power in the area units with its square; a
+  larger Y or Z scale no longer makes it brighter.
+- Colored data maps: a colored map on roughness, metallic or opacity, a Mix or layer mask or a bump height
+  gives the mean of its channels, where Blender's own conversion weighed them by luminance (red 0.21, green 0.72,
+  blue 0.07), so such a map rendered too rough or too smooth, too opaque or too clear. Measured in V-Ray 5.2 on a
+  Mix mask, a glossiness map and an opacity map: pure red, green or blue gives 1/3.
 - Images and the scene's gamma: in a scene saved with the gamma on and a file input gamma other than 2.2, a Bitmap
   with automatic gamma (and a VRayBitmap whose transfer function is From 3ds Max) is read with that input gamma, as
   3ds Max reads it (input gamma 1.0: linear, where MaxDrop read it as sRGB). In a scene saved with the gamma off, a

@@ -417,9 +417,9 @@ def _bitmap(index, guid=G1):
     return FakeMap(index, classids.BITMAP_TEX, {13: pblock.Asset(guid)}, cls="Bitmap")
 
 
-def _falloff(index, map1=None, color1=(0.5, 0.5, 0.5), ftype=1):
+def _falloff(index, map1=None, color1=(0.5, 0.5, 0.5), ftype=1, name="map"):
     return FakeMap(index, tx.FALLOFF, {0: color1, 2: Ref(map1), 3: 1, 8: ftype}, [map1] if map1 is not None else [],
-                   cls="Falloff")
+                   cls="Falloff", name=name)
 
 
 def _table():
@@ -1101,11 +1101,66 @@ class Guards(Checks):
         self.assertTrue(any("pivot and lift" in r for r in g.issues))
         self.assertTrue(any("tint not converted" in r for r in g.issues))
 
-    def test_mix_curve_is_an_issue(self):
-        mix = FakeMap(1, tx.MIX, {3: 1, 6: Ref(2)}, [2])
+    def test_mix_curve(self):
+        """Use Curve folds the mix amount through mix_factor, or puts a Smoothstep over the mask; no issue."""
+        mix = FakeMap(1, tx.MIX, {0: 0.4, 1: 0.3, 2: 0.7, 3: 1, 6: Ref(2)}, [2])
         g = _tex(mix, _bitmap(2)).convert(mat.MapRef(1), tx.COLOR)
+        self.close(g.root.factor, 0.15625)  # u = 0.25: 3u^2 - 2u^3
+        self.assertFalse(g.approximated)
+        self.assertEqual(g.issues, ())
+        mix = FakeMap(1, tx.MIX, {0: 0.4, 1: 0.2, 2: 0.9, 3: 1, 6: Ref(2), 8: Ref(3)}, [2, 3])
+        g = _tex(mix, _bitmap(2), _bitmap(3)).convert(mat.MapRef(1), tx.COLOR)
+        self.assertIsInstance(g.root.mask, tx.Smoothstep)
+        self.assertIsInstance(g.root.mask.input, tx.Image)
+        self.assertEqual((g.root.mask.lower, g.root.mask.upper), (0.2, 0.9))
+        self.close(g.root.factor, tx.mix_factor(0.4, 0.2, 0.9))  # the builder's fallback when the mask is missing
+        self.assertEqual(g.issues, ())
+        mix = FakeMap(1, tx.MIX, {0: 0.4, 6: Ref(2), 8: Ref(3)}, [2, 3])  # without Use Curve: the mask itself
+        self.assertIsInstance(_tex(mix, _bitmap(2), _bitmap(3)).convert(mat.MapRef(1), tx.COLOR).root.mask, tx.Image)
+
+    def test_mix_factor(self):
+        """The measured rule (renderMap, 3ds Max 2020): lower 0.3, upper 0.7 and lower 0.2, upper 0.9."""
+        measured = {(0.3, 0.7): [0.0] * 7 + [0.0429541, 0.156237, 0.316396, 0.499992, 0.683589, 0.843748, 0.957031]
+                    + [1.0] * 7,
+                    (0.2, 0.9): [0.0] * 5 + [0.0145724, 0.0553902, 0.118074, 0.198245, 0.291539, 0.393576, 0.499992,
+                                             0.606409, 0.708446, 0.80174, 0.88191, 0.944595, 0.985412, 1.0, 1.0, 1.0]}
+        for (lower, upper), ys in measured.items():
+            for k, y in enumerate(ys):
+                self.assertAlmostEqual(tx.mix_factor(k / 20.0, lower, upper), y, delta=1e-4, msg=(lower, upper, k))
+        self.assertEqual([tx.mix_factor(x, 0.5, 0.5) for x in (0.4999, 0.5, 0.6)], [0.0, 1.0, 1.0])  # a step
+        self.assertEqual([tx.mix_factor(x, 0.7, 0.3) for x in (0.5, 0.69, 0.7)], [0.0, 0.0, 1.0])  # a step at lower
+
+    def test_edited_mix_curve_in_every_kind(self):
+        """An edited curve puts the Facing under a Remap whatever the input (a VRayMtl reflection is a data input,
+        the case of a bent reflection ramp), and the Remap is the curve's polyline."""
+        P = reader_materials.CurvePoint
+        points = (P((0, 0), (0, 0), (0, 0), 0x102), P((0.5, 0.2), (0.5, 0.2), (0.5, 0.2), 4),
+                  P((1, 1), (1, 1), (1, 1), 0x100))
+        old = reader_materials.mix_curve
+        reader_materials.mix_curve = lambda _scene, _m: points
+        try:
+            for kind in (tx.COLOR, tx.DATA):
+                g = _tex(_falloff(1, name="fo")).convert(mat.MapRef(1), kind)
+                self.assertEqual(g.root.mask, tx.Remap(tx.Facing(tx.PERPENDICULAR, 1.6), ((0, 0), (0.5, 0.2), (1, 1))),
+                                 kind)
+                self.assertEqual(g.issues, ())
+        finally:
+            reader_materials.mix_curve = old
+
+    def test_unreadable_mix_curve_is_drawn_linear(self):
+        def broken(_scene, _m):
+            raise chunks.ChunkError("the curve control at object 9: no point count")
+        old = reader_materials.mix_curve
+        reader_materials.mix_curve = broken
+        try:
+            fo = _falloff(1, name="fo")
+            g = _tex(fo).convert(mat.MapRef(1), tx.COLOR)
+        finally:
+            reader_materials.mix_curve = old
+        self.assertEqual(g.root.mask, tx.Facing(tx.PERPENDICULAR, 1.6))
         self.assertTrue(g.approximated)
-        self.assertTrue(any("mix curve" in r for r in g.issues))
+        self.assertTrue(any(r.startswith("Falloff 'fo': its mix curve could not be read") and "drawn linear" in r
+                            for r in g.issues), g.issues)
 
     def test_normal_bump_method_and_channel(self):
         nb = FakeMap(1, tx.NORMAL_BUMP, {2: Ref(2), 6: 2}, [2])
@@ -1472,9 +1527,18 @@ class LostMaps(Checks):
         self.close(g.root.b.value, (1.0, 0.0, 0.0))
         self.assertFalse(g.approximated)
         self.lost_issue(tex, "Mix 'mx'")
-        tex = _tex(FakeMap(1, tx.MIX, {0: 1.0, 3: 1, 6: Ref(2), 7: Ref(3)}, [2, 3], cls="Mix"), _noise(2),
+        # Use Curve weighs by the amount through the curve (lower 0.3, upper 0.7 by default): 0.5 stays 0.5
+        tex = _tex(FakeMap(1, tx.MIX, {0: 0.5, 3: 1, 6: Ref(2), 7: Ref(3)}, [2, 3], cls="Mix"), _noise(2),
                    _bitmap(3))
-        self.assertEqual(tex.convert(mat.MapRef(1), tx.COLOR).root.name, "a.png", "a curve: weights unknown")
+        self.assertEqual(tex.convert(mat.MapRef(1), tx.COLOR).root.name, "a.png", "a curve at 0.5: map 1 shows")
+        tex = _tex(FakeMap(1, tx.MIX, {0: 0.75, 3: 1, 5: (1.0, 0.0, 0.0), 6: Ref(2)}, [2], cls="Mix"), _noise(2))
+        g = tex.convert(mat.MapRef(1), tx.COLOR)
+        self.assertIsInstance(g.root, tx.Mix, "a curve at 0.75 gives 1: map 1 does not show")
+        self.close(g.root.factor, 1.0)
+        self.assertFalse(g.approximated)
+        tex = _tex(FakeMap(1, tx.MIX, {0: 1.0, 3: 1, 6: Ref(2), 7: Ref(3), 8: Ref(4)}, [2, 3, 4], cls="Mix"),
+                   _noise(2), _bitmap(3), _bitmap(4))
+        self.assertEqual(tex.convert(mat.MapRef(1), tx.COLOR).root.name, "a.png", "a curve on a mask: unknown")
 
     def test_lost_map_below_a_lost_wrapper(self):
         cc = FakeMap(2, tx.COLOR_CORRECTION, {1: Ref(3)}, [3], cls="Color Correction", name="cc")
@@ -1587,70 +1651,133 @@ class LostMaps(Checks):
         self.close(tex.convert(mat.MapRef(1), tx.COLOR).root.value, (1.0, 0.0, 0.0), "map off: its color")
         self.assertEqual(tex.stats.peeled, collections.Counter({"VRayDirt": 1}))
 
-    # (class, class name, map pid, switch pid or None): the wrappers that have no color of their own
-    EMPTY_WRAPPERS = ((tx.OUTPUT, "Output", 0, 1), (tx.RGB_TINT, "RGB Tint", 3, 4),
-                      (tx.VRAY_COLOR2BUMP, "VRayColor2Bump", 0, None))
+    # (class, class name, map pid, switch pid or None, what it draws without a used map, as a swatch): measured in
+    # 3ds Max 2020 (renderMap) and V-Ray 5.2 with the gamma off (maxdrop-em3.76)
+    EMPTY_WRAPPERS = ((tx.OUTPUT, "Output", 0, 1, (1.0, 1.0, 1.0)), (tx.RGB_TINT, "RGB Tint", 3, 4, (1.0, 1.0, 1.0)),
+                      (tx.VRAY_COLOR2BUMP, "VRayColor2Bump", 0, None, (0.5, 0.5, 1.0)))
 
-    def empty_issue(self, tex, wrapper):
-        issues = [r for _i, r in tex.stats.issues if "no map" in r]
-        self.assertEqual(len(issues), 1, tex.stats.issues)
-        self.assertTrue(issues[0].startswith(wrapper), issues[0])
-
-    def test_empty_wrappers_are_named(self):
-        for class_id, cls, pid, on in self.EMPTY_WRAPPERS:
-            cases = [("map unset", _tex(FakeMap(1, class_id, {pid: Ref(None)}, cls=cls, name="w")))]
-            if on is not None:  # map off: the bitmap below is not used
-                cases.append(("map off", _tex(FakeMap(1, class_id, {pid: Ref(2), on: 0}, [2], cls=cls, name="w"),
+    def test_empty_wrappers_draw_a_constant(self):
+        for class_id, cls, pid, on, rgb in self.EMPTY_WRAPPERS:
+            for swatches in (colors.GAMMA_OFF, colors.GAMMA_ON):
+                cases = [("map unset", (FakeMap(1, class_id, {pid: Ref(None)}, cls=cls, name="w"),))]
+                if on is not None:  # map off: the bitmap below is not used
+                    cases.append(("map off", (FakeMap(1, class_id, {pid: Ref(2), on: 0}, [2], cls=cls, name="w"),
                                               _bitmap(2))))
-            for case, tex in cases:
-                with self.subTest(cls=cls, case=case):
-                    self.assertIsNone(tex.convert(mat.MapRef(1), tx.COLOR))
-                    self.assertEqual(len(tex.stats.issues), 1, tex.stats.issues)
-                    self.empty_issue(tex, "%s 'w'" % cls)
-                    self.assertEqual(tex.stats.peeled, collections.Counter())
-                    self.assertEqual(tex.stats.unsupported, collections.Counter())
-                    self.assertIsNone(tex.convert(mat.MapRef(1), tx.DATA))
-                    self.assertEqual(len(tex.stats.issues), 1, "named once: %s" % tex.stats.issues)
+                for case, objects in cases:
+                    with self.subTest(cls=cls, case=case, linear=swatches.linear):
+                        tex = tx.TexmapConverter(FakeGraph(*objects), _table(), swatches=swatches)
+                        g = tex.convert(mat.MapRef(1), tx.COLOR)
+                        self.assertEqual(g.root, tx.Constant(swatches.color(rgb)))
+                        self.assertFalse(g.approximated)
+                        g = tex.convert(mat.MapRef(1), tx.DATA)
+                        self.assertEqual(g.root, tx.Constant(swatches.channel(sum(rgb) / 3.0)), "the mean")
+                        self.assertFalse(g.approximated)
+                        self.assertEqual(tex.stats.issues, [])
+                        self.assertEqual(tex.stats.peeled, collections.Counter())
+                        self.assertEqual(tex.stats.unsupported, collections.Counter())
+        tex = tx.TexmapConverter(FakeGraph(FakeMap(1, tx.VRAY_COLOR2BUMP, {0: Ref(None)}, cls="VRayColor2Bump")),
+                                 _table(), swatches=colors.GAMMA_ON)
+        self.close(tex.convert(mat.MapRef(1), tx.COLOR).root.value, (0.5, 0.5, 1.0))
+        self.close(tex.convert(mat.MapRef(1), tx.DATA).root.value, 2.0 / 3.0)
+
+    def test_empty_wrapper_keeps_its_own_output_and_tint(self):
+        out = FakeMap(1, tx.OUTPUT, {0: Ref(None)}, cls="Output")
+        part = FakeMap(5, (0x100, 0), superclass=classids.SC_TEXOUTPUT)
+        part.legacy = {0: {0: 0.8, 1: 0.1, 2: 0.5}}
+        out.parts = {2: part}
+        tex = _tex(out)
+        g = tex.convert(mat.MapRef(1), tx.COLOR)
+        self.assertEqual(g.root, tx.Adjust(tx.Constant((1.0, 1.0, 1.0)), tx.TexOutput(False, 0.5, 0.8, 0.1)),
+                         "as over a white map")
+        self.assertEqual(tex.stats.issues, [])
+        tint = FakeMap(1, tx.RGB_TINT, {0: (0.5, 0.0, 0.0), 1: (0.0, 0.25, 0.0), 2: (0.0, 0.0, 0.125),
+                                        3: Ref(None)}, cls="RGB Tint")
+        tex = tx.TexmapConverter(FakeGraph(tint), _table(), swatches=colors.GAMMA_ON)
+        g = tex.convert(mat.MapRef(1), tx.COLOR)
+        self.assertEqual(g.root, tx.Tint(tx.Constant((1.0, 1.0, 1.0)), (0.5, 0.0, 0.0), (0.0, 0.25, 0.0),
+                                         (0.0, 0.0, 0.125)))
+        self.assertEqual(tex.stats.issues, [])
+        g = tex.convert(mat.MapRef(1), tx.DATA)  # the builder takes the mean of the Tint's color
+        self.assertEqual(g.root, tx.Tint(tx.Constant(1.0), (0.5, 0.0, 0.0), (0.0, 0.25, 0.0), (0.0, 0.0, 0.125)))
+
+    def test_empty_wrapper_in_a_normal_input(self):
+        """In a normal map's normal slot V-Ray tilts the normal by the white, and a constant there is a float: no
+        graph and an issue, also below another wrapper (which loses its map)."""
+        for class_id, cls, pid, _on, _rgb in self.EMPTY_WRAPPERS:
+            with self.subTest(cls=cls):
+                tex = _tex(FakeMap(1, class_id, {pid: Ref(None)}, cls=cls, name="w"))
+                self.assertIsNone(tex.convert(mat.MapRef(1), tx.NORMAL))
+                self.assertEqual([r for _i, r in tex.stats.issues],
+                                 ["%s 'w': %s in a normal input, not drawn" % (
+                                     cls, "no map" if class_id == tx.VRAY_COLOR2BUMP else "no map (or its map off)")])
+                tex.convert(mat.MapRef(1), tx.COLOR)
+                self.assertEqual(len(tex.stats.issues), 1, "in a color input: none")
+        out = FakeMap(1, tx.OUTPUT, {0: Ref(2)}, [2], cls="Output", name="out")
+        part = FakeMap(5, (0x100, 0), superclass=classids.SC_TEXOUTPUT)
+        part.legacy = {0: {0: 0.8, 1: 0.1, 2: 0.5}}
+        out.parts = {2: part}
+        tex = _tex(out, FakeMap(2, tx.VRAY_COLOR2BUMP, {0: Ref(None)}, cls="VRayColor2Bump", name="c2b"))
+        self.assertIsNone(tex.convert(mat.MapRef(1), tx.NORMAL))
+        issues = [r for _i, r in tex.stats.issues]
+        self.assertIn("VRayColor2Bump 'c2b': no map in a normal input, not drawn", issues)
+        self.assertIn("Output 'out': its map VRayColor2Bump 'c2b' converts to nothing", issues)
+
+    def test_empty_wrapper_in_a_normal_map_class(self):
+        empty = FakeMap(2, tx.OUTPUT, {0: Ref(None)}, cls="Output", name="out")
+        nm = FakeMap(1, classids.VRAY_NORMAL_MAP, {0: Ref(2), 2: 1, 3: 1.0, 4: Ref(3), 5: 1, 6: 1.0}, [2, 3],
+                     cls="VRayNormalMap")
+        g = _tex(nm, empty, _bitmap(3)).convert(mat.MapRef(1), tx.COLOR)
+        self.assertEqual(g.root.name, "a.png", "in a color input: the bump image, not the empty normal slot")
+        g = _tex(nm, empty, _bitmap(3)).convert(mat.MapRef(1), tx.NORMAL)
+        self.assertIsInstance(g.root, tx.Bump, "the normal slot not drawn: the bump map alone")
+        nm = FakeMap(1, classids.VRAY_NORMAL_MAP, {0: Ref(None), 4: Ref(2), 5: 1, 6: 1.0}, [2], cls="VRayNormalMap")
+        tex = _tex(nm, empty)
+        self.assertIsNone(tex.convert(mat.MapRef(1), tx.COLOR), "an empty Output in its bump slot is no image")
+        self.assertEqual(tex.stats.unsupported, collections.Counter({"VRayNormalMap": 1}))
+        g = _tex(nm, empty).convert(mat.MapRef(1), tx.BUMP)
+        self.assertEqual(g.root, tx.Bump(tx.Constant(1.0)), "a constant height: flat")
 
     def test_empty_wrapper_below_a_mix(self):
         empty = FakeMap(2, tx.OUTPUT, {0: Ref(None)}, cls="Output", name="out")
         tex = _tex(FakeMap(1, tx.MIX, {0: 0.5, 6: Ref(2), 7: Ref(3)}, [2, 3], cls="Mix", name="mx"), empty,
                    _bitmap(3))
         g = tex.convert(mat.MapRef(1), tx.COLOR)
-        self.assertEqual(g.root.name, "a.png")
-        self.assertTrue(g.approximated)
-        self.empty_issue(tex, "Output 'out'")
-        self.lost_issue_of(tex, "Mix 'mx'", "Output 'out'")
-        tex = _tex(FakeMap(1, tx.MIX, {0: 1.0, 6: Ref(2), 7: Ref(3)}, [2, 3], cls="Mix", name="mx"), empty,
-                   _bitmap(3))
-        g = tex.convert(mat.MapRef(1), tx.COLOR)
-        self.assertIsInstance(g.root, tx.Mix, "amount 1: map 1 does not show")
+        self.assertIsInstance(g.root, tx.Mix)
+        self.assertEqual(g.root.a, tx.Constant((1.0, 1.0, 1.0)), "the empty side: white")
+        self.assertEqual(g.root.b.name, "a.png")
         self.assertFalse(g.approximated)
-        self.empty_issue(tex, "Output 'out'")
+        self.assertEqual(tex.stats.issues, [])
 
     def test_empty_wrapper_elsewhere(self):
         tint = FakeMap(2, tx.RGB_TINT, {3: Ref(None)}, cls="RGB Tint", name="t")
         tex = _tex(FakeMap(1, tx.COMPOSITE, {9: [Ref(3), Ref(2)]}, [3, 2], cls="Composite", name="cp"), tint,
                    _bitmap(3))
         g = tex.convert(mat.MapRef(1), tx.COLOR)
-        self.assertEqual(g.root.name, "a.png", "the empty layer is left out")
-        self.empty_issue(tex, "RGB Tint 't'")
-        self.lost_issue_of(tex, "Composite 'cp'", "RGB Tint 't'")
+        self.assertIsInstance(g.root, tx.Composite, "the empty layer is white")
+        self.assertIn(tx.Constant((1.0, 1.0, 1.0)), [layer.node for layer in g.root.layers])
+        self.assertEqual(tex.stats.issues, [])
         c2b = FakeMap(1, tx.VRAY_COLOR2BUMP, {0: Ref(None)}, cls="VRayColor2Bump", name="c2b")
         tex = _tex(c2b)
-        self.assertIsNone(tex.convert(mat.MapRef(1), tx.BUMP))
-        self.assertEqual([r for _i, r in tex.stats.issues], ["VRayColor2Bump 'c2b': no map, not drawn"])
+        g = tex.convert(mat.MapRef(1), tx.BUMP)
+        self.assertIsInstance(g.root, tx.Bump)
+        self.assertIsInstance(g.root.input, tx.Constant, "a constant height: flat, as V-Ray renders it")
+        self.assertEqual((tex.stats.issues, tex.stats.peeled), ([], collections.Counter()))
         tex = _tex(FakeMap(1, tx.OUTPUT, {0: Ref(2)}, [2], cls="Output", name="out"), tint)
-        self.assertIsNone(tex.convert(mat.MapRef(1), tx.COLOR))
-        self.empty_issue(tex, "RGB Tint 't'")
-        self.lost_issue_of(tex, "Output 'out'", "RGB Tint 't'")
+        self.assertEqual(tex.convert(mat.MapRef(1), tx.COLOR).root, tx.Constant((1.0, 1.0, 1.0)))
+        self.assertEqual(tex.stats.issues, [])
         self.assertEqual(tex.stats.peeled, collections.Counter())
 
-    def lost_issue_of(self, tex, wrapper, lost):
-        issues = [r for _i, r in tex.stats.issues if "converts to nothing" in r]
-        self.assertEqual(len(issues), 1, tex.stats.issues)
-        self.assertTrue(issues[0].startswith(wrapper), issues[0])
-        self.assertIn(lost, issues[0])
+    def test_color2bump_with_a_map_is_still_peeled(self):
+        tex = _tex(FakeMap(1, tx.VRAY_COLOR2BUMP, {0: Ref(2)}, [2], cls="VRayColor2Bump"), _bitmap(2))
+        g = tex.convert(mat.MapRef(1), tx.BUMP)
+        self.assertEqual(g.root.input.name, "a.png")
+        self.assertTrue(g.approximated)
+        self.assertEqual(tex.stats.peeled, collections.Counter({"VRayColor2Bump": 1}))
+        tex = _tex(FakeMap(1, tx.VRAY_COLOR2BUMP, {0: Ref(2)}, [2], cls="VRayColor2Bump", name="c2b"), _noise(2))
+        self.assertIsNone(tex.convert(mat.MapRef(1), tx.BUMP), "a lost map: no graph")
+        self.assertEqual([r for _i, r in tex.stats.issues if "converts to nothing" in r],
+                         ["VRayColor2Bump 'c2b': its map Noise 'n' converts to nothing"])
+        self.assertEqual(tex.stats.peeled, collections.Counter())
 
     def test_hidden_peeled_wrapper_is_exact(self):
         # mix amount 1: map 1 (a Falloff over a lost map) does not show and is drawn as color 1
@@ -1981,6 +2108,100 @@ class TruncatedClassDirectory(unittest.TestCase):
                 counts.append(got)
             self.assertEqual(counts[0], 0)
             self.assertGreater(counts[-1], counts[0])
+
+
+def _polyline_at(points, x):
+    """A Remap's polyline at x: straight between the points, flat past the ends (as the Float Curve draws it)."""
+    if x <= points[0][0]:
+        return points[0][1]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if x <= x1:
+            return y1 if x1 <= x0 else y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return points[-1][1]
+
+
+class FalloffCurve(Checks):
+    """falloff_curve: each Falloff's MixCurve and each Mix's Use Curve against 3ds Max 2020's own values
+    (tests/fixtures/falloff_curve.curves.jsonl, written by tools/fixtures/falloff_curve.ms from the saved file: 65
+    values at x = k / 64)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.f = Fixture("falloff_curve")
+        with open(os.path.join(FIXTURE_DIR, "falloff_curve.curves.jsonl"), encoding="ascii") as f:
+            cls.rows = {r["name"]: r["y"] for r in map(json.loads, f)}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.f.close()
+
+    def root(self, name):
+        ir = self.f.irs[name]
+        self.assertEqual(list(ir.issues), [], name)
+        return ir.textures["base_color"].root
+
+    def test_every_map_has_a_row(self):
+        self.assertEqual(set(self.rows), set(self.f.irs))
+        self.assertTrue(all(len(y) == 65 for y in self.rows.values()))
+
+    def test_falloff_curves_match_3ds_max(self):
+        modes = {"FixtureCurveBezier": tx.PERPENDICULAR, "FixtureCurveCorner": tx.TOWARDS,
+                 "FixtureCurveOvershoot": tx.FRESNEL, "FixtureCurveClamped": tx.PERPENDICULAR}
+        for name, mode in modes.items():
+            with self.subTest(name):
+                root = self.root(name)
+                self.assertIsInstance(root, tx.Mix)
+                self.assertIsInstance(root.mask, tx.Remap)
+                self.assertEqual(root.mask.input.mode, mode)
+                points = root.mask.points
+                self.assertEqual(list(points), sorted(points))
+                for k, y in enumerate(self.rows[name]):
+                    self.assertAlmostEqual(_polyline_at(points, k / 64.0), y, delta=1e-3, msg=(name, k))
+        self.assertEqual(len(self.root("FixtureCurveCorner").mask.points), 4, "corner points: straight segments")
+        self.assertGreater(max(self.rows["FixtureCurveOvershoot"]), 1.19, "3ds Max does not clamp the curve")
+        self.assertGreater(max(y for _x, y in self.root("FixtureCurveOvershoot").mask.points), 1.19)
+
+    def test_linear_curve_makes_no_node(self):
+        self.assertEqual(self.root("FixtureCurveLinear").mask, tx.Facing(tx.PERPENDICULAR, 1.6))
+        self.assertTrue(all(abs(y - k / 64.0) < 1e-5 for k, y in enumerate(self.rows["FixtureCurveLinear"])))
+
+    def test_mix_curves_match_3ds_max(self):
+        for name in ("FixtureMixCurve", "FixtureMixCurveStep"):
+            with self.subTest(name):
+                mask = self.root(name).mask
+                self.assertIsInstance(mask, tx.Smoothstep)
+                self.assertIsInstance(mask.input, tx.Image)
+                for k, y in enumerate(self.rows[name]):
+                    self.assertAlmostEqual(tx.mix_factor(k / 64.0, mask.lower, mask.upper), y, delta=1e-4,
+                                           msg=(name, k))
+        root = self.root("FixtureMixCurveAmount")
+        self.assertIsNone(root.mask)
+        self.assertAlmostEqual(root.factor, self.rows["FixtureMixCurveAmount"][0], delta=1e-4)
+
+    def test_curve_samples(self):
+        P = reader_materials.CurvePoint
+        self.assertIsNone(tx.curve_samples((P((0, 0), (0, 0), (0, 0), 0x102), P((1, 1), (1, 1), (1, 1), 0x100))))
+        line = tx.curve_samples((P((0, 0), (0, 0), (0, 0), 0), P((0.5, 0.8), (0.5, 0.8), (0.5, 0.8), 4),
+                                 P((1, 1), (1, 1), (1, 1), 0)))
+        self.assertEqual(line, ((0, 0), (0.5, 0.8), (1, 1)))
+        # a point above 1 is taken at 1, its handles moved with it
+        high = tx.curve_samples((P((0, 0), (0, 0), (0, 0), 0), P((0.5, 1.3), (0.3, 1.3), (0.7, 1.3), 2),
+                                 P((1, 1), (1, 1), (1, 1), 0)))
+        self.assertEqual(max(y for _x, y in high), 1.0)
+        self.assertEqual(high[-1], (1, 1))
+        # many points: at most MAX_CURVE_SAMPLES, still the curve (a sine through 1000 Bezier points)
+        many = [P((k / 999.0, 0.5 + 0.4 * math.sin(k / 50.0)), (k / 999.0 - 3e-4, 0.5 + 0.4 * math.sin(k / 50.0)),
+                  (k / 999.0 + 3e-4, 0.5 + 0.4 * math.sin(k / 50.0)), 2) for k in range(1000)]
+        start = time.perf_counter()
+        dense = tx.curve_samples(many)
+        self.assertLess(time.perf_counter() - start, 0.1)
+        self.assertLessEqual(len(dense), tx.MAX_CURVE_SAMPLES)
+        self.assertEqual((dense[0][0], dense[-1][0]), (0.0, 1.0))
+        for x, y in dense:
+            self.assertAlmostEqual(y, 0.5 + 0.4 * math.sin(x * 999.0 / 50.0), delta=0.02)
+        jump = tx.curve_samples((P((0, 0), (0, 0), (0, 0), 0), P((0.5, 0.2), (0.5, 0.2), (0.5, 0.2), 0),
+                                 P((0.5, 0.9), (0.5, 0.9), (0.5, 0.9), 0), P((1, 1), (1, 1), (1, 1), 0)))
+        self.assertEqual(jump, ((0, 0), (0.5, 0.2), (0.5, 0.9), (1, 1)))
 
 
 if __name__ == "__main__":

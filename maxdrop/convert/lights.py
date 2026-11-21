@@ -6,9 +6,12 @@
 
     light_class(scene, i)               # VRAY, STANDARD, PHOTOMETRIC, SUN, IES or SKYLIGHT; None: not one read here
     values, issues = read_params(scene, i, assets)   # the light's values, LightError without its block
-    not_built(values)                   # why a mesh or dome light or a Skylight is not built, None for the others
+    not_built(values, names)            # why a mesh light or a Skylight is not built, None for the others
     scale = area_scale(values, world)   # what a node's scale does to the area, rounded (part of the key)
     ld, issues = describe(key, name, values, meters, swatches, scale)   # LightDescription, or None and the reason
+    is_dome(values)                     # a VRayLight dome: the scene's World, not a light (describe_dome)
+    dd, issues = describe_dome(node, name, values, swatches, world)     # DomeDescription
+    dt, issues = dome_texture(graph_ir, material_graph)   # DomeTexture of the dome's converted map, or None
     watts(units, multiplier, area(kind, size0, size1, double_sided, meters))
     environment_sky(scene)              # the object index of a VRaySky that is the environment map, else None
 
@@ -21,7 +24,9 @@ A VRayLight keeps one ParamBlock2 in reference slot 0 (docs/FORMAT.md, "VRayLigh
 2 sphere, 3 mesh, 4 disc), 2 / 3 size0 / size1 (a plane's half length along local X and half width along local Y;
 a disc's or sphere's radius), 7 color, 8 multiplier, 9 double-sided, 10 invisible, 12 units (0 default, 1 lm,
 2 lm/m2/sr, 3 W, 4 W/m2/sr), 18 / 19 texmap (on), 25 / 26 / 30 affect diffuse / specular / reflections, 36
-directional, 38 color temperature, 39 color mode (1: temperature), 53 / 54 diffuse / specular contribution.
+directional, 38 color temperature, 39 color mode (1: temperature), 53 / 54 diffuse / specular contribution; a
+dome's 27 spherical (off: the half above its local XY plane) and 49 texture locked to the dome, a mesh light's 34
+mesh source (a node).
 
 The rules are the ones of the 3ds Max -> FBX exporter (f_export_scene.ms, ocbaby_exsVrayLightWatts and
 ocbaby_exsKelvinRGB): the power is the total radiant flux in watts. Radiance units are integrated over the emitting
@@ -30,9 +35,12 @@ that), photometric units at 683 lm/W, and one default (image) unit is 1500 / pi 
 against V-Ray 5.2 renders (docs/FORMAT.md, "VRayLight"): in lm/m2/sr and W/m2/sr a disc emits as if its area were
 (2 size0)^2, 4 / pi times its own; in the default units it does not. A node's scale grows the area in V-Ray (in
 the default units, lm/m2/sr and W/m2/sr, where the flux follows the area; not in lm and W): a plane or disc by its X
-times its Y scale, a sphere by the square of its largest scale (measured with a scale of 2, 1.5, 1: 3 and 4).
-Blender's area light grows with the object's scale but keeps its power, so the power takes that factor, and the
-nodes of one VRayLight share one LightDescription per factor (area_scale). Blender's area light shines
+times its Y scale (measured with a scale of 2, 1.5, 1: 3), a sphere by the square of its X scale alone, its radius by
+the X scale, and it stays round (measured: (2, 1, 1) and (2, 2, 2) give 4, (1, 2, 1), (1, 1, 2) and (1, 2, 3) give 1;
+the visible sphere twice as wide at (2, 1, 1), the same at (1, 3, 1)). Blender's area light grows with the object's
+scale but keeps its power, so the power takes that factor; its point light's radius does not follow the object's
+scale (measured on 4.2, 4.5 and 5.2, Cycles and EEVEE), so a sphere's radius takes the X scale, in every units mode.
+The nodes of one VRayLight share one LightDescription per factor (area_scale). Blender's area light shines
 on one side only: a double-sided plane or disc gets half the flux, the side it faces (an issue). Cycles has no
 per-light diffuse or specular factor: affect diffuse off hides the light from diffuse rays, affect specular and
 affect reflections both off from glossy rays (one switch for both: an issue when only one is off); a contribution
@@ -41,10 +49,27 @@ scene's swatch rule (convert.colors) of the color, or in temperature mode kelvin
 sRGB, as CoronaColor's temperature; V-Ray's own temperature color, which it also stores, is not used.
 
 Plane -> AREA RECTANGLE, disc -> AREA DISK, sphere -> POINT with the radius: a V-Ray plane shines along its local
--Z, as a Blender area light does, so the node transform stays. Mesh and dome lights are not built (the reason; "dome
-light -> World" is later work). The FBX route's spot mirrors and light de-instancing are dropped: the nodes of one
-VRayLight with the same area_scale share one LightDescription. build/ multiplies the power by the import's Light
-Strength.
+-Z, as a Blender area light does, so the node transform stays. A mesh light is not built yet (the reason): V-Ray 5.2
+emits the mesh of the node its mesh source (34) names, as that mesh is now, placed at the light node's transform
+(measured: a 20 x 40 box's footprint follows the light's position and turn, a later change of the box's size shows,
+the box's own position does not matter; with the box deleted it emits nothing). The reason names that node when it
+is one of the scene. Building that emitter (the node's mesh at the light, its strength over the mesh's area) is later
+work; what a UI Pick mesh with Replace mesh on (the source node deleted) leaves is not known. The FBX route's spot
+mirrors and light de-instancing are dropped: the nodes of one VRayLight with the same area_scale share one
+LightDescription. build/ multiplies the power by the import's Light Strength.
+
+A dome light is the scene's World (describe_dome; docs/FORMAT.md, "VRayLight"): V-Ray 5.2 lights a white floor under
+a white dome of multiplier m with m in the default units, m x 0.00213024 in lm and lm/m2/sr, m x 1.43109 in W and
+W/m2/sr (a dome has no area: the flux and radiance units agree), and Cycles with S under a World of strength S. So the
+dome's radiance in W/m2/sr is m x DOME_RADIANCE[units] and the World's strength that times the Light Strength (1.43:
+the default units within 0.05 %). Its color as a light's; a texture replaces the color (measured) and takes the same
+strength. Spherical off: only the half above the dome's local XY plane shines (it turns with the node, measured).
+Invisible: the camera does not see it; affect diffuse / specular / reflections as a light's. The texture
+(dome_texture): a VRayBitmap in spherical mapping (u = 0.5 + phi / 2 pi + its horizontal rotation / 2 pi, phi =
+atan2(y, x)) or a Bitmap in spherical environment mapping (u = 0.75 + phi / 2 pi), v up the image, in the world's
+frame or, locked to the dome, in the dome node's; another root is not used (the World keeps the color, an issue),
+another projection is drawn as spherical (an issue). The first dome that is on is the World; another one, or one that
+is off, is an issue (convert.scene).
 
 The other lights (docs/FORMAT.md, "Standard and photometric lights"): V-Ray 5.2 lights a white floor at distance d
 from a light of intensity I cd with a pixel of I / d^2 / 1500 (lx / 1500), whatever the light's class, and Blender
@@ -71,12 +96,13 @@ watts at 683 lm/W: 4 pi I / 683 for a point or spot light of on-axis intensity I
 - VRaySun -> SUN of SUN_IRRADIANCE W/m^2 per unit of its multiplier (the rules source's 100 klx / 683; V-Ray 5.2
   measured 102.7 klx at the zenith), angle SUN_ANGLE x its size multiplier, its filter color; the sky model's
   dimming and color are not imported (issues).
-- VRayIES: its power in lm (with the intensity overridden in cd, the power is that intensity: x 4 pi) -> SPOT of
-  WEB_CONE, power lm / 683, its color or temperature, the IES file named in an issue; a power of 0 (V-Ray then takes
-  the file's own) is 0 W, an issue. With its light shape used and overridden, the spot's radius is half the largest
+- VRayIES: its power in lm (V-Ray's flux with the intensity overridden, in either unit; without the override V-Ray
+  scales the IES file by power over its rated lumens, which are not read: an issue) -> SPOT of WEB_CONE, power
+  lm / 683, its color or temperature, the IES file named in an issue; a power of 0 (dark in V-Ray too) is 0 W, an
+  issue. With its light shape used and overridden, the spot's radius is half the largest
   size the shape uses (IES_SHAPES: a sphere's diameter exactly, any other shape an issue); without the override
   V-Ray takes the file's shape, which is not read: radius 0.
-- Skylight: not built (the reason; World is later work). environment_sky finds a VRaySky as the environment map
+- Skylight: not built (the reason; its World is later work). environment_sky finds a VRaySky as the environment map
   (RenderEnvironment reference ENVIRONMENT_MAP_SLOT) for convert.scene's report line.
 
 Every light shines along its local -Z, as Blender's spot, area and sun lights do: the node transform stays. Off ->
@@ -95,6 +121,7 @@ import math
 
 from .. import pathnames
 from ..reader import chunks, classids, pblock
+from ..reader import materials as reader_materials
 from . import colors, texmaps
 from .params import finite
 
@@ -140,6 +167,10 @@ SUN_ANGLE = math.radians(0.53)  # the sun's angular diameter at size multiplier 
 WEB_FALLOFF, WEB_HOTSPOT = 170.0, 100.0  # degrees: the rules source's wide spot for a web or IES
 LINE_WIDTH = 0.01  # m: the width of the area light of a diffuse line, the diameter of a diffuse point
 MIN_CONE = math.radians(1.0)  # Blender's smallest spot size
+# a dome's radiance in W/m^2/sr per unit of its multiplier, per units mode: V-Ray 5.2 white-floor renders against
+# Cycles (docs/FORMAT.md, "VRayLight"); the lm modes measured 0.00213024 / 1.43109 (1 / 671.8, not 1 / 683)
+DOME_LM = 0.00213024 / 1.43109
+DOME_RADIANCE = {0: IMAGE_UNIT / (math.pi * LUMENS_PER_WATT), 1: DOME_LM, 2: DOME_LM, 3: 1.0, 4: 1.0}
 ENVIRONMENT_MAP_SLOT = 5  # RenderEnvironment's reference to the environment map
 
 # standard lights: chunks of the light object, old ParamBlock indices
@@ -188,22 +219,40 @@ P_ON, P_TYPE, P_SIZE0, P_SIZE1, P_COLOR, P_MULTIPLIER = 0, 1, 2, 3, 7, 8
 P_DOUBLE_SIDED, P_INVISIBLE, P_UNITS, P_TEXMAP, P_TEXMAP_ON = 9, 10, 12, 18, 19
 P_AFFECT_DIFFUSE, P_AFFECT_SPECULAR, P_AFFECT_REFLECTIONS, P_DIRECTIONAL = 25, 26, 30, 36
 P_TEMPERATURE, P_COLOR_MODE, P_DIFFUSE, P_SPECULAR = 38, 39, 53, 54
+P_DOME_SPHERICAL, P_MESH_SOURCE, P_DOME_LOCKED = 27, 34, 49
 
 # V-Ray 5.2's values of a new VRayLight (sizes in world units)
 DEFAULTS = {P_ON: 1, P_TYPE: PLANE, P_SIZE0: 10.0, P_SIZE1: 10.0, P_COLOR: (1.0, 1.0, 1.0), P_MULTIPLIER: 30.0,
             P_DOUBLE_SIDED: 0, P_INVISIBLE: 0, P_UNITS: UNITS_DEFAULT, P_TEXMAP_ON: 1, P_AFFECT_DIFFUSE: 1,
             P_AFFECT_SPECULAR: 1, P_AFFECT_REFLECTIONS: 1, P_DIRECTIONAL: 0.0, P_TEMPERATURE: 6500.0,
-            P_COLOR_MODE: 0, P_DIFFUSE: 1.0, P_SPECULAR: 1.0}
+            P_COLOR_MODE: 0, P_DIFFUSE: 1.0, P_SPECULAR: 1.0, P_DOME_SPHERICAL: 1, P_DOME_LOCKED: 0}
 _NAMES = {P_ON: "on", P_TYPE: "type", P_SIZE0: "size0", P_SIZE1: "size1", P_COLOR: "color",
           P_MULTIPLIER: "multiplier", P_DOUBLE_SIDED: "doubleSided", P_INVISIBLE: "invisible",
           P_UNITS: "normalizeColor", P_TEXMAP_ON: "texmap_on", P_AFFECT_DIFFUSE: "affect_diffuse",
           P_AFFECT_SPECULAR: "affect_specular", P_AFFECT_REFLECTIONS: "affect_reflections",
           P_DIRECTIONAL: "lightDistribution", P_TEMPERATURE: "color_temperature", P_COLOR_MODE: "color_mode",
-          P_DIFFUSE: "diffuse_contribution", P_SPECULAR: "specular_contribution"}
+          P_DIFFUSE: "diffuse_contribution", P_SPECULAR: "specular_contribution", P_DOME_SPHERICAL: "dome_spherical",
+          P_DOME_LOCKED: "texmap_locktodome"}
 
-NOT_YET = {MESH: "a mesh light is not imported yet",
-           DOME: "a dome light is not imported yet (dome -> World is later work)"}
+MESH_LIGHT = "a mesh light is not imported yet"
+PICKED = " (V-Ray emits the mesh of %s at the light's place)"
 NOT_SKYLIGHT = "a Skylight is not imported yet (Skylight -> World is later work)"
+DOME_OFF = "dome light off: not imported"
+SECOND_DOME = "a second dome light: not imported (Blender has one World, %s's)"
+DOME_MIRRORED = "the dome node is mirrored: its rotation without the mirror is used"
+DOME_FLAT = ("the dome node's scale is 0: its rotation is not known, none is used (a locked texture and a hemisphere "
+             "take the world's axes)")
+DOME_NO_TEXTURE = "its texture converts to nothing: the World has its color"
+DOME_ROOT = "its texture is not an image map (%s): the World has its color"
+DOME_NOT_FOUND = "its texture %s is not found: the World has its color"
+DOME_PROJECTION = "its texture %s is not in spherical mapping (%s): drawn as spherical"
+DOME_VERTICAL = "its texture %s's vertical rotation %g degrees is not imported"
+DOME_AXIAL = "its texture %s's axial rotation %g degrees is not imported"
+DOME_SWITCH = "its texture %s's %s is not imported"
+DOME_PLACEMENT = "its texture %s's offset, tiling or angle is not imported"
+DOME_OUTPUT = "its texture %s's Output (invert, RGB level or offset) is not imported"
+DOME_GAMMA = "its texture %s's gamma %g is not applied"
+DOME_CROP = "its texture %s's crop or placement is not imported"
 SKY = "the environment map is a VRaySky: not imported yet (environment -> World is later work)"
 NO_DECAY = "no decay: Blender's light falls off with the square of the distance; as bright as in 3ds Max at %g m"
 INVERSE = "inverse decay: Blender's light falls off with the square of the distance; as bright as in 3ds Max at %g m"
@@ -217,7 +266,9 @@ NEGATIVE = "%s %g is negative: 0 W"
 SHAPE = "its %s shape is %s"
 WEB_FILE = "its photometric web %s is approximated by a spot of 170 degrees"
 IES_FILE = "its IES file %s is approximated by a spot of 170 degrees"
-IES_ZERO = "power 0: V-Ray takes the IES file's own intensity, which is not read: 0 W"
+IES_ZERO = "power 0: it gives no light, in V-Ray too: 0 W"
+IES_RATED = ("its power is taken as its flux: V-Ray scales the IES file's candelas by the power over the file's "
+             "rated lumens, which are not read")
 IES_SHAPE = "its %s light shape is a sphere %g m across"
 NO_FILE = "(no file)"
 SUN_ZENITH = "its strength is the sun's at the zenith: the sky model's dimming toward the horizon is not imported"
@@ -230,7 +281,8 @@ GLOSSY = ("affect specular %s, affect reflections %s: Cycles has one switch for 
           "rays; EEVEE's specular factor follows affect specular")
 NOT_FINITE = "the power is out of range (sizes %g, %g): 0 W"
 OUT_OF_RANGE = "the power is out of range: 0 W"
-MAX_POWER = 3.4028234663852886e38  # the largest float32: what a Blender light holds
+MAX_FLOAT = 3.4028234663852886e38  # the largest float32: what a Blender light's power or radius holds
+MAX_POWER = MAX_FLOAT
 CONTRIBUTION = "%s contribution %g: Blender's %s factor, which only EEVEE uses"
 
 
@@ -309,12 +361,16 @@ def area(kind, size0, size1, double_sided, meters, units=UNITS_DEFAULT):
 
 def area_scale(values, world):
     """The factor a node's world matrix (reader rows: the local axes in world space) puts on the emitting area of the
-    light of values, rounded to 9 digits: 1 in lm and W; a plane's or disc's X times Y scale; a sphere's largest
-    scale squared; 1 when that is no finite positive number."""
-    if values.get(CLASS, VRAY) != VRAY or values[P_UNITS] in (UNITS_LM, UNITS_W):
+    light of values, rounded to 9 digits: a plane's or disc's X times Y scale, 1 in lm and W (its flux does not
+    follow the area, and Blender scales the area light's size itself); a sphere's X scale squared in every units mode
+    (its radius takes the root: describe); 1 when that is no finite positive number."""
+    if values.get(CLASS, VRAY) != VRAY:
+        return 1.0
+    sphere = values[P_TYPE] == SPHERE
+    if not sphere and values[P_UNITS] in (UNITS_LM, UNITS_W):
         return 1.0
     lengths = [math.sqrt(sum(c * c for c in world[r][:3])) for r in range(3)]
-    f = max(lengths) ** 2 if values[P_TYPE] == SPHERE else lengths[0] * lengths[1]
+    f = lengths[0] ** 2 if sphere else lengths[0] * lengths[1]
     return float("%.9g" % f) if math.isfinite(f) and f > 0 else 1.0
 
 
@@ -374,8 +430,9 @@ def read_params(scene, i, assets=None):
                                           (entry.superclass, entry.class_id))
     issues = list(block.issues)
     values = {pid: _value(block, pid, issues) for pid in DEFAULTS}
-    texmap = block.get(P_TEXMAP)
-    values[P_TEXMAP] = texmap.index if isinstance(texmap, pblock.Reference) else None
+    for pid in (P_TEXMAP, P_MESH_SOURCE):
+        ref = block.get(pid)
+        values[pid] = ref.index if isinstance(ref, pblock.Reference) else None
     return values, issues
 
 
@@ -479,9 +536,15 @@ def _read_standard(scene, i):
     return values, issues
 
 
-def not_built(values):
-    """Why a light of these values is not built (a mesh or dome light, a type 3ds Max does not have, a Skylight),
-    None when it is."""
+def is_dome(values):
+    """Whether the values are a VRayLight dome's: the World, not a light (describe_dome)."""
+    return values.get(CLASS, VRAY) == VRAY and values[P_TYPE] == DOME
+
+
+def not_built(values, name_of=None):
+    """Why a light of these values is not built (a mesh light, a type 3ds Max does not have, a Skylight), None when it
+    is (a dome too: describe_dome). name_of(object index): the name of the node a mesh light picked, None when that
+    is no node of the scene (None: not named)."""
     family = values.get(CLASS, VRAY)
     if family == SKYLIGHT:
         return NOT_SKYLIGHT
@@ -490,13 +553,17 @@ def not_built(values):
     kind = values[P_TYPE]
     if kind not in TYPE_NAMES:
         return "type %d is not a VRayLight type" % kind
-    return NOT_YET.get(kind)
+    if kind != MESH:
+        return None
+    source = values.get(P_MESH_SOURCE)
+    picked = name_of(source) if name_of is not None and source is not None else None
+    return MESH_LIGHT + (PICKED % picked if picked else "")
 
 
 def describe(key, name, values, meters, swatches, scale=1.0):
     """(LightDescription of a light's values, or None, issues): None and the reason when it is not built
-    (not_built). scale: area_scale of its nodes."""
-    reason = not_built(values)
+    (not_built; a dome: describe_dome). scale: area_scale of its nodes."""
+    reason = not_built(values) or ("a dome light is the World, not a light" if is_dome(values) else None)
     if reason is not None:
         return None, [reason]
     family = values.get(CLASS, VRAY)
@@ -517,8 +584,9 @@ def describe(key, name, values, meters, swatches, scale=1.0):
     size0, size1 = abs(values[P_SIZE0]), abs(values[P_SIZE1])
     double = bool(values[P_DOUBLE_SIDED]) and kind in (PLANE, DISC)
     units = values[P_UNITS]
+    flux_scale = 1.0 if units in (UNITS_LM, UNITS_W) else scale  # a sphere's scale is in its key in every mode
     try:
-        w = watts(units, values[P_MULTIPLIER], area(kind, size0, size1, double, meters, units) * scale)
+        w = watts(units, values[P_MULTIPLIER], area(kind, size0, size1, double, meters, units) * flux_scale)
     except OverflowError:
         w = math.inf
     if not abs(w) <= MAX_POWER:  # also NaN
@@ -546,8 +614,155 @@ def describe(key, name, values, meters, swatches, scale=1.0):
         ld.shape, ld.size = DISK, 2.0 * size0 * meters
         ld.size_y = ld.size
     else:
-        ld.radius = size0 * meters
+        ld.radius = size0 * meters * math.sqrt(scale)
+        if not ld.radius <= MAX_FLOAT:  # past the float32 range a Blender light's radius holds
+            ld.radius = 0.0
     return ld, issues
+
+
+class DomeDescription:
+    """A dome light as the World: node (object index) and name; color linear RGB; radiance in W/m^2/sr (the World's
+    strength before the Light Strength); hemisphere: only the half above the dome's local XY plane shines; rotation
+    the dome node's world rotation (3 rows of 3, Blender's convention: the columns are its local axes in world space,
+    in the file's frame); locked: its texture turns with the node; texmap the object index of its texture map, None
+    without one (or switched off); camera, diffuse, glossy: which rays see it; texture: the DomeTexture ops sets
+    (dome_texture), None: the color."""
+    __slots__ = ("node", "name", "color", "radiance", "hemisphere", "rotation", "locked", "texmap", "camera",
+                 "diffuse", "glossy", "texture")
+
+    def __init__(self, node, name, color=(1.0, 1.0, 1.0), radiance=0.0, hemisphere=False,
+                 rotation=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)), locked=False, texmap=None,
+                 camera=True, diffuse=True, glossy=True):
+        self.node, self.name, self.color, self.radiance = node, name, color, radiance
+        self.hemisphere, self.rotation, self.locked, self.texmap = hemisphere, rotation, locked, texmap
+        self.camera, self.diffuse, self.glossy = camera, diffuse, glossy
+        self.texture = None
+
+    def __repr__(self):
+        return "DomeDescription(%r, %g W/m2/sr%s)" % (self.name, self.radiance, ", texture" if self.texture else "")
+
+
+class DomeTexture:
+    """The image of a dome's texture: image (convert.texmaps.Image, its file found), turn (radians: what V-Ray adds to
+    phi before u = 0.5 + phi / 2 pi, its horizontal rotation; a Bitmap's spherical environment pi / 2) and amount
+    (its Output's amount, a VRayBitmap's multipliers: a factor on the strength)."""
+    __slots__ = ("image", "turn", "amount")
+
+    def __init__(self, image, turn=0.0, amount=1.0):
+        self.image, self.turn, self.amount = image, turn, amount
+
+    def __repr__(self):
+        return "DomeTexture(%r, %g rad, x %g)" % (self.image.name, self.turn, self.amount)
+
+
+def _rotation(world, issues):
+    """The rotation of a reader world matrix (rows: local axes in world space) as Blender rows (columns = the axes):
+    Gram-Schmidt of X and Y, Z their cross product (a mirror an issue); identity for a degenerate matrix."""
+    x, y = [list(map(float, world[r][:3])) for r in (0, 1)]
+    z0 = list(map(float, world[2][:3]))
+
+    def norm(v):
+        n = math.sqrt(sum(c * c for c in v))
+        return [c / n for c in v] if math.isfinite(n) and n > 0 else None
+
+    def cross(a, b):
+        return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+
+    x = norm(x)
+    if x is not None:
+        d = sum(a * b for a, b in zip(x, y))
+        y = norm([b - d * a for a, b in zip(x, y)])
+    if x is None or y is None:
+        issues.append(DOME_FLAT)
+        return ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    z = cross(x, y)
+    if sum(a * b for a, b in zip(z, z0)) < 0:
+        issues.append(DOME_MIRRORED)
+    return tuple(tuple(axis[r] for axis in (x, y, z)) for r in range(3))
+
+
+def describe_dome(node, name, values, swatches, world):
+    """(DomeDescription of a dome light's values on node (world: its reader world matrix), issues)."""
+    issues = []
+    m = _nonnegative("multiplier", values[P_MULTIPLIER], issues)
+    radiance = m * DOME_RADIANCE.get(values[P_UNITS], DOME_RADIANCE[UNITS_DEFAULT])
+    if not radiance <= MAX_POWER:
+        issues.append(OUT_OF_RANGE)
+        radiance = 0.0
+    diffuse, spec, refl = (bool(values[p]) for p in (P_AFFECT_DIFFUSE, P_AFFECT_SPECULAR, P_AFFECT_REFLECTIONS))
+    if spec != refl:
+        issues.append(GLOSSY % ("on" if spec else "off", "on" if refl else "off"))
+    texmap = values[P_TEXMAP] if values[P_TEXMAP_ON] else None
+    dd = DomeDescription(node, name, light_color(values, swatches), radiance, not values[P_DOME_SPHERICAL],
+                         _rotation(world, issues), bool(values[P_DOME_LOCKED]), texmap, not values[P_INVISIBLE],
+                         diffuse, spec or refl)
+    return dd, issues
+
+
+VB_H_ROTATION, VB_V_ROTATION, VB_SPHERICAL = 3, 4, 2  # VRayBitmap block 0: radians; mapType spherical
+# VRayBitmap block 0, read from a probe scene: horizontal and vertical flip, ground projection, axial rotation (radians)
+VB_H_FLIP, VB_V_FLIP, VB_GROUND, VB_AXIAL = 5, 6, 26, 36
+_VB_PROJECTIONS = {0: "angular", 1: "cubic", 3: "mirrored ball", 4: "3ds Max standard"}
+ENV_SPHERICAL = 1  # a Placement's env_mapping: 1 spherical, 2 cylindrical, 3 shrink-wrap, 4 screen
+_ENV_PROJECTIONS = {2: "cylindrical environment", 3: "shrink-wrap environment", 4: "screen environment"}
+
+
+def dome_texture(graph_ir, material_graph):
+    """(DomeTexture of a dome's converted texture map (convert.texmaps.TextureGraphIR of kind COLOR, None when it
+    converts to nothing), or None: the World keeps the color, issues). material_graph (reader.materials
+    MaterialGraph) reads the map's projection."""
+    if graph_ir is None:
+        return None, [DOME_NO_TEXTURE]
+    issues = list(graph_ir.issues)
+    img = graph_ir.root
+    if not isinstance(img, texmaps.Image):
+        return None, issues + [DOME_ROOT % type(img).__name__]
+    m = material_graph.get(img.index) if material_graph is not None else None
+    if m is not None:  # the converter names the root's environment mapping: wrong for a material, expected here
+        own = tuple("%s %r: environment mapping" % (cls, m.name) for cls in ("Bitmap", "VRayBitmap"))
+        issues = [x for x in issues if not x.startswith(own)]
+    if img.found is None or m is None:
+        return None, issues + [DOME_NOT_FOUND % img.name]
+    cid = classids.ClassId(*m.class_id)
+    turn = 0.0
+    if cid == classids.VRAY_BITMAP:
+        kind = m.param(texmaps.VB_MAP_TYPE, 0)
+        if kind != VB_SPHERICAL:
+            issues.append(DOME_PROJECTION % (img.name, _VB_PROJECTIONS.get(kind, "type %r" % (kind,))))
+        h, v = (m.param(pid, 0) for pid in (VB_H_ROTATION, VB_V_ROTATION))
+        turn = float(h) if finite(h) else 0.0
+        if finite(v) and v != 0:
+            issues.append(DOME_VERTICAL % (img.name, math.degrees(v)))
+        axial = m.param(VB_AXIAL, 0)
+        if finite(axial) and axial != 0:
+            issues.append(DOME_AXIAL % (img.name, math.degrees(axial)))
+        for pid, what in ((VB_H_FLIP, "horizontal flip"), (VB_V_FLIP, "vertical flip"),
+                          (VB_GROUND, "ground projection")):
+            if m.param(pid, 0) not in (0, None, False):
+                issues.append(DOME_SWITCH % (img.name, what))
+    elif cid == classids.CORONA_BITMAP:
+        issues.append(DOME_PROJECTION % (img.name, "CoronaBitmap's own"))
+    else:
+        uv = next((p for _s, p in sorted(m.parts.items()) if p.superclass == classids.SC_UVGEN), None)
+        env = reader_materials.placement(material_graph.scene, uv.index).env_mapping if uv is not None else None
+        if not img.mapping.environment or env != ENV_SPHERICAL:
+            issues.append(DOME_PROJECTION % (img.name, _ENV_PROJECTIONS.get(env, "an unknown environment mapping") if
+                                             img.mapping.environment else "texture"))
+        turn = math.pi / 2.0
+        mp = img.mapping
+        if (mp.tiling, mp.offset, mp.angle) != ((1.0, 1.0), (0.0, 0.0), (0.0, 0.0, 0.0)):
+            issues.append(DOME_PLACEMENT % img.name)
+    out = img.output
+    amount = 1.0
+    if out is not None:
+        amount = max(0.0, out.amount)
+        if out.invert or out.level != 1.0 or out.offset != 0.0:
+            issues.append(DOME_OUTPUT % img.name)
+    if img.gamma not in (None, 1.0):
+        issues.append(DOME_GAMMA % (img.name, img.gamma))
+    if img.crop is not None:
+        issues.append(DOME_CROP % img.name)
+    return DomeTexture(img, turn, amount), issues
 
 
 def _rays(ld, diffuse, specular, diffuse_contribution, specular_contribution, issues):
@@ -678,11 +893,14 @@ def _describe_sun(key, name, v, meters, swatches, issues):
 
 
 def _describe_ies(key, name, v, meters, swatches, issues):
-    # power holds the override's value in its own unit (the stored intensity_value is a stale alias)
-    lm = v["power"] * (4.0 * math.pi if v["override"] and v["intensity_type"] == 1 else 1.0)
-    lm = _nonnegative("power", lm, issues)
+    # Measured (docs/FORMAT.md, "Power, measured"): the stored power is lumens in both units of the override (V-Ray's
+    # panel converts cd with the file) and V-Ray renders that flux; without the override it scales the file's
+    # candelas by power / the file's rated lumens, the flux only when those are the file's own. Power 0 is dark.
+    lm = _nonnegative("power", v["power"], issues)
     if v["power"] == 0:
         issues.append(IES_ZERO)
+    elif lm > 0 and not v["override"]:  # a negative power is 0 W, said by _nonnegative
+        issues.append(IES_RATED)
     color = colors.GAMMA_OFF.color(texmaps.kelvin_rgb(v["temperature"])) if v["color_mode"] == 1 else \
         swatches.color(v["color"])
     ld = LightDescription(key, name, SPOT, watts=lm / LUMENS_PER_WATT, power=lm / LUMENS_PER_WATT, color=color,
@@ -701,7 +919,7 @@ def _ies_radius(v, meters, issues):
         return 0.0
     name, sizes = IES_SHAPES.get(v["shape_type"], ("", ()))
     across = max((abs(v[k]) for k in sizes), default=0.0) * meters
-    if not across <= MAX_POWER:  # past the float32 range a Blender light's radius holds (also inf, NaN)
+    if not across <= MAX_FLOAT:  # past the float32 range a Blender light's radius holds (also inf, NaN)
         across = 0.0
     if across > 0 and v["shape_type"] != IES_SPHERE:
         issues.append(IES_SHAPE % (name, across))

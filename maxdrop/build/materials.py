@@ -23,19 +23,33 @@ channel) and Scale (its radius in meters), Sheen Weight, Tint and Roughness, Thi
 layer's amount times its mask); the render method follows every one of them. A color graph on a float input (specular,
 transmission) goes through the mean of its channels, the measure convert/materials.py uses.
 
+Data maps (a map on roughness, metallic or alpha, a mask, a bump height: a graph drawn as a float) take the mean of
+their channels too: wherever a float graph comes out as a color socket (an image's Color, a Color Correction, a
+Blend or a blend-mode Composite) one Vector Math DOT_PRODUCT by (1/3, 1/3, 1/3) follows it, so no color output is
+linked into a float input, where Blender would convert by its luminance (0.2126, 0.7152, 0.0722 in EEVEE and Cycles,
+4.2 to 5.2). A vector socket (Adjust, Tint, an image's Output), which Blender already averages, gets the same node,
+so every float graph ends the same way. Measured on V-Ray 5.2 (bead maxdrop-em3.42, stripes of pure red, green,
+blue, yellow, cyan and magenta): a Mix mask, a VRayMtl reflection glossiness map and an opacity map each give 1/3
+for red, green and blue and 2/3 for the others, where the luminance gave 0.21, 0.72 and 0.07. The same rule, not
+measured, for a metallic map, a layer or Composite mask, a bump height (3ds Max's own mono value is that mean) and
+Corona's materials. A Multiply of two maps in a float graph is the product of their means, not the mean of their
+product (not measured either: maxdrop-em3.124).
+
 Texture graphs (convert/texmaps.py) become nodes, a node of the IR shared by several inputs once per material: Image
 -> Image Texture (its image datablock reused per file and color space: one file used in two color spaces is two
 datablocks; see Images below), with its placement as a Mapping node and a UV Map node for a map channel other than
 1; Invert, Mix, Multiply, Blend (Gamma nodes around a Mix node of its operation), ColorCorrect (its rewiring as
 Invert, the mean or Separate / Combine Color, then Hue/Saturation/Value, Bright/Contrast, gain, Gamma), Composite
 (per layer its blend at factor 1, then a Mix by opacity x mask), Facing (Layer Weight Facing, Fresnel, or the
-Geometry node's Normal . Incoming), Adjust (a map's Output, as an image's), Tint (Separate Color, three scales, two
-adds), NormalMap (Normal Map node, flips through Separate / Combine Color), Bump (Bump node). A texture file that
-was not found (or does not load) keeps its Image Texture node, without an image and not connected. The texture
-lookup (convert.textures) reports a file not found by name; the builder reports a file that does not load. The graph
-above the node carries on without it (a Mix gives its other side, a normal map without its image nothing) and an
-input left without a map keeps the IR's value. An empty image node renders black in EEVEE and magenta in Cycles, and
-in a normal or alpha input it would wreck the shading or hide the object.
+Geometry node's Normal . Incoming), Remap (Float Curve, its points straight between them, not clipped; the Mix it
+drives does not clamp its factor), Smoothstep (Map Range SMOOTHSTEP, or a step: 1 - LESS_THAN), Adjust (a map's
+Output, as an image's), Tint (Separate Color, three scales, two adds), NormalMap (Normal Map node, flips through
+Separate / Combine Color), Bump (Bump node). A texture file that was not found (or does not load) keeps its Image
+Texture node, without an image and not connected. The texture lookup (convert.textures) reports a file not found by
+name; the builder reports a file that does not load. The graph above the node carries on without it (a Mix gives its
+other side, a normal map without its image nothing) and an input left without a map keeps the IR's value. An empty
+image node renders black in EEVEE and magenta in Cycles, and in a normal or alpha input it would wreck the shading
+or hide the object.
 
 Placement, the 3ds Max convention (StdUVGen: scaled and turned about the map's center, offset in UV fractions):
 sample = R(u, v, w angles) S(tiling) (uv - 0.5 - offset) + 0.5, one Mapping node (POINT): uv_transform(). Per axis
@@ -325,7 +339,7 @@ class _Tree:
         self.builder, self.material, self.ir = builder, material, ir
         self.label = "material %s" % (material.name,)
         self.skipped = set()  # the Principled inputs the IR needs that this Blender lacks
-        tree = compat.material_node_tree(material)
+        tree = compat.node_tree(material)
         self.nodes, self.links = tree.nodes, tree.links
         self.nodes.clear()
         self.memo, self.uvs, self.texture_nodes = {}, {}, {}
@@ -404,11 +418,7 @@ class _Tree:
             _default(s, _mean(inp.value if v is MISSING else v) * scale)
             return False
         if color:
-            dot = self.node("ShaderNodeVectorMath", 0)
-            dot.operation = 'DOT_PRODUCT'
-            self.links.new(v, _in(dot, "Vector"))
-            _in(dot, "Vector_001").default_value = (scale / 3.0,) * 3
-            v = _out(dot, "Value")
+            v = self.mean_of(v, 0, scale / 3.0)
         elif scale != 1.0:
             mul = self.node("ShaderNodeMath", 0)
             mul.operation = 'MULTIPLY'
@@ -507,11 +517,23 @@ class _Tree:
         return alpha_map, (None if alpha is None or alpha_map else alpha.default_value)
 
     def graph(self, node, space, depth):
-        """The output (a node socket) or constant of an IR node in a space."""
+        """The output (a node socket) or constant of an IR node in a space; in FLOAT a color socket through the mean
+        of its channels (see Data maps above)."""
         key = (id(node), space)
         if key not in self.memo:
-            self.memo[key] = self._build(node, space, depth)
+            v = self._build(node, space, depth)
+            if space == FLOAT and isinstance(v, bpy.types.NodeSocket) and v.type in ('RGBA', 'VECTOR'):
+                v = self.mean_of(v, depth)
+            self.memo[key] = v
         return self.memo[key]
+
+    def mean_of(self, v, depth, weight=1.0 / 3.0):
+        """Color socket v as a float: a DOT_PRODUCT by (weight, weight, weight), the mean for 1/3."""
+        dot = self.node("ShaderNodeVectorMath", depth)
+        dot.operation = 'DOT_PRODUCT'
+        self.links.new(v, _in(dot, "Vector"))
+        _in(dot, "Vector_001").default_value = (weight,) * 3
+        return _out(dot, "Value")
 
     def _build(self, n, space, depth):
         if isinstance(n, tx.Constant):
@@ -532,6 +554,10 @@ class _Tree:
             return self.composite(n, space, depth)
         if isinstance(n, tx.Facing):
             return self.facing(n, depth)
+        if isinstance(n, tx.Remap):
+            return self.remap(n, depth)
+        if isinstance(n, tx.Smoothstep):
+            return self.smoothstep(n, depth)
         if isinstance(n, tx.Adjust):
             return self.adjust(n, depth)
         if isinstance(n, tx.Tint):
@@ -772,6 +798,9 @@ class _Tree:
         self.feed(a, va)
         self.feed(b, vb)
         self.feed(_in(node, "Factor_Float"), n.factor if mask is MISSING else mask)
+        # Only a Remap mask unclamps: a Smoothstep one's clamped Map Range (or step) never leaves 0..1.
+        if isinstance(n.mask, tx.Remap) and mask is not MISSING:
+            node.clamp_factor = False  # 3ds Max mixes by a Falloff's curve unclamped (measured: 1.195 renders 1.195)
         return result
 
     def multiply(self, n, space, depth):
@@ -872,11 +901,7 @@ class _Tree:
         def mono():
             nonlocal mean
             if mean is None:
-                dot = self.node("ShaderNodeVectorMath", depth)
-                dot.operation = 'DOT_PRODUCT'
-                self.links.new(v, _in(dot, "Vector"))
-                _in(dot, "Vector_001").default_value = (1.0 / 3.0,) * 3
-                mean = _out(dot, "Value")
+                mean = self.mean_of(v, depth)
             return mean
         if channels == tx.REWIRE_MONO:
             return mono()
@@ -921,6 +946,54 @@ class _Tree:
         self.links.new(_out(dot, "Value"), m.inputs[0])
         m.inputs[1].default_value, m.inputs[2].default_value = -0.5, 0.5
         return m.outputs[0]
+
+    def remap(self, n, depth):
+        """A float through a polyline (a float socket): a Float Curve whose points are VECTOR (straight between
+        them), not clipped (3ds Max's curve can leave 0..1), flat past the ends; MISSING without its input."""
+        v = self.graph(n.input, FLOAT, depth + 1)
+        if v is MISSING:
+            return MISSING
+        fc = self.node("ShaderNodeFloatCurve", depth)
+        mapping = fc.mapping
+        mapping.use_clip = False
+        mapping.extend = 'HORIZONTAL'
+        points = mapping.curves[0].points  # a new Float Curve has two points: moved to the first two
+        for p, (x, y) in zip(points, n.points[:2]):
+            p.location = (x, y)
+        for x, y in n.points[2:]:
+            points.new(x, y)
+        for p in points:
+            p.handle_type = 'VECTOR'
+        mapping.update()
+        _in(fc, "Factor").default_value = 1.0
+        self.feed(_in(fc, "Value"), v)
+        return _out(fc, "Value")
+
+    def smoothstep(self, n, depth):
+        """Mix's Use Curve on a float (a float socket): Map Range SMOOTHSTEP from lower..upper to 0..1, or a step
+        when lower >= upper, 1 from lower on (1 - LESS_THAN: 3ds Max gives 1 at lower itself, an 8-bit mask can hit
+        it); MISSING without its input."""
+        v = self.graph(n.input, FLOAT, depth + 2)
+        if v is MISSING:
+            return MISSING
+        if n.lower >= n.upper:
+            less = self.node("ShaderNodeMath", depth + 1)
+            less.operation = 'LESS_THAN'
+            self.feed(less.inputs[0], v)
+            less.inputs[1].default_value = n.lower
+            step = self.node("ShaderNodeMath", depth)
+            step.operation = 'SUBTRACT'
+            step.inputs[0].default_value = 1.0
+            self.links.new(less.outputs[0], step.inputs[1])
+            return step.outputs[0]
+        mr = self.node("ShaderNodeMapRange", depth)
+        mr.data_type = 'FLOAT'
+        mr.interpolation_type = 'SMOOTHSTEP'
+        mr.clamp = True
+        self.feed(_in(mr, "Value"), v)
+        _in(mr, "From Min").default_value, _in(mr, "From Max").default_value = n.lower, n.upper
+        _in(mr, "To Min").default_value, _in(mr, "To Max").default_value = 0.0, 1.0
+        return _out(mr, "Result")
 
     def adjust(self, n, depth):
         """A wrapper's Output over its input (a color socket), as an image's."""
@@ -1008,18 +1081,11 @@ class _Tree:
         return result
 
     def weight(self, n, depth):
-        """A Composite mask as a float: a color socket (an image) through the mean of its channels, as 3ds Max
-        weighs it (Blender's own color to float conversion is a luminance); MISSING without one."""
+        """A Composite mask as a float (an image through the mean of its channels, as every float graph: graph());
+        MISSING without one."""
         if n is None:
             return MISSING
-        v = self.graph(n, FLOAT, depth + 1)
-        if not isinstance(v, bpy.types.NodeSocket) or v.type not in ('RGBA', 'VECTOR'):
-            return v
-        dot = self.node("ShaderNodeVectorMath", depth)
-        dot.operation = 'DOT_PRODUCT'
-        self.links.new(v, _in(dot, "Vector"))
-        _in(dot, "Vector_001").default_value = (1.0 / 3.0,) * 3
-        return _out(dot, "Value")
+        return self.graph(n, FLOAT, depth + 1)
 
     def times(self, socket, factor, depth):
         """socket x factor (a float socket or constant) as a Math node's output."""

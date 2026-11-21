@@ -35,11 +35,14 @@ Some parts keep settings in chunks of their own, read into values here (3ds Max 
                                         # channel of a Placement (UVGen) object
     output_invert(scene, out.index)     # an Output (TexOutput) part's invert flag
     bitmap_gamma(scene, m)              # a Bitmap's gamma override as stored, None for automatic
+    mix_curve(scene, m)                 # the CurvePoints of the Custom Curve Control m references (a Falloff's
+                                        # mix curve), None without one
 
 An unreadable flags chunk gives 3ds Max's defaults (both axes tiled, nothing mirrored, not inverted); a Placement's
 axis, source and channel are None without their chunk, for convert to default. No bpy.
 """
 import collections
+import math
 import struct
 
 from . import chunks, classids, pblock
@@ -54,12 +57,23 @@ _NAME = 0x4001
 
 # Placement (UVGen) object: u32 leaves; flags bits; coordinate source values
 _UV_FLAGS, _UV_AXIS, _UV_MAPPING_TYPE, _UV_SOURCE, _UV_CHANNEL = 0x9002, 0x9003, 0x9005, 0x9006, 0x900B
+_UV_ENVIRONMENT = 0x9009
 _U_TILE, _V_TILE, _U_MIRROR, _V_MIRROR, _REAL_WORLD = 0x1, 0x2, 0x4, 0x8, 0x08000000
 UV_EXPLICIT, UV_OBJECT_XYZ, UV_VERTEX_COLOR, UV_WORLD_XYZ = 0, 1, 2, 3
 # Output (TexOutput) part: its flags leaf
 _OUT_FLAGS, _OUT_INVERT = 0x0002, 0x2
 # BitmapInfo: the 0x0003 sibling of the bitmap entry holds 0x1201; its last 14 bytes start with gamma, flags
 _BITMAP_DATA, _BITMAP_INFO, _BI_TAIL, _BI_GAMMA_OVERRIDE = 0x0003, 0x1201, 14, 0x1
+# Custom Curve Control: reference 0 its curve, which holds 0x1000 its point count, then per point a 0x1030 holding a
+# 0x1000 of 28 bytes: x, y, in handle x, y, out handle x, y (each handle as a position, not an offset), u32 flags
+_CURVE_COUNT, _CURVE_POINT, _POINT_DATA = 0x1000, 0x1030, 0x1000
+_POINT = struct.Struct("<6fI")
+MAX_CURVE_POINTS = 1000  # a curve drawn by hand has a handful; the cap keeps a hostile count from costing time
+
+
+class CurvePoint(collections.namedtuple("CurvePoint", "point in_handle out_handle flags")):
+    """A curve point: point, in_handle and out_handle as (x, y) positions, its u32 flags as stored."""
+    __slots__ = ()
 
 
 class Part(collections.namedtuple("Part", "index class_id superclass blocks legacy")):
@@ -71,11 +85,16 @@ class Issue(collections.namedtuple("Issue", "index reason")):
     __slots__ = ()
 
 
-class Placement(collections.namedtuple("Placement", "tile mirror real_world axis environment source channel")):
+class Placement(collections.namedtuple("Placement", "tile mirror real_world axis environment source channel "
+                                                    "env_mapping")):
     """A Placement object's chunk settings. tile, mirror: (u, v); real_world: real-world map size; axis (0 UV, 1 VW,
     2 WU), source (UV_*) and channel: as stored, None without their chunk; environment: a mapping type other than
-    texture."""
+    texture; env_mapping: the environment projection (1 spherical, 2 cylindrical, 3 shrink-wrap, 4 screen, kept
+    also in texture mode; None without its chunk)."""
     __slots__ = ()
+
+
+Placement.__new__.__defaults__ = (None,)
 
 
 class MtlBase:
@@ -244,13 +263,13 @@ def _leaf_u32s(scene, index, ids):
 
 def placement(scene, index):
     """The Placement of the UVGen object index; a missing flags chunk means both axes tiled, nothing mirrored."""
-    raw = _leaf_u32s(scene, index, (_UV_FLAGS, _UV_AXIS, _UV_MAPPING_TYPE, _UV_SOURCE, _UV_CHANNEL))
+    raw = _leaf_u32s(scene, index, (_UV_FLAGS, _UV_AXIS, _UV_MAPPING_TYPE, _UV_SOURCE, _UV_CHANNEL, _UV_ENVIRONMENT))
     flags = raw.get(_UV_FLAGS, _U_TILE | _V_TILE)
     return Placement(tile=(bool(flags & _U_TILE), bool(flags & _V_TILE)),
                      mirror=(bool(flags & _U_MIRROR), bool(flags & _V_MIRROR)),
                      real_world=bool(flags & _REAL_WORLD), axis=raw.get(_UV_AXIS),
                      environment=raw.get(_UV_MAPPING_TYPE, 0) != 0, source=raw.get(_UV_SOURCE),
-                     channel=raw.get(_UV_CHANNEL))
+                     channel=raw.get(_UV_CHANNEL), env_mapping=raw.get(_UV_ENVIRONMENT))
 
 
 def output_invert(scene, index):
@@ -278,3 +297,51 @@ def bitmap_gamma(scene, m):
         gamma, flags = struct.unpack_from("<fI", data, len(data) - _BI_TAIL)
         return gamma if flags & _BI_GAMMA_OVERRIDE else None
     return None
+
+
+def _curve_error(index, why):
+    return ChunkError("the curve control at object %d: %s" % (index, why))
+
+
+def mix_curve(scene, m):
+    """The CurvePoints, x ascending, of the curve of the first Custom Curve Control m references (a Falloff's
+    MixCurve); None when it references none. ChunkError when that curve cannot be read: no curve, a point count
+    outside 2..MAX_CURVE_POINTS or other than the points stored, a point record not of 28 bytes, a value that is
+    not finite, x going back."""
+    control = None
+    for _slot, target in sorted(m.refs.items()):
+        if not 0 <= target < len(scene):
+            continue
+        entry = scene.entry(target)
+        if entry is not None and entry.superclass == classids.SC_REF_MAKER and \
+                entry.class_id == classids.CURVE_CONTROL:
+            control = target
+            break
+    if control is None:
+        return None
+    curve = scene.refs(control).get(0)
+    entry = scene.entry(curve) if curve is not None else None
+    if entry is None or entry.superclass != classids.SC_REF_MAKER or entry.class_id != classids.CURVE:
+        raise _curve_error(control, "no curve at its reference 0")
+    chunk = scene.chunk(curve)
+    count = chunk.first(_CURVE_COUNT) if chunk.container else None
+    if count is None or count.container or count.payload_size != 4:
+        raise _curve_error(control, "no point count")
+    n = count.unpack("<I")[0]
+    if not 2 <= n <= MAX_CURVE_POINTS:
+        raise _curve_error(control, "%d points, not 2 to %d" % (n, MAX_CURVE_POINTS))
+    holders = [c for c in chunk.children if c.id == _CURVE_POINT]
+    if len(holders) != n:
+        raise _curve_error(control, "%d points stored for a count of %d" % (len(holders), n))
+    points = []
+    for h in holders:
+        data = h.first(_POINT_DATA) if h.container else None
+        if data is None or data.container or data.payload_size != _POINT.size:
+            raise _curve_error(control, "a point record not of %d bytes" % _POINT.size)
+        x, y, ix, iy, ox, oy, flags = data.unpack(_POINT.format)
+        if not all(math.isfinite(v) for v in (x, y, ix, iy, ox, oy)):
+            raise _curve_error(control, "a value that is not finite")
+        if points and x < points[-1].point[0]:
+            raise _curve_error(control, "points out of order")
+        points.append(CurvePoint((x, y), (ix, iy), (ox, oy), flags))
+    return tuple(points)

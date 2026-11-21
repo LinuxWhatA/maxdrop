@@ -45,14 +45,19 @@ modifiers), the report names the modifiers not applied, and the node whose pivot
 in place. lookat: the nodes aimed by a Look At controller or a LookAt Constraint have 3ds Max's world matrices (above),
 the Target objects are empties; imported again with Keep Targets, each Look At a Track To can follow gets one aimed at
 its target's object, with the same evaluated world matrix, and the report names the two it cannot follow (a roll, the
-Y axis). vray_lights: each VRayLight node a light object (mesh and dome lights empties), its light of the
-description's type, shape and size and of the shape the fixture script made, its -Z axis along the oracle's, its
+Y axis). vray_lights: each VRayLight node a light object (mesh and dome lights empties, the dome the World), its light
+of the description's type, shape and size and of the shape the fixture script made, its -Z axis along the oracle's, its
 energy the watts 3ds Max computed with the rules source's function times the default Light Strength (the disc's 4 / pi,
 the double-sided plane's half), its color, the off light hidden in viewport and render, the invisible one unseen by
 the camera and glossy rays; the instance shares the plane's light, the disc's instance scaled 2, 1.5, 1 has its
 own, three times as strong; imported again with Light Strength 2, twice the
-power. lights_standard, lights_photometric (and lookat's target spot): each light of the type, spot cone, power and
-color of the rules (STOCK_LIGHTS), its -Z axis along the oracle's, its flags, its shadow switch (STOCK_SHADOWS);
+power. vray_dome: the dome is the scene's World (its texture image, strength, hemisphere, the Mapping rotations
+that look its texels up where V-Ray does, camera visibility off), the report's World line, the World before it
+kept with a fake user; the second dome and the mesh light empties; the spheres' radii and powers (X scale only);
+undo() after the run, and a build that fails after the World, put the World before back (no fake user) and remove
+the new one; a World that cannot be built leaves the scene imported, a line in the report; of two files with a dome
+the first gives the World. lights_standard, lights_photometric (and lookat's target spot): each light of the type,
+spot cone, power and color of the rules (STOCK_LIGHTS), its -Z axis along the oracle's, its flags, its shadow switch (STOCK_SHADOWS);
 the Skylight an empty.
 Cameras (cameras, lookat): each camera node a camera object of the description's type, sensor fit HORIZONTAL, sensor,
 lens, shift, clipping and orthographic width, Blender's horizontal field of view (angle_x) within 0.05 degrees of 3ds
@@ -76,9 +81,10 @@ Materials (build.materials through the operator): each face on its material's sl
 the 3ds Max material, its Principled inputs equal to the MaterialIR the same file converts to (values, or linked when
 a texture graph drives them), the render method, one Image Texture node per file; vray_maps' Mapping values by hand
 from its authoring script, texture nodes without an image and each missing file listed once by name; vray_maps,
-texmap_rules, corona_maps, corona_light, vray_texmaps and texmap_wrappers copied beside generated PNGs load every
-image in its color space, one datablock per file and color space, the report counts every file as found (and
-texmap_wrappers draws each wrapper with its nodes: Layer Weight, Fresnel, blend types, Separate / Combine Color);
+texmap_rules, corona_maps, corona_light, vray_texmaps, texmap_wrappers and falloff_curve copied beside generated
+PNGs load every image in its color space, one datablock per file and color space, the report counts every file as
+found (and texmap_wrappers draws each wrapper with its nodes: Layer Weight, Fresnel, blend types, Separate / Combine
+Color; falloff_curve each Falloff curve as a Float Curve that evaluates as 3ds Max's, each Mix's Use Curve);
 hand-made IRs check shared images, a missing file, the materials counted by class, Thin Wall (set on 5.x, counted on
 4.x), a name clash, BLENDED / DITHERED and every node kind, the wrappers' links and values (Facing, blend modes and
 masks, rewiring, Adjust, Tint); a crop repeating per axis (wrap, ping-pong, clip), a mirrored axis drawn as
@@ -120,6 +126,7 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
     "corona_maps": ["UVMap"],
     "corona_physical": ["UVMap"],
     "editable_mesh": ["UVMap"],
+    "falloff_curve": ["UVMap"],
     "extrude": [],  # per mesh: EXTRUDE_UV_LAYERS
     "gamma_swatches": ["UVMap"],
     "hierarchy": [],
@@ -152,6 +159,7 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
     "vray_texmaps": ["UVMap"],
     "vray_more": ["UVMap"],
     "vray_lights": [],  # lights and a target: no mesh
+    "vray_dome": [],  # lights and a box without Generate Mapping Coords
     "lights_standard": [],
     "lights_photometric": [],
     "cameras": [],  # its box, without Generate Mapping Coords
@@ -201,7 +209,11 @@ INSIDE_OUT = {"FixtureBoxInside"}
 VRAY_LIGHT_WATTS = {"FixturePlane": 0.0527086444, "FixturePlaneInst": 0.0527086444, "FixturePlaneLm": 2.19619322,
                     "FixtureDisc": 0.00975400303, "FixtureSphere": 40.0, "FixtureSphereKelvin": 0.252661914,
                     "FixtureOff": 0.00439238735, "FixtureInvisible": 20.0, "FixtureTargeted": 25.0,
-                    "FixtureDiscScaled": 0.00975400303}
+                    "FixtureDiscScaled": 0.00975400303,
+                    # vray_dome (tools/fixtures/vray_dome.ms): the rules' watts by hand (W/m2/sr: pi m 4 pi r^2; W: m),
+                    # which V-Ray's X-scale rule leaves as they are for these scales
+                    "FixtureSphereTall": math.pi * 2.0 * 4.0 * math.pi * 0.005 ** 2, "FixtureSphereWide": 40.0,
+                    "FixtureSphereWideInst": 40.0}
 # the scaled disc: its area times 2 x 1.5, as V-Ray lights it (measured)
 VRAY_LIGHT_POWER = {"FixtureDisc": 4.0 / math.pi, "FixturePlaneLm": 0.5, "FixtureDiscScaled": 4.0 / math.pi * 3.0}
 VRAY_LIGHT_SHAPES = {"FixturePlane": ('AREA', 'RECTANGLE', 0.04, 0.02, 0.0),
@@ -212,7 +224,11 @@ VRAY_LIGHT_SHAPES = {"FixturePlane": ('AREA', 'RECTANGLE', 0.04, 0.02, 0.0),
                      "FixtureOff": ('AREA', 'RECTANGLE', 0.02, 0.02, 0.0), "FixtureInvisible": ('AREA', 'DISK', 0.02,
                                                                                                0.0, 0.0),
                      "FixtureTargeted": ('AREA', 'RECTANGLE', 0.02, 0.01, 0.0),
-                     "FixtureDiscScaled": ('AREA', 'DISK', 0.03, 0.0, 0.0)}
+                     "FixtureDiscScaled": ('AREA', 'DISK', 0.03, 0.0, 0.0),
+                     # vray_dome: radius 5 mm times the X scale (1, 2, 1), whatever the Y and Z scale
+                     "FixtureSphereTall": ('POINT', None, 0.0, 0.0, 0.005),
+                     "FixtureSphereWide": ('POINT', None, 0.0, 0.0, 0.01),
+                     "FixtureSphereWideInst": ('POINT', None, 0.0, 0.0, 0.005)}
 VRAY_LIGHT_COLORS = {"FixturePlane": (1.0, 0.57758, 0.304987), "FixturePlaneInst": (1.0, 0.57758, 0.304987),
                      "FixtureDisc": (0.187821, 0.351533, 1.0), "FixtureDiscScaled": (0.187821, 0.351533, 1.0),
                      "FixtureSphereKelvin": (1.0, 0.5304, 0.265643)}
@@ -222,6 +238,8 @@ CAMERA_SHIFTS = {"CamPhysShift": (-0.1, 0.15), "CamVRayShift": (-0.1, -0.25)}
 CAMERA_SENSORS = {"CamVRayTarget": 30.0}
 FOV_TOLERANCE = 0.05  # degrees
 KEPT_SIZE = (1234, 567, 50)  # the scene's render size before each import (empty_scene)
+USER_WORLD = "UserWorld"  # the scene's World before each import (empty_scene)
+BARE_MESHES = {"FixtureMeshSource"}  # meshes a fixture leaves without a material: vray_dome's mesh light source
 
 # lights_standard, lights_photometric (tools/fixtures/*.ms) and lookat's target spot: Blender's light type, spot
 # size in degrees and blend, and the watts of the rules (docs/FORMAT.md, "Standard and photometric lights") from
@@ -250,7 +268,7 @@ STOCK_LIGHTS = {
     "PhDisc": ('AREA', 0.0, 0.0, 500.0 * _LAMBERT), "PhLine": ('AREA', 0.0, 0.0, 300.0 * _LAMBERT),
     "PhSphere": ('POINT', 0.0, 0.0, 900.0 * _CD), "PhCylinder": ('POINT', 0.0, 0.0, 700.0 * _CD),
     "PhWeb": ('SPOT',) + _WEB + (400.0 * _CD,), "PhOff": ('POINT', 0.0, 0.0, 1000.0 * _CD),
-    "IesPower": ('SPOT',) + _WEB + (1500.0 / 683.0,), "IesOverride": ('SPOT',) + _WEB + (300.0 * _CD,),
+    "IesPower": ('SPOT',) + _WEB + (1500.0 / 683.0,), "IesOverride": ('SPOT',) + _WEB + (300.0 / 683.0,),
     "PhTPoint": ('POINT', 0.0, 0.0, 100.0 * _CD), "PhTLine": ('POINT', 0.0, 0.0, 100.0 * _CD),
     "PhTRectangle": ('POINT', 0.0, 0.0, 100.0 * _CD), "PhTSphere": ('POINT', 0.0, 0.0, 100.0 * _CD),
     "PhTCylinder": ('POINT', 0.0, 0.0, 100.0 * _CD)}
@@ -328,6 +346,11 @@ def empty_scene():
     bpy.context.scene.camera = None
     for material in list(bpy.data.materials):
         bpy.data.materials.remove(material)
+    world = bpy.data.worlds.get(USER_WORLD) or bpy.data.worlds.new(USER_WORLD)  # a dome replaces the scene's World
+    world.use_fake_user = False
+    bpy.context.scene.world = world
+    for other in [w for w in bpy.data.worlds if w != world]:
+        bpy.data.worlds.remove(other)
 
 
 def close(a, b, tolerance):
@@ -569,7 +592,8 @@ def run_fixture(path, modules):
         check("layers_flags: no layer excluded (none is hidden in 3ds Max)", excluded == [], str(excluded))
     if name == "layers_more":
         check_layers_more(root, obs, view_layer)
-    bare = sorted(ob.name for ob in obs if ob.type == 'MESH' and not any(sl.material for sl in ob.material_slots))
+    bare = sorted(ob.name for ob in obs if ob.type == 'MESH' and not any(sl.material for sl in ob.material_slots)
+                  and ob.name not in BARE_MESHES)
     check("%s: a material on every mesh" % name, bare == [], str(bare))
     check_fixture_materials(name, plan, desc, obs)
     rep = convert_report.gather(desc, source=os.path.basename(path), objects_built=len(obs),
@@ -619,7 +643,16 @@ def run_fixture(path, modules):
               len(lit) == 10 and len(bpy.data.lights) == 9 and bpy.data.objects["FixturePlane"].data ==
               bpy.data.objects["FixturePlaneInst"].data and bpy.data.objects["FixtureDisc"].data !=
               bpy.data.objects["FixtureDiscScaled"].data, "%s, %d lights" % (lit, len(bpy.data.lights)))
+        world = bpy.context.scene.world
+        strength = world.node_tree.nodes.get("Background").inputs["Strength"].default_value if world else None
+        from maxdrop import ops
+        check("vray_lights: its dome (white, multiplier 1 in the default units) is the World, strength 1500 / (683 pi) "
+              "x Light Strength", world is not None and world.name == "FixtureDome" and strength is not None and
+              abs(strength - 1500.0 / (683.0 * math.pi) * ops.LIGHT_STRENGTH) < 1e-5 and
+              bpy.data.worlds.get(USER_WORLD) is not None, "%s %s" % (world and world.name, strength))
         check_light_strength(path)
+    if name == "vray_dome":
+        check_dome(desc)
     if name in ("lights_standard", "lights_photometric"):
         lit = [ob for ob in obs if ob.type == 'LIGHT']
         shared = {"lights_standard": ("StdOmni", "StdOmniInst"), "lights_photometric": ("PhPoint", "PhPointInst")}
@@ -767,6 +800,149 @@ def check_stock_light(label, ob, ld, o):
     check(label + ": camera, diffuse and glossy visibility, diffuse and specular factors", flags == want, str(flags))
     check(label + ": shadows as in 3ds Max", light.use_shadow == ld.shadow == (o["name"] in STOCK_SHADOWS),
           "%s, %s" % (light.use_shadow, ld.shadow))
+
+
+def check_dome(desc):
+    """vray_dome: the dome is the World: Background strength (through the hemisphere's Math nodes) = 2 x 1500 /
+    (683 pi) x Light Strength, its color an Environment Texture of fixture_dome.png, the texture's Mapping (scale 1, -1,
+    1; turned 60 degrees about Z: -30 of the VRayBitmap's horizontal rotation, then the mirrored dome turned 90 about Z)
+    and the hemisphere's (the dome's -90 about Z), camera rays off, diffuse and glossy on. The two spheres share one
+    light, the scaled one has its own. The report says the World and the one it replaced, which is kept."""
+    from maxdrop import ops
+    world = bpy.context.scene.world
+    user = bpy.data.worlds.get(USER_WORLD)
+    check("vray_dome: FixtureDome is the World, UserWorld kept with a fake user", world is not None and
+          world.name == "FixtureDome" and user is not None and user.use_fake_user, world.name if world else "none")
+    if world is None or world.name != "FixtureDome":
+        return
+    nodes = world.node_tree.nodes
+    env = next((n for n in nodes if n.bl_idname == "ShaderNodeTexEnvironment"), None)
+    times = next((n for n in nodes if n.bl_idname == "ShaderNodeMath" and n.operation == 'MULTIPLY'), None)
+    above = next((n for n in nodes if n.bl_idname == "ShaderNodeMath" and n.operation == 'GREATER_THAN'), None)
+    maps = {tuple(round(v, 6) for v in n.inputs["Scale"].default_value): n for n in nodes
+            if n.bl_idname == "ShaderNodeMapping"}
+    want = 2.0 * 1500.0 / (683.0 * math.pi) * ops.LIGHT_STRENGTH
+    check("vray_dome: hemisphere strength = 2 x 1500 / (683 pi) x Light Strength, masked by Z > 0",
+          times is not None and above is not None and abs(times.inputs[1].default_value - want) < 1e-5 and
+          times.inputs[0].links and times.inputs[0].links[0].from_node == above,
+          "%s" % (times and times.inputs[1].default_value))
+    check("vray_dome: an Environment Texture of fixture_dome.png drives the color",
+          env is not None and env.image is not None and env.image.name.startswith("fixture_dome") and
+          nodes["Background"].inputs["Color"].links and
+          nodes["Background"].inputs["Color"].links[0].from_node == env, str(env and env.image))
+    tex, up = maps.get((1.0, -1.0, 1.0)), maps.get((1.0, 1.0, 1.0))
+    check("vray_dome: the texture's Mapping turned 60 degrees about Z, the hemisphere's -90",
+          tex is not None and up is not None and
+          close(tuple(tex.inputs["Rotation"].default_value), (0.0, 0.0, math.radians(60.0)), 1e-5) and
+          close(tuple(up.inputs["Rotation"].default_value), (0.0, 0.0, math.radians(-90.0)), 1e-5),
+          "%s %s" % (tex and tuple(tex.inputs["Rotation"].default_value),
+                     up and tuple(up.inputs["Rotation"].default_value)))
+    rays = world.cycles_visibility
+    check("vray_dome: invisible: camera rays off, diffuse and glossy on", (rays.camera, rays.diffuse, rays.glossy) ==
+          (False, True, True), str((rays.camera, rays.diffuse, rays.glossy)))
+    for name in ("FixtureDomeColor", "FixtureMeshLight"):
+        ob = bpy.data.objects.get(name)
+        check("vray_dome: %s an empty" % name, ob is not None and ob.type == 'EMPTY', ob and ob.type)
+    check("vray_dome: three sphere objects, three lights (the scaled instance its own)",
+          len([ob for ob in bpy.data.objects if ob.type == 'LIGHT']) == 3 and len(bpy.data.lights) == 3 and
+          bpy.data.objects["FixtureSphereWide"].data != bpy.data.objects["FixtureSphereWideInst"].data,
+          str(len(bpy.data.lights)))
+
+
+def check_dome_undo(path):
+    """vray_dome: the report names the World and the one it replaced; undo() of a finished modal run (the World is
+    made at the end of the build), and a build that fails after making the World, put the scene's World back and
+    remove the new one with everything else the run made."""
+    from maxdrop import ops
+    empty_scene()
+    result = bpy.ops.import_scene.maxdrop(filepath=path)
+    text = bpy.data.texts.get("MaxDrop Report")
+    body = text.as_string() if text is not None else ""
+    check("dome undo: the report names the World and the one it replaced", result == {'FINISHED'} and
+          "\nWorld: the dome light FixtureDome, in place of %s (kept)\n" % USER_WORLD in body, body[:600])
+    empty_scene()
+    for img in list(bpy.data.images):  # so that the run loads the dome's image anew, and undo() must remove it
+        bpy.data.images.remove(img)
+    before = _state()
+    run = _cancel_run([path])
+    for _ in run.steps():
+        pass
+    made = bpy.context.scene.world is not None and bpy.context.scene.world.name == "FixtureDome"
+    run.undo()
+    check("dome undo: undo() after the run: the World before is back without a fake user, nothing made",
+          made and _state() == before and not bpy.data.worlds[USER_WORLD].use_fake_user,
+          "%s | %s" % (_state(), before))
+    empty_scene()
+    for img in list(bpy.data.images):
+        bpy.data.images.remove(img)
+    before = _state()
+    original = ops._make_world
+
+    def failing(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError("maxdrop test: build fails after the World")
+
+    ops._make_world = failing
+    try:
+        steps = _cancel_run([path]).steps()
+        failed = False
+        try:
+            for _ in steps:
+                pass
+        except RuntimeError:
+            failed = True
+        except Exception as e:  # the runner may wrap it
+            failed = "maxdrop test" in str(e)
+    finally:
+        ops._make_world = original
+    check("dome undo: a build that fails after the World puts the World before back, nothing made",
+          failed and _state() == before and not bpy.data.worlds[USER_WORLD].use_fake_user,
+          "%s | %s" % (_state(), before))
+
+    # a World that cannot be built: the scene is imported, the World stays, a line in the report
+    from maxdrop.build import world as build_world
+    empty_scene()
+    for img in list(bpy.data.images):
+        bpy.data.images.remove(img)
+    real = build_world.make_world
+
+    def broken(*args, **kwargs):
+        bpy.data.worlds.new("Half")
+        raise RuntimeError("maxdrop test: World fails")
+
+    build_world.make_world = broken
+    try:
+        result = bpy.ops.import_scene.maxdrop(filepath=path)
+    finally:
+        build_world.make_world = real
+    text = bpy.data.texts.get("MaxDrop Report")
+    body = text.as_string() if text is not None else ""
+    check("dome undo: a World that cannot be built: the scene imported, its World kept, nothing left, a report line",
+          result == {'FINISHED'} and len(bpy.data.objects) == 7 and bpy.context.scene.world.name == USER_WORLD and
+          [w.name for w in bpy.data.worlds] == [USER_WORLD] and not bpy.data.images and
+          "the World is not built (RuntimeError: maxdrop test: World fails)" in body,
+          "%s %d %s %s" % (result, len(bpy.data.objects), [w.name for w in bpy.data.worlds], body[-400:]))
+
+    # two files with a dome: the first gives the World, the second's dome is a line in the report
+    lights = os.path.join(os.path.dirname(path), "vray_lights.max")
+    empty_scene()
+    for img in list(bpy.data.images):
+        bpy.data.images.remove(img)
+    before = _state()
+    run = _cancel_run([path, lights])
+    for _ in run.steps():
+        pass
+    text = bpy.data.texts.get("MaxDrop Report")
+    body = text.as_string() if text is not None else ""
+    names = sorted(w.name for w in bpy.data.worlds)
+    check("dome undo: two files with a dome: the first file's dome is the World, the second's a line in the report",
+          bpy.context.scene.world.name == "FixtureDome" and names == ["FixtureDome", USER_WORLD] and
+          "dome light not imported: an earlier file of this import gave the World (FixtureDome)" in body,
+          "%s %s" % (names, body[-600:]))
+    run.undo()
+    check("dome undo: two files undone: the World before is back without a fake user, nothing made",
+          _state() == before and not bpy.data.worlds[USER_WORLD].use_fake_user, "%s | %s" % (_state(), before))
+    empty_scene()
 
 
 def check_light_strength(path):
@@ -1299,6 +1475,9 @@ def _fold(n, present):
         return LOST if v is LOST else MAP
     if isinstance(n, tx.Facing):
         return MAP
+    if isinstance(n, (tx.Remap, tx.Smoothstep)):  # a float through a curve: a node over its input
+        v = _fold(n.input, present)
+        return LOST if v is LOST else MAP
     if isinstance(n, tx.Composite):
         layers = [(v, la) for v, la in ((_fold(la.node, present), la) for la in n.layers) if v is not LOST]
         if not layers:
@@ -1391,6 +1570,9 @@ def check_principled(label, material, ir, present=False):
     loose = [n.label for n in material.node_tree.nodes if n.bl_idname == "ShaderNodeTexImage" and n.image is None
              and any(o.is_linked for o in n.outputs)]
     check(label + ": an Image Texture node without an image feeds nothing", loose == [], str(loose))
+    mixed = _color_into_float(material)
+    check(label + ": no color output linked into a float input (a data map is the mean of its channels)",
+          mixed == [], str(mixed))
 
 
 def check_layers(label, material, layers, present=False):
@@ -1435,6 +1617,8 @@ def check_fixture_materials(name, plan, desc, obs):
                 check("%s/%s: material named after the 3ds Max material" % (name, material.name),
                       material.name.split(".")[0] == (ir.name or "Material").split(".")[0], ir.name)
                 check_principled("%s/%s" % (name, material.name), material, ir)
+    if name == "falloff_curve":
+        check_falloff_curve(textured=False)
     if name == "vray_maps":
         check_vray_maps_nodes(textured=False)
         text = bpy.data.texts.get("MaxDrop Report")
@@ -1447,6 +1631,111 @@ def check_fixture_materials(name, plan, desc, obs):
         empty = [n.label for m in bpy.data.materials for n in m.node_tree.nodes
                  if n.bl_idname == "ShaderNodeTexImage" and n.image is not None]
         check("vray_maps: texture nodes without an image when the files are missing", empty == [], str(empty))
+
+
+def check_falloff_curve(textured):
+    """falloff_curve imported: each edited Falloff curve is a Float Curve on the Falloff's ratio that evaluates as 3ds
+    Max 2020 does (tests/fixtures/falloff_curve.curves.jsonl, x = k / 64) and drives an unclamped Mix; the default
+    curve makes none. Each Mix's Use Curve: textured, a Map Range SMOOTHSTEP (lower < upper) or a step
+    (1 - LESS_THAN) over its mask; without the mask's file, the mix amount through the curve."""
+    with open(os.path.join(ROOT, "tests", "fixtures", "falloff_curve.curves.jsonl"), encoding="ascii") as f:
+        rows = {r["name"]: r["y"] for r in map(json.loads, f)}
+    ratios = {"FixtureCurveBezier": "ShaderNodeLayerWeight", "FixtureCurveCorner": "ShaderNodeMath",
+              "FixtureCurveOvershoot": "ShaderNodeFresnel", "FixtureCurveClamped": "ShaderNodeLayerWeight"}
+    for name, ratio in ratios.items():
+        mix = _from(_principled(bpy.data.materials[name]).inputs["Base Color"])
+        fc = _from(_input(mix, "Factor_Float"))
+        ok = fc is not None and fc.bl_idname == "ShaderNodeFloatCurve"
+        check("falloff_curve/%s: a Float Curve drives the Mix, unclamped" % name,
+              ok and not mix.clamp_factor and _from(_input(fc, "Value")).bl_idname == ratio
+              and abs(_input(fc, "Factor").default_value - 1.0) < 1e-6,
+              "%s %s" % (getattr(fc, "bl_idname", None), getattr(mix, "clamp_factor", None)))
+        if ok:
+            mapping = fc.mapping
+            mapping.initialize()
+            err = max(abs(mapping.evaluate(mapping.curves[0], k / 64.0) - y) for k, y in enumerate(rows[name]))
+            check("falloff_curve/%s: the Float Curve evaluates as 3ds Max's curve, within 0.001" % name, err < 1e-3,
+                  str(err))
+    linear = bpy.data.materials["FixtureCurveLinear"]
+    check("falloff_curve: the default curve makes no Float Curve",
+          not any(n.bl_idname == "ShaderNodeFloatCurve" for n in linear.node_tree.nodes)
+          and _from(_input(_from(_principled(linear).inputs["Base Color"]), "Factor_Float")).bl_idname
+          == "ShaderNodeLayerWeight")
+    amount = _from(_principled(bpy.data.materials["FixtureMixCurveAmount"]).inputs["Base Color"])
+    check("falloff_curve: a Mix's Use Curve folded into its amount (0.4 -> 0.15625)",
+          amount.bl_idname == "ShaderNodeMix" and _from(_input(amount, "Factor_Float")) is None
+          and abs(_input(amount, "Factor_Float").default_value - 0.15625) < 1e-4)
+    for name, kind in (("FixtureMixCurve", "SMOOTHSTEP"), ("FixtureMixCurveStep", "STEP")):
+        mix = _from(_principled(bpy.data.materials[name]).inputs["Base Color"])
+        factor = _from(_input(mix, "Factor_Float"))
+        if not textured:
+            check("falloff_curve/%s: without its mask's file, the mix amount through the curve (0)" % name,
+                  factor is None and abs(_input(mix, "Factor_Float").default_value) < 1e-6)
+            continue
+        if kind == "SMOOTHSTEP":
+            ok = factor is not None and factor.bl_idname == "ShaderNodeMapRange" and \
+                factor.interpolation_type == 'SMOOTHSTEP' and factor.clamp and \
+                close([_input(factor, k).default_value for k in ("From Min", "From Max", "To Min", "To Max")],
+                      [0.2, 0.9, 0.0, 1.0], 1e-6)
+        else:  # 1 - LESS_THAN(mask, lower)
+            less = _from(factor.inputs[1]) if factor is not None and factor.bl_idname == "ShaderNodeMath" else None
+            ok = less is not None and factor.operation == 'SUBTRACT' and factor.inputs[0].default_value == 1.0 \
+                and less.operation == 'LESS_THAN' and abs(less.inputs[1].default_value - 0.6) < 1e-6
+            factor = less
+        image = _from(_input(factor, "Value") if kind == "SMOOTHSTEP" else factor.inputs[0]) if factor else None
+        check("falloff_curve/%s: Use Curve as a %s over its mask image" % (name, kind),
+              ok and image is not None and image.bl_idname in ("ShaderNodeTexImage", "ShaderNodeVectorMath"),
+              "%s %s" % (getattr(factor, "bl_idname", None), getattr(image, "bl_idname", None)))
+
+
+def check_curve_step():
+    """A Remap with two points at one x (curve_samples' vertical step: a segment with no width) as a Float Curve:
+    the points stay in their order, also when the step is the first two points (set, not added) or comes out of
+    curve_samples, and the curve evaluates as the polyline on either side of the step (at the step x itself
+    either side is right) and flat past the ends."""
+    from maxdrop.build import materials as build_materials
+    from maxdrop.convert import materials as cm
+    from maxdrop.convert import texmaps as tx
+    from maxdrop.reader.materials import CurvePoint
+
+    def polyline(points, x):
+        if x <= points[0][0]:
+            return points[0][1]
+        for (xa, ya), (xb, yb) in zip(points, points[1:]):
+            if xa <= x < xb:
+                return ya + (yb - ya) * (x - xa) / (xb - xa)
+        return points[-1][1]
+
+    corner = [CurvePoint((0.0, 1.0), (0.0, 1.0), (0.2, 1.0), 0), CurvePoint((0.5, 0.9), (0.4, 0.9), (0.5, 0.9), 0),
+              CurvePoint((0.5, 0.1), (0.5, 0.1), (0.6, 0.1), 0), CurvePoint((1.0, 0.0), (0.9, 0.0), (1.0, 0.0), 0)]
+    cases = (("falling step", ((0.0, 1.0), (0.5, 0.9), (0.5, 0.1), (1.0, 0.0))),
+             ("rising step", ((0.0, 0.0), (0.5, 0.2), (0.5, 0.8), (1.0, 1.0))),
+             ("step in the first two points", ((0.2, 0.9), (0.2, 0.1), (1.0, 0.0))),
+             ("step from curve_samples", tx.curve_samples(corner)))
+    empty_scene()
+    builder = build_materials.MaterialBuilder()
+    for label, points in cases:
+        ir = cm.MaterialIR(1, "CurveStep", "test", base_color=cm.Input((0.5, 0.5, 0.5), cm.MapRef(1)))
+        mix = tx.Mix(tx.Constant((0.0, 0.0, 0.0)), tx.Constant((1.0, 1.0, 1.0)), 0.0, tx.Remap(tx.Facing(), points))
+        ir.textures = {"base_color": tx.TextureGraphIR(mix, tx.COLOR)}
+        material = builder.make(ir)
+        fc = next((n for n in material.node_tree.nodes if n.bl_idname == "ShaderNodeFloatCurve"), None) \
+            if material is not None else None
+        if fc is None:
+            check("curve step/%s: a Float Curve" % label, False)
+            continue
+        mapping = fc.mapping
+        mapping.initialize()
+        stored = [tuple(p.location) for p in mapping.curves[0].points]
+        steps = [a[0] for a, b in zip(points, points[1:]) if a[0] == b[0]]
+        check("curve step/%s: the points kept in their order" % label,
+              len(stored) == len(points) and all(close(a, b, 1e-6) for a, b in zip(stored, points)),
+              "%d points, at the step %s" % (len(stored), [p for p in stored if any(abs(p[0] - s) < 1e-6
+                                                                                 for s in steps)]))
+        xs = [k / 64.0 for k in range(-4, 69)] + [x + d for x in steps for d in (-0.01, 0.01)]
+        err = max(abs(mapping.evaluate(mapping.curves[0], x) - polyline(points, x)) for x in xs
+                  if all(abs(x - s) > 0.005 for s in steps))
+        check("curve step/%s: evaluates as the polyline beside the step, within 0.001" % label, err < 1e-3, str(err))
 
 
 def check_wrappers_report():
@@ -1489,11 +1778,27 @@ def _input(node, identifier):
     return next(s for s in node.inputs if s.identifier == identifier)
 
 
+def _meaned(socket):
+    """The node whose output a DOT_PRODUCT by (1/3, 1/3, 1/3) turns into the float feeding socket, else None."""
+    dot = _from(socket)
+    if dot is None or dot.bl_idname != "ShaderNodeVectorMath" or dot.operation != 'DOT_PRODUCT' \
+            or not close(list(_input(dot, "Vector_001").default_value), [1 / 3.0] * 3, 1e-6):
+        return None
+    return _from(_input(dot, "Vector"))
+
+
+def _color_into_float(material):
+    """Every link of a material's tree from a color output into a float input, as 'node.output -> node.input':
+    Blender converts there by its luminance, where 3ds Max and V-Ray take the mean of the channels."""
+    return ["%s.%s -> %s.%s" % (k.from_node.name, k.from_socket.identifier, k.to_node.name, k.to_socket.identifier)
+            for k in material.node_tree.links if k.from_socket.type == 'RGBA' and k.to_socket.type == 'VALUE']
+
+
 def check_vray_maps_nodes(textured):
     """FixtureVRayMaps' bitmaps: tiling, offset and W angle as Mapping values (the authoring script's numbers),
-    extension REPEAT. With its textures: the gloss map inverted (1 - x) into the Mix of the roughness, the bump map a
-    Bump node, FixtureVRayNormal's Normal Map node (strength 0.85, its green flipped) under its bump map's Bump node.
-    Without them: no Normal Map node and the Normal input free."""
+    extension REPEAT. With its textures: the gloss map's mean inverted (1 - x) into the Mix of the roughness, the bump
+    map's mean a Bump node's height, FixtureVRayNormal's Normal Map node (strength 0.85, its green flipped) under its
+    bump map's Bump node. Without them: no Normal Map node and the Normal input free."""
     m = bpy.data.materials.get("FixtureVRayMaps")
     for file, tile, offset, angle in (("fixture_diffuse.png", 2.0, 0.1, 15.0), ("fixture_reflect.png", 3.0, 0.2, 25.0),
                                       ("fixture_gloss.png", 4.0, 0.3, 35.0), ("fixture_bump.png", 5.0, 0.4, 45.0),
@@ -1511,8 +1816,8 @@ def check_vray_maps_nodes(textured):
         return
     mix = _from(_principled(m).inputs["Roughness"])
     inv = _from(_input(mix, "B_Float")) if mix is not None and mix.bl_idname == "ShaderNodeMix" else None
-    gloss = _from(inv.inputs[1]) if inv is not None and inv.bl_idname == "ShaderNodeMath" else None
-    check("vray_maps: the gloss map as 1 - x into the roughness Mix at 73 %, glossiness 1 beside it",
+    gloss = _meaned(inv.inputs[1]) if inv is not None and inv.bl_idname == "ShaderNodeMath" else None
+    check("vray_maps: the gloss map as 1 - its mean into the roughness Mix at 73 %, glossiness 1 beside it",
           gloss is not None and gloss.label == "fixture_gloss.png" and inv.operation == 'SUBTRACT'
           and abs(inv.inputs[0].default_value - 1.0) < 1e-6 and abs(_input(mix, "Factor_Float").default_value - 0.73)
           < 1e-5 and abs(_input(mix, "A_Float").default_value) < 1e-6)
@@ -1520,7 +1825,7 @@ def check_vray_maps_nodes(textured):
     check("vray_maps: the bump map through a Bump node of strength 0.64",
           bump is not None and bump.bl_idname == "ShaderNodeBump" and not bump.invert
           and abs(bump.inputs["Strength"].default_value - 0.64) < 1e-5
-          and _from(bump.inputs["Height"]).label == "fixture_bump.png")
+          and getattr(_meaned(bump.inputs["Height"]), "label", None) == "fixture_bump.png")
     top = _from(_principled(n).inputs["Normal"])
     nm = _from(top.inputs["Normal"]) if top is not None and top.bl_idname == "ShaderNodeBump" else None
     comb = _from(nm.inputs["Color"]) if nm is not None and nm.bl_idname == "ShaderNodeNormalMap" else None
@@ -1530,7 +1835,7 @@ def check_vray_maps_nodes(textured):
           sep is not None and sep.bl_idname == "ShaderNodeSeparateColor"
           and green.inputs[1].links[0].from_socket.identifier == "Green"
           and _from(comb.inputs["Red"]) == sep and abs(nm.inputs["Strength"].default_value - 0.85) < 1e-5
-          and _from(top.inputs["Height"]).label == "fixture_normal_bump.png"
+          and getattr(_meaned(top.inputs["Height"]), "label", None) == "fixture_normal_bump.png"
           and _from(sep.inputs["Color"]).label == "fixture_normal.png")
 
 
@@ -1577,15 +1882,16 @@ def _write_png(path):
 
 
 CANCEL_KINDS = ("objects", "meshes", "curves", "lights", "cameras", "materials", "images", "collections", "texts",
-                "node_groups")
+                "node_groups", "worlds")
 
 
 def _state():
-    """What a cancelled run must leave as it found it: the datablocks of each kind, the scene camera, render size."""
+    """What a cancelled run must leave as it found it: the datablocks of each kind, the scene camera, render size,
+    the scene's World."""
     r = bpy.context.scene.render
     return ({kind: sorted(b.as_pointer() for b in getattr(bpy.data, kind)) for kind in CANCEL_KINDS},
             bpy.context.scene.camera, (r.resolution_x, r.resolution_y, r.resolution_percentage, r.pixel_aspect_x,
-                                       r.pixel_aspect_y))
+                                       r.pixel_aspect_y), bpy.context.scene.world)
 
 
 def _cancel_run(paths):
@@ -1987,7 +2293,8 @@ def check_pack_cancel(fixture):
 
 
 def check_found_textures():
-    """vray_maps, texmap_rules, corona_maps, corona_light, vray_texmaps and texmap_wrappers copied beside a PNG for
+    """vray_maps, texmap_rules, corona_maps, corona_light, vray_texmaps, texmap_wrappers and falloff_curve copied
+    beside a PNG for
     each texture name:
     every Image Texture node gets its file, in the color space the IR asks for, one datablock per file and color
     space; the report lists no texture."""
@@ -1996,7 +2303,8 @@ def check_found_textures():
     scratch = tempfile.mkdtemp(prefix="maxdrop-textures-")
     linear = []  # the images the IR puts in Linear Rec.709, over every fixture
     try:
-        for name in ("vray_maps", "texmap_rules", "corona_maps", "corona_light", "vray_texmaps", "texmap_wrappers"):
+        for name in ("vray_maps", "texmap_rules", "corona_maps", "corona_light", "vray_texmaps", "texmap_wrappers",
+                     "falloff_curve"):
             empty_scene()
             for ob in list(bpy.data.images):
                 bpy.data.images.remove(ob)
@@ -2076,6 +2384,8 @@ def check_found_textures():
                 check_wrapper_nodes()
             if name == "vray_texmaps":
                 check_reflection_falloff()
+            if name == "falloff_curve":
+                check_falloff_curve(textured=True)
         check("found textures: a linear color image (VRayBitmap transfer function None) imported in Linear Rec.709",
               "vtx_linear.png" in linear, str(linear))
     finally:
@@ -2243,6 +2553,84 @@ def check_builder_blend():
         shutil.rmtree(scratch, ignore_errors=True)
 
 
+def check_builder_mono():
+    """Colored data maps on float inputs (bead maxdrop-em3.42): V-Ray 5.2 takes a data map as the mean of its
+    channels (red 1 / 3, measured on a Mix mask, a reflection glossiness and an opacity map), Blender's link from a
+    color output into a float input its luminance (red 0.2126). Every float input a map feeds (an image, a Color
+    Correction over one, a Mix of images and its mask, a layer mask, a bump height) goes through one DOT_PRODUCT by
+    (1/3, 1/3, 1/3); an image's alpha stays as it is."""
+    from maxdrop.build import materials as build_materials
+    from maxdrop.convert import materials as cm
+    from maxdrop.convert import texmaps as tx
+    from maxdrop.convert import textures as ct
+    empty_scene()
+    for img in list(bpy.data.images):
+        bpy.data.images.remove(img)
+    scratch = tempfile.mkdtemp(prefix="maxdrop-mono-")
+    try:
+        png = os.path.join(scratch, "mono.png")
+        _write_png(png)
+        found = ct.Found(png, ct.SCENE)
+        a = tx.Image(1, "mono.png", "mono.png", "", found, colorspace=tx.NON_COLOR)
+        b = tx.Image(2, "mono.png", "mono.png", "", found, colorspace=tx.NON_COLOR,
+                     mapping=tx.Mapping(tiling=(2.0, 2.0)))
+        alpha = tx.Image(3, "mono.png", "mono.png", "", found, colorspace=tx.NON_COLOR, alpha=True)
+        ir = cm.MaterialIR(50, "Mono", "test", base_color=cm.Input((0.5,) * 3, cm.MapRef(1)),
+                           roughness=cm.Input(0.5, cm.MapRef(1)), metallic=cm.Input(0.0, cm.MapRef(1)),
+                           alpha=cm.Input(1.0, cm.MapRef(1)), transmission=cm.Input(0.0, cm.MapRef(1)))
+        ir.textures = {
+            "base_color": tx.TextureGraphIR(tx.Mix(tx.Constant((0.0,) * 3), a, 0.0, b), tx.COLOR),
+            "roughness": tx.TextureGraphIR(a, tx.DATA),
+            "metallic": tx.TextureGraphIR(tx.ColorCorrect(a, hue=0.25), tx.DATA),
+            "alpha": tx.TextureGraphIR(tx.Mix(a, b, 0.0, b), tx.DATA),
+            "transmission": tx.TextureGraphIR(alpha, tx.DATA),
+            "bump": tx.TextureGraphIR(tx.Bump(b, 1.0), tx.BUMP)}
+        layer = cm.MaterialIR(51, "MonoTop", "test")
+        ir.layers = [cm.Layer(layer, 1.0, cm.MapRef(1), tx.TextureGraphIR(a, tx.DATA))]
+        m = build_materials.MaterialBuilder().make(ir)
+        check("mono: material built", m is not None)
+        if m is None:
+            return
+        mixed = _color_into_float(m)
+        check("mono: no color output linked into a float input", mixed == [], str(mixed))
+        p = next(n for n in m.node_tree.nodes if n.bl_idname == "ShaderNodeBsdfPrincipled"
+                 and n.inputs["Roughness"].is_linked)
+        rough = _meaned(p.inputs["Roughness"])
+        check("mono: a colored roughness image through the mean",
+              getattr(rough, "bl_idname", None) == "ShaderNodeTexImage")
+        hue = _meaned(p.inputs["Metallic"])
+        check("mono: a Color Correction on the metallic, the mean after its hue",
+              getattr(hue, "bl_idname", None) == "ShaderNodeHueSaturation")
+        mix = _from(p.inputs["Alpha"])
+        sides = [_meaned(_input(mix, k)) for k in ("A_Float", "B_Float", "Factor_Float")] \
+            if mix is not None and mix.bl_idname == "ShaderNodeMix" else []
+        check("mono: a float Mix of images by an image mask, each side and the mask through the mean",
+              len(sides) == 3 and all(getattr(n, "bl_idname", None) == "ShaderNodeTexImage" for n in sides)
+              and mix.data_type == 'FLOAT', str(sides))
+        base = _from(p.inputs["Base Color"])
+        check("mono: the mask of a color Mix through the mean, its sides in color",
+              getattr(_meaned(_input(base, "Factor_Float")), "bl_idname", None) == "ShaderNodeTexImage"
+              and _from(_input(base, "B_Color")).bl_idname == "ShaderNodeTexImage")
+        trans = p.inputs["Transmission Weight"]
+        check("mono: an image's alpha straight into the float input",
+              trans.is_linked and trans.links[0].from_socket.identifier == "Alpha")
+        bump = _from(p.inputs["Normal"])
+        check("mono: a colored bump height through the mean",
+              getattr(bump, "bl_idname", None) == "ShaderNodeBump"
+              and getattr(_meaned(_input(bump, "Height")), "bl_idname", None) == "ShaderNodeTexImage")
+        shader = next((n for n in m.node_tree.nodes if n.bl_idname == "ShaderNodeMixShader"), None)
+        check("mono: a layer mask through the mean", shader is not None
+              and getattr(_meaned(shader.inputs[0]), "bl_idname", None) == "ShaderNodeTexImage")
+        dots = [n for n in m.node_tree.nodes if n.bl_idname == "ShaderNodeVectorMath" and n.operation == 'DOT_PRODUCT']
+        check("mono: one mean per image in a float graph (two images, and the Color Correction)", len(dots) == 3,
+              str(len(dots)))
+    finally:
+        empty_scene()
+        for img in list(bpy.data.images):
+            bpy.data.images.remove(img)
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def check_linear_fallback():
     """A color management config without Linear Rec.709 (a custom OCIO config; the stock one of every supported
     version has it): a linear color image falls back to Non-Color, shares the datablock of the same file as data,
@@ -2273,12 +2661,13 @@ def check_linear_fallback():
         m = builder.make(ir)
         p = _principled(m)
         gam = _from(p.inputs["Base Color"])
-        rough = _from(p.inputs["Roughness"])
+        rough = _meaned(p.inputs["Roughness"])
         tex = _from(gam.inputs["Color"]) if gam is not None and gam.bl_idname == "ShaderNodeGamma" else None
         check("linear fallback: Non-Color, one datablock with the data image, the Gamma node kept",
               tex is not None and abs(gam.inputs["Gamma"].default_value - 1.8) < 1e-6
               and tex.image is not None and tex.image.colorspace_settings.name == tx.NON_COLOR
-              and rough.image is not None and tex.image.as_pointer() == rough.image.as_pointer()
+              and rough is not None and rough.image is not None
+              and tex.image.as_pointer() == rough.image.as_pointer()
               and len(bpy.data.images) == 1,
               "%s %s" % (getattr(gam, "bl_idname", None), [i.colorspace_settings.name for i in bpy.data.images]))
     finally:
@@ -2319,7 +2708,7 @@ def check_image_reuse():
                     for k, c in enumerate(colorspaces))
             ir.textures = {"base_color": tx.TextureGraphIR(a, tx.COLOR), "roughness": tx.TextureGraphIR(b, tx.DATA)}
             m = build_materials.MaterialBuilder().make(ir)
-            return _from(_principled(m).inputs["Base Color"]).image, _from(_principled(m).inputs["Roughness"]).image
+            return _from(_principled(m).inputs["Base Color"]).image, _meaned(_principled(m).inputs["Roughness"]).image
 
         def names():
             return [(i.name, i.colorspace_settings.name, i.is_dirty, i.source, bool(i.packed_file), bool(i.library))
@@ -2962,14 +3351,16 @@ def check_builder_wiring(ma, mb, builder, cm, tx, srgb, data, lost, gamma):
     """The links and values of the hand-made IRs' nodes, against numbers worked out by hand."""
     pa, pb = _principled(ma), _principled(mb)
     mix = _from(pa.inputs["Base Color"])
-    check("wiring: base color Mix: A the swatch, B the sRGB image, the mask image on the factor",
+    mask = _meaned(_input(mix, "Factor_Float")) if mix.bl_idname == "ShaderNodeMix" else None
+    check("wiring: base color Mix: A the swatch, B the sRGB image, the mask image's mean on the factor",
           mix.bl_idname == "ShaderNodeMix" and mix.blend_type == 'MIX' and not _input(mix, "A_Color").is_linked
           and close(list(_input(mix, "A_Color").default_value)[:3], [0.5] * 3, 1e-6)
           and _from(_input(mix, "B_Color")).image.colorspace_settings.name == "sRGB"
-          and _from(_input(mix, "Factor_Float")).image.colorspace_settings.name == "Non-Color")
+          and getattr(mask, "image", None) is not None and mask.image.colorspace_settings.name == "Non-Color")
     inv = _from(pa.inputs["Roughness"])
-    check("wiring: roughness 1 - the data image", inv.bl_idname == "ShaderNodeMath" and inv.operation == 'SUBTRACT'
-          and inv.inputs[0].default_value == 1.0 and _from(inv.inputs[1]).bl_idname == "ShaderNodeTexImage")
+    check("wiring: roughness 1 - the mean of the data image", inv.bl_idname == "ShaderNodeMath"
+          and inv.operation == 'SUBTRACT' and inv.inputs[0].default_value == 1.0
+          and getattr(_meaned(inv.inputs[1]), "bl_idname", None) == "ShaderNodeTexImage")
     dot = _from(pa.inputs["Specular IOR Level"])
     mul = _from(dot.inputs[0])
     check("wiring: specular map times 2 through a Multiply Mix", mul.bl_idname == "ShaderNodeMix"
@@ -3049,8 +3440,9 @@ def check_builder_wiring(ma, mb, builder, cm, tx, srgb, data, lost, gamma):
     mc, md = builder.make(c), builder.make(d)
     b = _from(_principled(mc).inputs["Normal"])
     check("wiring: a negative bump amount inverts the Bump node", b.invert and b.inputs["Strength"].default_value == 0.5)
-    mask = _from(_input(_from(_principled(mc).inputs["Base Color"]), "Factor_Float"))
-    check("wiring: a mask with a gamma override gets no Gamma node", mask.bl_idname == "ShaderNodeTexImage")
+    mask = _meaned(_input(_from(_principled(mc).inputs["Base Color"]), "Factor_Float"))
+    check("wiring: a mask with a gamma override gets no Gamma node, only the mean",
+          getattr(mask, "bl_idname", None) == "ShaderNodeTexImage")
     pd = _principled(md)
     check("wiring: missing images leave the IR's values: Normal free, alpha 0.8 (BLENDED), base color the swatch",
           not pd.inputs["Normal"].is_linked and not pd.inputs["Alpha"].is_linked
@@ -3547,7 +3939,8 @@ def main():
         for label, run_check in (("material slots", lambda: check_material_slots(modules)),
                                  ("found textures", check_found_textures), ("builder", check_builder),
                                  ("builder debt", check_builder_debt), ("builder mirror", check_builder_mirror),
-                                 ("builder blend", check_builder_blend),
+                                 ("builder blend", check_builder_blend), ("builder mono", check_builder_mono),
+                                 ("curve step", check_curve_step),
                                  ("linear fallback", check_linear_fallback),
                                  ("image reuse", check_image_reuse), ("double import", check_double_import),
                                  ("worker errors", check_worker_errors),
@@ -3561,6 +3954,8 @@ def main():
                                      os.path.join(ROOT, "tests", "fixtures", "vray_maps.max"))),
                                  ("light note on failure", lambda: check_light_note_on_failure(
                                      os.path.join(ROOT, "tests", "fixtures", "vray_lights.max"))),
+                                 ("dome undo", lambda: check_dome_undo(
+                                     os.path.join(ROOT, "tests", "fixtures", "vray_dome.max"))),
                                  ("reader defect", lambda: check_reader_defect(
                                      os.path.join(ROOT, "tests", "fixtures", "primitives.max"),
                                      os.path.join(ROOT, "tests", "fixtures", "multi_uv.max"))),

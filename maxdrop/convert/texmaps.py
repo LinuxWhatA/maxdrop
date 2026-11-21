@@ -30,7 +30,8 @@ The graph's nodes (frozen dataclasses): Image (an image map: the file as the sce
 found, Mapping, Crop, TexOutput, color space, gamma, alpha), Constant, Invert, Mix(a, b, factor, mask), Multiply,
 Blend (an arithmetic operation, optionally in a gamma space),
 ColorCorrect (with its rewiring), Composite (CompositeLayers bottom first: node, opacity, blend mode, mask), Facing
-(a Falloff's ratio), Adjust (a wrapper's Output), Tint, NormalMap (an image, its strength, flips, the map channel of
+(a Falloff's ratio), Remap (a float through a polyline: a Falloff's mix curve), Smoothstep (a Mix's curve on its
+mask), Adjust (a wrapper's Output), Tint, NormalMap (an image, its strength, flips, the map channel of
 its tangents, an additional Bump) and Bump (a height input and its strength). A map reached by
 several paths is converted once per kind and depth, so a graph is a DAG of shared nodes; a graph larger than
 MAX_NODES when drawn as a tree is cut down to its first image (an issue).
@@ -62,28 +63,31 @@ files, the map angle kept, a height map in a bump slot a Bump node instead of dr
   Multiply, add, subtract, divide, min, max and difference -> Blend (in gamma 2.2 with mix in sRGB on, as Corona
   does: CM_BLENDS), the last two under a Mix for an amount below 1 or a mask; any other operation peeled to its
   first bitmap (an issue); each layer times its multiplier plus its offset (CM_OFFSET_SCALE), measured.
-- Kept as nodes (the allow-list): Mix (color 1 / 2 where a map is off or missing, the mask, the mix amount; its
-  curve is not converted: an issue), RGB Multiply, Color Correction (its rewiring first: monochrome, invert or custom
-  channels, an alpha source drawn as one or zero, an issue; hue shift in turns, saturation as a factor; lightness
-  either standard, brightness and contrast as fractions, or advanced, gain and gamma, whichever is chosen; tint and
-  the advanced pivot and lift are not converted: an issue), Composite (each layer's blend mode in BLENDS and its mask
-  as a data node; a layer in another mode peels the Composite), Falloff (types 0 to 2 in the viewing direction:
-  Mix(side 1, side 2) by a Facing, a side lerp(color, map, map amount); its own Output as an Adjust; the MixCurve is
-  not read; another type or direction is peeled to map 1, else color 1, counted, an issue), Output (its Output part
-  as an Adjust) and RGB Tint (a Tint unless the identity). Measured in 3ds Max 2020 (renderMap, a rendered sphere for
-  the Falloff): see the constants below.
+- Kept as nodes (the allow-list): Mix (color 1 / 2 where a map is off or missing, the mask, the mix amount; Use
+  Curve as mix_factor: folded into the mix amount, over a mask a Smoothstep), RGB Multiply, Color Correction (its
+  rewiring first: monochrome, invert or custom channels, an alpha source drawn as one or zero, an issue; hue shift
+  in turns, saturation as a factor; lightness either standard, brightness and contrast as fractions, or advanced,
+  gain and gamma, whichever is chosen; tint and the advanced pivot and lift are not converted: an issue), Composite
+  (each layer's blend mode in BLENDS and its mask as a data node; a layer in another mode peels the Composite),
+  Falloff (types 0 to 2 in the viewing direction: Mix(side 1, side 2) by a Facing, a side lerp(color, map, map
+  amount); its own Output as an Adjust; an edited MixCurve as a Remap of the Facing (curve_samples; one that cannot
+  be read is drawn linear, an issue); another type or direction is peeled to map 1, else color 1, counted, an
+  issue), Output (its Output part as an Adjust) and RGB Tint (a Tint unless the identity). Measured in 3ds Max 2020
+  (renderMap, a rendered sphere for the Falloff): see the constants below.
 - Peeled to the first usable map below, an approximation counted by class: VRayDirt (the unoccluded map when on,
-  else the unoccluded color), VRayColor2Bump (its map). An Output, RGB Tint or VRayColor2Bump without a map (or an
-  Output or RGB Tint with it off; VRayColor2Bump has no switch) gives no graph and is an issue on it, counted
-  nowhere: what 3ds Max draws there is not measured, so nothing stands in for it (at the top the input keeps its own
-  value). Any other map class with maps below gives the first image below it (depth first, in reference order),
-  counted the same way; one without is unsupported (counted, no graph).
+  else the unoccluded color), VRayColor2Bump (its map). An Output or RGB Tint without a map (or with it off) is
+  drawn as over a white map, its own Output or tint applied; a VRayColor2Bump without a map (it has no switch) is
+  the constant (0.5, 0.5, 1); neither is counted (3ds Max 2020 renderMap and V-Ray 5.2 renders with the gamma off,
+  maxdrop-em3.76; with it on assumed the same swatch, Corona not measured). In a normal map's normal slot none of
+  them gives a graph (an issue): V-Ray tilts the normal by that white. Any other map class with maps below gives the
+  first image below it (depth first, in reference order), counted the same way; one without is unsupported
+  (counted, no graph).
 - Normal maps (VRayNormalMap, Normal Bump, CoronaNormal) in a normal or bump input -> NormalMap: the normal image
   with the class's multiplier as its strength, flip red / green and swap, and the additional bump map as a Bump with
   its multiplier; a normal map class with only its bump map is that Bump. In any other input it is peeled to its
   normal image (or its bump image).
 - A map that is set (and switched on) but converts to nothing (an unsupported class with no bitmap below, a
-  Bitmap without a file, an empty Output, RGB Tint or VRayColor2Bump, a cut branch) is an issue on its wrapper
+  Bitmap without a file, a cut branch) is an issue on its wrapper
   naming its class, and never stands in as the wrapper's own color for it (3ds Max uses that color only without a
   map or with the map off): a Color Correction, VRayDirt, Output, RGB Tint or VRayColor2Bump over it gives
   no graph and is not counted (the lost map is reported), so the input keeps its own value.
@@ -100,7 +104,8 @@ Each map object counts at most once in stats.peeled or stats.unsupported, each i
 comes from anywhere: a reference cycle, a chain deeper than MAX_DEPTH, a reference to an object that is not a map or
 a damaged object end that branch (an issue), a shared map is converted once (no blow-up through repeated
 references), and unreadable Placement, Output or BitmapInfo chunks take the defaults. Those chunks are read by
-reader/materials.py (placement, output_invert, bitmap_gamma); what they hold is judged here. No bpy, no mathutils.
+reader/materials.py (placement, output_invert, bitmap_gamma, mix_curve); what they hold is judged here. No bpy, no
+mathutils.
 """
 import collections
 import dataclasses
@@ -109,6 +114,7 @@ import math
 from ..reader import chunks, classids, pblock
 from ..reader import materials as reader_materials
 from ..reader.classdir import ClassId
+from ..reader.errors import MaxFileError
 from . import colors, params
 from .params import finite as _finite
 
@@ -209,11 +215,18 @@ CORONA_KELVIN = (
 BM_CLIP_U, BM_CLIP_V, BM_CLIP_W, BM_CLIP_H, BM_APPLY, BM_CROP_PLACE, BM_MONO, BM_RGB, BM_FILE = (
     0, 1, 2, 3, 6, 7, 9, 10, 13)
 # Falloff, block 0. type 0 towards / away, 1 perpendicular / parallel, 2 Fresnel (3 shadow / light, 4 distance
-# blend: peeled); direction 0 the viewing direction (the others: peeled); its MixCurve is not read (drawn linear)
+# blend: peeled); direction 0 the viewing direction (the others: peeled); its MixCurve: curve_samples
 FO_COLOR1, FO_AMOUNT1, FO_MAP1, FO_ON1, FO_COLOR2, FO_AMOUNT2, FO_MAP2, FO_ON2, FO_TYPE, FO_DIRECTION = range(10)
 FO_IOR_OVERRIDE, FO_IOR = 11, 12
 TOWARDS, PERPENDICULAR, FRESNEL = "towards", "perpendicular", "fresnel"  # Facing modes
 FALLOFF_TYPES = {0: TOWARDS, 1: PERPENDICULAR, 2: FRESNEL}
+# A Falloff's MixCurve as a polyline: a Bezier segment in CURVE_STEPS steps of x (32: within 1e-3 of 3ds Max's values
+# on falloff_curve); a curve within CURVE_IDENTITY of y = x everywhere is no node. At most MAX_CURVE_SAMPLES points
+# (Blender bakes a Float Curve into a table of 256 entries anyway): a curve of many points gets fewer steps per
+# segment, then is resampled at even x, so a hostile curve costs neither time nor a huge node
+CURVE_STEPS, CURVE_IDENTITY, MAX_CURVE_SAMPLES = 32, 1e-6, 256
+# Mix, block 0: 1 lower, 2 upper (Use Curve's transition zone, 3ds Max's defaults 0.3 and 0.7)
+MIX_LOWER, MIX_UPPER = 1, 2
 # Composite blend modes (blendMode, per layer); measured with renderMap: result = lerp(below, blend(below, layer),
 # opacity x mask). 7 linear burn, 15 soft light (Photoshop's), 17 pin light and 18 hard mix are not drawn: peeled
 (NORMAL_BLEND, AVERAGE, ADDITION, SUBTRACT, DARKEN, MULTIPLY_BLEND, COLOR_BURN, LINEAR_BURN, LIGHTEN, SCREEN,
@@ -369,6 +382,24 @@ class Facing:
 
 
 @dataclasses.dataclass(frozen=True)
+class Remap:
+    """A float input through a curve: points, (x, y) pairs with x ascending, joined by straight lines and flat past
+    the ends (a Falloff's mix curve, curve_samples; flat is assumed, a Falloff's ratio stays within 0..1). Its result
+    is not clamped."""
+    input: object
+    points: tuple
+
+
+@dataclasses.dataclass(frozen=True)
+class Smoothstep:
+    """Mix's Use Curve on a float input (mix_factor): 0 below lower, 1 from upper, smoothstep between; a step at
+    lower when lower >= upper."""
+    input: object
+    lower: float = 0.3
+    upper: float = 0.7
+
+
+@dataclasses.dataclass(frozen=True)
 class Adjust:
     """A wrapper's Output (TexOutput) over its input."""
     input: object
@@ -436,7 +467,7 @@ class _Walk:
 
 
 def _children(node):
-    if isinstance(node, (Invert, Bump, ColorCorrect, Adjust, Tint)):
+    if isinstance(node, (Invert, Bump, ColorCorrect, Adjust, Tint, Remap, Smoothstep)):
         return (node.input,)
     if isinstance(node, Mix):
         return tuple(n for n in (node.a, node.b, node.mask) if n is not None)
@@ -952,7 +983,9 @@ class TexmapConverter:
         normal = self._sub(m, ids.normal, ids.normal_on, NORMAL, walk, depth, chain)
         bump = self._sub(m, ids.bump, ids.bump_on, BUMP, walk, depth, chain)
         if kind not in (NORMAL, BUMP):  # a normal map in a color or data input: its image only
-            image = _peeled_image(normal) or _peeled_image(bump)
+            # a constant (an empty Output in its bump slot) is no image to stand for the normal map's color
+            image = next((n for n in (_peeled_image(normal), _peeled_image(bump))
+                          if n is not None and not isinstance(n, Constant)), None)
             if image is None:
                 self._count(self.stats.unsupported, m)
                 return None
@@ -1004,6 +1037,89 @@ def _falloff_peel(conv, m, kind, walk, depth, chain):
     return node
 
 
+def _bezier_y(p0, c1, c2, p3, x):
+    """y of the cubic Bezier p0, c1, c2, p3 where its x is x (bisection on the curve parameter, which assumes x(t)
+    rises: handles far past the neighbouring points make it fold back, and y is then only near; a fixed 40 steps)."""
+    def at(t, i):
+        s = 1.0 - t
+        return s * s * s * p0[i] + 3.0 * s * s * t * c1[i] + 3.0 * s * t * t * c2[i] + t * t * t * p3[i]
+    lo, hi = 0.0, 1.0
+    for _ in range(40):
+        mid = 0.5 * (lo + hi)
+        if at(mid, 0) < x:
+            lo = mid
+        else:
+            hi = mid
+    return at(0.5 * (lo + hi), 1)
+
+
+def curve_samples(points):
+    """A Custom Curve Control's curve (reader CurvePoints) as 3ds Max 2020 evaluates it (measured, ICurve.GetValue
+    and Falloff renders): segment i the cubic Bezier point i, its out handle, the in handle of point i + 1, point
+    i + 1, its y at x; the flags do not change it; a point's y outside 0..1 is taken at the nearest bound, its handles
+    moved with it; between the points the curve is not clamped. As a polyline, (x, y) pairs x ascending: a segment
+    whose handles lie on its points is straight (its ends), any other one CURVE_STEPS steps of x (fewer, and the
+    result resampled, past MAX_CURVE_SAMPLES). None when it is y = x (the default curve): no node. points: two or more
+    (reader mix_curve's bound; an empty one raises IndexError)."""
+    pts = []
+    for p in points:
+        (x, y), (ix, iy), (ox, oy) = p.point, p.in_handle, p.out_handle
+        shift = min(1.0, max(0.0, y)) - y
+        pts.append(((x, y + shift), (ix, iy + shift), (ox, oy + shift)))
+    segments = list(zip(pts, pts[1:]))
+    curved = sum(1 for (p0, _i0, o0), (p1, i1, _o1) in segments if p1[0] > p0[0] and not (o0 == p0 and i1 == p1))
+    steps = max(1, min(CURVE_STEPS, (MAX_CURVE_SAMPLES - len(pts)) // max(1, curved)))
+    out = [pts[0][0]]
+    for (p0, _in0, out0), (p1, in1, _out1) in segments:
+        if p1[0] <= p0[0] or (out0 == p0 and in1 == p1):
+            out.append(p1)
+            continue
+        for k in range(1, steps + 1):
+            x = p0[0] + (p1[0] - p0[0]) * k / steps
+            out.append((x, p1[1] if k == steps else _bezier_y(p0, out0, in1, p1, x)))
+    if len(out) > MAX_CURVE_SAMPLES:
+        out = _resampled(out, MAX_CURVE_SAMPLES)
+    if out[0][0] <= 0.0 and out[-1][0] >= 1.0 and all(abs(y - x) <= CURVE_IDENTITY for x, y in out) and \
+            abs(out[0][1]) <= CURVE_IDENTITY and abs(out[-1][1] - 1.0) <= CURVE_IDENTITY:
+        return None
+    return tuple(out)
+
+
+def _resampled(points, n):
+    """The polyline points (x ascending) at n even steps of x from its first x to its last."""
+    x0, x1 = points[0][0], points[-1][0]
+    out, k = [], 0
+    for j in range(n):
+        x = x0 + (x1 - x0) * j / (n - 1)
+        while k < len(points) - 2 and points[k + 1][0] <= x:
+            k += 1
+        (xa, ya), (xb, yb) = points[k], points[k + 1]
+        out.append((x, yb if xb <= xa else ya + (yb - ya) * min(1.0, max(0.0, (x - xa) / (xb - xa)))))
+    return out
+
+
+def mix_factor(x, lower, upper):
+    """A Mix's factor under Use Curve (measured with renderMap, by the mix amount and by a mask alike): 0 below lower,
+    1 from upper on, between them smoothstep of (x - lower) / (upper - lower); lower >= upper: a step at lower."""
+    if x < lower:
+        return 0.0
+    if x >= upper:
+        return 1.0
+    u = (x - lower) / (upper - lower)
+    return u * u * (3.0 - 2.0 * u)
+
+
+def _mix_curve(conv, m, walk):
+    """The Remap points of Falloff m's MixCurve; None when it is linear, has none, or cannot be read (an issue)."""
+    try:
+        points = reader_materials.mix_curve(conv.graph.scene, m)
+    except MaxFileError as e:
+        walk.approximated = True
+        conv._issue(walk, m.index, "Falloff %r: its mix curve could not be read (%s): drawn linear" % (m.name, e))
+        return None
+    return curve_samples(points) if points is not None else None
+
+
 def _own_output(conv, m, node):
     """node under the map's own Output part (Adjust) when that changes anything."""
     part = next((p for _s, p in sorted(m.parts.items()) if p.superclass == classids.SC_TEXOUTPUT), None)
@@ -1013,8 +1129,9 @@ def _own_output(conv, m, node):
 
 def _falloff(conv, m, kind, walk, depth, chain):
     """Types 0, 1 and 2 in the viewing direction: Mix(side 1, side 2) by a Facing; side k is lerp(color k, map k,
-    amount k) when map k is used, else color k (measured). Its MixCurve is not read (drawn linear). Any other type
-    or direction: peeled (_falloff_peel). A used map that converts to nothing: the other side's map (a peel)."""
+    amount k) when map k is used, else color k (measured). An edited MixCurve: the Facing under a Remap (_mix_curve;
+    3ds Max applies it to the ratio of all three types, unclamped, measured). Any other type or direction: peeled
+    (_falloff_peel). A used map that converts to nothing: the other side's map (a peel)."""
     ftype, direction = m.param(FO_TYPE, 0), m.param(FO_DIRECTION, 0)
     ftype = 1 if ftype is None else ftype
     if ftype not in FALLOFF_TYPES or direction not in (None, 0):
@@ -1044,7 +1161,9 @@ def _falloff(conv, m, kind, walk, depth, chain):
             ior = 1.6
         if not _flag(m, FO_IOR_OVERRIDE, True):
             conv._issue(walk, m.index, "Falloff %r: the material's IOR not read: its own, %g" % (m.name, ior))
-    return _own_output(conv, m, Mix(sides[0], sides[1], 0.0, Facing(mode, ior)))
+    ratio = Facing(mode, ior)
+    curve = _mix_curve(conv, m, walk)
+    return _own_output(conv, m, Mix(sides[0], sides[1], 0.0, ratio if curve is None else Remap(ratio, curve)))
 
 
 def _vray_dirt(conv, m, kind, walk, depth, chain):
@@ -1054,13 +1173,23 @@ def _vray_dirt(conv, m, kind, walk, depth, chain):
     return conv._constant(m, 13, kind, (1.0, 1.0, 1.0))
 
 
-def _wrapped(conv, m, map_pid, on_pid, kind, walk, depth, chain):
-    """The map of a wrapper that has no color of its own (Output, RGB Tint, VRayColor2Bump). Without a used map it
-    gives no graph and is an issue: what 3ds Max draws there was not measured, so nothing stands in for it."""
+WHITE = (1.0, 1.0, 1.0)
+C2B_EMPTY = (0.5, 0.5, 1.0)  # what a VRayColor2Bump without a map renders: a flat normal's color
+
+
+def _wrapped(conv, m, map_pid, on_pid, kind, walk, depth, chain, empty=WHITE):
+    """The map of a wrapper that has no color of its own (Output, RGB Tint, VRayColor2Bump); without a used map the
+    swatch empty: an Output or RGB Tint renders as over a white map, a VRayColor2Bump the color C2B_EMPTY (3ds Max
+    2020 renderMap and V-Ray 5.2 renders with the gamma off, maxdrop-em3.76; with it on assumed, Corona not
+    measured). In a normal input (a normal map's normal slot) no graph and an issue: V-Ray tilts the normal by an
+    Output's or RGB Tint's white, and a constant there is a float (the mean), so no color would stand for it; a
+    VRayColor2Bump (flat either way) is reported the same, one rule for all three."""
     if conv._on(m, map_pid, on_pid) is None:
-        conv._issue(walk, m.index, "%s %r: %s, not drawn" % (
-            conv._class_name(m), m.name, "no map" if on_pid is None else "no map (or its map off)"))
-        return None
+        if kind == NORMAL:
+            conv._issue(walk, m.index, "%s %r: %s in a normal input, not drawn" % (
+                conv._class_name(m), m.name, "no map" if on_pid is None else "no map (or its map off)"))
+            return None
+        return conv._swatch(empty, kind)
     return conv._sub(m, map_pid, on_pid, kind, walk, depth, chain)
 
 
@@ -1083,8 +1212,14 @@ def _rgb_tint(conv, m, kind, walk, depth, chain):
 
 
 def _color2bump(conv, m, kind, walk, depth, chain):
-    """0 map (no switch)."""
-    return _wrapped(conv, m, 0, None, kind, walk, depth, chain)
+    """0 map (no switch): peeled to it, counted; without one the constant C2B_EMPTY, exact (not counted)."""
+    if conv._on(m, 0, None) is None:
+        return _wrapped(conv, m, 0, None, kind, walk, depth, chain, C2B_EMPTY)
+    node = conv._sub(m, 0, None, kind, walk, depth, chain)
+    if node is not None:
+        walk.approximated = True
+        conv._count(conv.stats.peeled, m)
+    return node
 
 
 def _sides(conv, m, ids, kind, walk, depth, chain):
@@ -1124,19 +1259,21 @@ def _mask(conv, m, pid, on_pid, walk, depth, chain):
 
 
 def _mix(conv, m, kind, walk, depth, chain):
-    """0 mixAmount (fraction), 3 useCurve, 4 / 5 color1 / 2, 6 / 7 map1 / 2, 8 mask, 9 / 10 / 11 their switches."""
+    """0 mixAmount (fraction), 1 lower, 2 upper, 3 useCurve, 4 / 5 color1 / 2, 6 / 7 map1 / 2, 8 mask, 9 / 10 / 11
+    their switches. Use Curve (mix_factor): the mix amount through it, or the mask under a Smoothstep."""
     (a, b), lost = _sides(conv, m, ((6, 9), (7, 10)), kind, walk, depth, chain)
     mask = _mask(conv, m, 8, 11, walk, depth, chain)
     factor, curve = min(1.0, max(0.0, _num(m, 0, 0.0))), _flag(m, 3, False)
+    if curve:
+        lower, upper = _num(m, MIX_LOWER, 0.3), _num(m, MIX_UPPER, 0.7)
+        factor = mix_factor(factor, lower, upper)  # also with a mask: what the builder takes when its image is missing
+        mask = Smoothstep(mask, lower, upper) if mask is not None else None
     if any(lost):
-        w = _lost_weight(lost, (None, None) if mask is not None or curve else (1.0 - factor, factor))
+        w = _lost_weight(lost, (None, None) if mask is not None else (1.0 - factor, factor))
         if w == 1.0:
             return None
         if w is None:
             return _other_side(conv, m, (a, b), walk)
-    if curve:
-        walk.approximated = True
-        conv._issue(walk, m.index, "Mix %r: its mix curve not converted" % (m.name,))
     a = a or conv._constant(m, 4, kind, (0.0, 0.0, 0.0))
     b = b or conv._constant(m, 5, kind, (1.0, 1.0, 1.0))
     return Mix(a, b, factor, mask)
@@ -1389,8 +1526,8 @@ def _corona_mix(conv, m, kind, walk, depth, chain):
 
 _KEEP = {MIX: _mix, RGB_MULTIPLY: _rgb_multiply, COLOR_CORRECTION: _color_correction, COMPOSITE: _composite,
          classids.CORONA_COLOR: _corona_color, classids.CORONA_MIX: _corona_mix, classids.VRAY_COLOR: _vray_color,
-         FALLOFF: _falloff, OUTPUT: _output_map, RGB_TINT: _rgb_tint}
-_PEEL = {VRAY_DIRT: _vray_dirt, VRAY_COLOR2BUMP: _color2bump}
+         FALLOFF: _falloff, OUTPUT: _output_map, RGB_TINT: _rgb_tint, VRAY_COLOR2BUMP: _color2bump}
+_PEEL = {VRAY_DIRT: _vray_dirt}
 
 # MaterialIR input -> its kind (normal and bump: MapRefs of their own)
 SLOT_KINDS = (("base_color", COLOR), ("metallic", DATA), ("roughness", DATA), ("specular", COLOR),
