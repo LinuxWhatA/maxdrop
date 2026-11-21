@@ -59,13 +59,16 @@ UV_LAYERS = {
     "hierarchy": [],
     "instances": ["UVMap"],
     "layers_flags": [],
+    "layers_more": [],
     "lookat": [],  # boxes without Generate Mapping Coords
     "modifier_pivot": ["UVMap"],  # FixtureBent's UVW Map writes channel 1 (applied, the Bend above it is not)
     "multi_uv": ["UVMap", "UVChannel_2", "UVChannel_3"],
+    "pblock_animated": ["UVMap"],
     "primitives": collections.defaultdict(lambda: ["UVMap"], {"FixtureBoxNoMap": []}),  # Generate Mapping Coords
     "shapes": ["UVMap"],  # FixtureBox; the shapes are curves
     "stack_basic": ["UVMap"],  # FixtureTurbo's UVW Map writes channel 1; no other modifier is applied
     "stack_convert": ["UVMap"],  # its modifiers become Blender modifiers: the base meshes are built
+    "stack_shell": ["UVMap"],  # its Shells become Solidify: the base meshes (open boxes) are built
     "standard_physical": ["UVMap"],
     "saved_as_2017": ["UVMap"],
     "saved_as_2018": ["UVMap"],
@@ -91,6 +94,7 @@ UV_LAYERS = {
 SHARP_EDGES_POLY_BOX = 12  # one smoothing group per side: every edge of the box
 SHARP_EDGES_EDITABLE_MESH = 8  # group 1 on top and bottom, 2 on the sides: the rims of top and bottom
 SHARP_EDGES_TALL_BOX = 24  # modifier_pivot's four height segments: 4 x 4 vertical side edges and both rims
+SHARP_EDGES_OPEN_BOX = 8  # stack_shell's boxes without their top: the 4 vertical and the 4 bottom edges
 # extrude: the vertical edges at corner knots (one per level) and both rims of every capped outline
 SHARP_EDGES_EXTRUDE = {"FixtureExtRect": 4 * 2 + 8, "FixtureExtL": 6 + 12, "FixtureExtHole": 4 + 8 + 56,
                        "FixtureExtIsland": 12 + 24, "FixtureExtOpen": 0, "FixtureExtMirror": 8 + 64,
@@ -372,7 +376,7 @@ class DamagedInput(unittest.TestCase):
         sc = self.scene("instances")
         real = conv.geometry.read_mesh
 
-        def refuse(scene, i):
+        def refuse(scene, i, check=None):
             raise geometry.GeometryError("object %d: refused" % i)
 
         conv.geometry.read_mesh = refuse
@@ -540,8 +544,9 @@ class Shear(unittest.TestCase):
 
 @unittest.skipIf(numpy is None, "numpy missing")
 class DescribeCancel(unittest.TestCase):
-    """describe(cancel=): the check is asked once per node of each walk; the first True ends it with Cancelled at
-    once (the modal import's Esc during reading), keeping nothing; the Scene stays usable."""
+    """describe(cancel=): the check is asked once per node of each walk, and inside a large mesh; the first True
+    ends it with Cancelled at once (the modal import's Esc during reading), keeping nothing; the Scene stays
+    usable."""
 
     @staticmethod
     def tripping(after):
@@ -585,6 +590,48 @@ class DescribeCancel(unittest.TestCase):
         self.assertEqual(self.summary(conv.describe(sc, 1.0, cancel=cancel)), fresh)
         self.assertEqual(len(calls), 2 * len(sc.walk()))
         self.assertEqual(self.summary(conv.describe(sc, 1.0)), fresh)
+
+    def test_the_check_is_asked_inside_a_large_mesh(self):
+        """With reader.geometry.CHECK_EVERY at 1 every mesh is large: the check is also asked inside a node, in the
+        Editable Poly's record loops and between the passes of mesh_description (an extrusion's too); tripped at any
+        of those calls, describe ends with Cancelled, keeping nothing."""
+        import gc
+
+        def alive():
+            gc.collect()
+            return {id(o) for o in gc.get_objects() if isinstance(o, conv.SceneDescription)}
+
+        for name in ("box_poly_standard", "extrude"):
+            sc = DamagedInput.scene(self, name)
+            nodes = len(sc.walk())
+            fresh = self.summary(conv.describe(DamagedInput.scene(self, name), 1.0))
+            cancel, calls = self.tripping(10 ** 9)
+            conv.describe(sc, 1.0, cancel=cancel)
+            self.assertEqual(len(calls), 2 * nodes)  # a small mesh: once per node and walk
+            before = alive()
+            real_read, in_reader = geometry.read_mesh, []
+
+            def reading(scene, i, check=None):  # counts the calls the reader itself makes
+                def counted():
+                    in_reader.append(None)
+                    check()
+                return real_read(scene, i, None if check is None else counted)
+
+            with mock.patch.object(geometry, "CHECK_EVERY", 1), mock.patch.object(geometry, "read_mesh", reading):
+                cancel, calls = self.tripping(10 ** 9)
+                self.assertEqual(self.summary(conv.describe(sc, 1.0, cancel=cancel)), fresh)
+                total = len(calls)
+                self.assertGreater(total, 2 * nodes + len(in_reader), name)  # mesh_description asks it too
+                if name == "box_poly_standard":  # an Editable Poly: its record loops ask it
+                    self.assertGreater(len(in_reader), 0)
+                for after in range(nodes, total):  # from the second walk's first node to the last call
+                    cancel, calls = self.tripping(after)
+                    with self.subTest(fixture=name, trip=after):
+                        with self.assertRaises(conv.Cancelled):
+                            conv.describe(sc, 1.0, cancel=cancel)
+                        self.assertEqual(len(calls), after + 1)
+            self.assertEqual(alive() - before, set())
+            self.assertEqual(self.summary(conv.describe(sc, 1.0)), fresh)
 
 
 @unittest.skipIf(numpy is None, "numpy missing")
@@ -865,7 +912,8 @@ class Fixtures(unittest.TestCase):
     def test_sharp_edges_from_smoothing_groups(self):
         for name, desc, _o in self.cases:
             want = {"editable_mesh": SHARP_EDGES_EDITABLE_MESH,
-                    "modifier_pivot": SHARP_EDGES_TALL_BOX, "uvwmap": 28}.get(name, SHARP_EDGES_POLY_BOX)
+                    "modifier_pivot": SHARP_EDGES_TALL_BOX, "uvwmap": 28,
+                    "stack_shell": SHARP_EDGES_OPEN_BOX}.get(name, SHARP_EDGES_POLY_BOX)
             for md in desc.meshes.values():
                 if name == "primitives":  # FixtureBox is a name of other fixtures too
                     want = SHARP_EDGES_PRIMITIVES[md.name]
@@ -896,12 +944,20 @@ class Fixtures(unittest.TestCase):
                                  (o["hidden"], o["frozen"], o["renderable"], o["layer"]), o["name"])
                 if o["layer"] not in used:
                     used.append(o["layer"])
+            parents = {la["name"]: la["parent"] for la in oracle["layers"]}
+            for layer in list(used):  # a parent layer is kept, nodes or not
+                while parents[layer] is not None and parents[layer] not in used:
+                    layer = parents[layer]
+                    used.append(layer)
+            # the Layer Manager's order: every fixture makes a parent layer before its children, so it is also the
+            # converter's parents-first order (test_a_parent_listed_later_is_moved_before_its_child covers the other)
             order = [la["name"] for la in oracle["layers"]]
             self.assertEqual([la.name for la in desc.layers], sorted(used, key=order.index), name)
-            flags = {la["name"]: (la["hidden"], la["frozen"], la["renderable"]) for la in oracle["layers"]}
+            flags = {la["name"]: (la["hidden"], la["frozen"], la["renderable"], la["parent"])
+                     for la in oracle["layers"]}
             for la in desc.layers:
-                self.assertEqual((la.hidden, la.frozen, la.renderable), flags[la.name])
-                self.assertIsNone(la.parent)
+                parent = None if la.parent is None else names[la.parent]
+                self.assertEqual((la.hidden, la.frozen, la.renderable, parent), flags[la.name], la.name)
 
     def test_layers_flags_organisation(self):
         desc = dict((n, d) for n, d, _o in self.cases)["layers_flags"]
@@ -914,6 +970,24 @@ class Fixtures(unittest.TestCase):
         self.assertEqual(sorted(k for k, n in by_name.items() if n.group_member),
                          sorted(k for k, n in by_name.items() if n.parent == head))
         self.assertEqual(len([n for n in desc.nodes if n.parent == head]), 2)
+
+    def test_layers_more_organisation(self):
+        """The layer flags live on the layers, not on their nodes; a parent layer without a node is kept."""
+        desc = dict((n, d) for n, d, _o in self.cases)["layers_more"]
+        names = {la.index: la.name for la in desc.layers}
+        self.assertEqual([(la.name, la.hidden, la.frozen, la.renderable, names.get(la.parent)) for la in desc.layers],
+                         [("0", False, False, True, None), ("FixtureHiddenLayer", True, False, True, None),
+                          ("FixtureFrozenLayer", False, True, True, None),
+                          ("FixtureNoRenderLayer", False, False, False, None),
+                          ("FixtureParentLayer", False, False, True, None),
+                          ("FixtureChildLayer", False, False, True, "FixtureParentLayer"),
+                          ("FixtureLäyer中", False, False, True, None)])
+        by_name = {n.name: n for n in desc.nodes}
+        self.assertEqual([k for k, n in by_name.items() if n.hidden], ["FixtureHiddenParent"])
+        self.assertEqual([k for k, n in by_name.items() if n.frozen], ["FixtureFrozen"])
+        self.assertTrue(all(n.renderable for n in desc.nodes))
+        self.assertEqual(by_name["FixtureVisibleChild"].parent, by_name["FixtureHiddenParent"].index)
+        self.assertEqual(names[by_name["FixtureNested"].layer], "FixtureChildLayer")
 
     def test_curves_equal_the_oracle(self):
         """Every shape node's curve: splines, points and cyclic flags as 3ds Max converts the shape, each segment's

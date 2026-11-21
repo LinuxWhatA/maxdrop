@@ -2,13 +2,14 @@
   "file": "corona_legacy.max",
   "file_version": [22000, 22000],
   "layers": [
-    {"frozen": false, "hidden": false, "name": "0", "renderable": true}
+    {"frozen": false, "hidden": false, "name": "0", "parent": null, "renderable": true}
   ],
   "material_graph": [
     {
       "blocks": [
       {
         "block_id": 0,
+        "controllers": [],
         "kind": "pb2",
         "params": [
           {"id": 101, "name": "colorDiffuse", "transient": false, "type": 2, "value": [0.705882, 0.235294, 0.156863]},
@@ -154,6 +155,7 @@
       "blocks": [
       {
         "block_id": 0,
+        "controllers": [],
         "kind": "pb2",
         "params": [
           {"id": 101, "name": "colorDiffuse", "transient": false, "type": 2, "value": [0.352941, 0.431373, 0.509804]},
@@ -299,6 +301,7 @@
       "blocks": [
       {
         "block_id": 0,
+        "controllers": [],
         "kind": "pb2",
         "params": [
           {"id": 101, "name": "colorDiffuse", "transient": false, "type": 2, "value": [0.0784314, 0.0784314, 0.0784314]},
@@ -460,6 +463,7 @@
       "camera": null,
       "eval_faces": 12,
       "eval_maps": null,
+      "eval_mesh": null,
       "eval_verts": 8,
       "frozen": false,
       "handle": 1,
@@ -490,6 +494,7 @@
       "camera": null,
       "eval_faces": 12,
       "eval_maps": null,
+      "eval_mesh": null,
       "eval_verts": 8,
       "frozen": false,
       "handle": 2,
@@ -520,6 +525,7 @@
       "camera": null,
       "eval_faces": 12,
       "eval_maps": null,
+      "eval_mesh": null,
       "eval_verts": 8,
       "frozen": false,
       "handle": 3,
@@ -540,7 +546,7 @@
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 80, 0, 0]
     }
   ],
-  "oracle_version": 6,
+  "oracle_version": 10,
   "render": {"camera": null, "height": 480, "pixel_aspect": 1, "width": 640},
   "renderer": {"class_id": ["0x00000001", "0x00000000"], "class_name": "Default_Scanline_Renderer"},
   "time": 0,

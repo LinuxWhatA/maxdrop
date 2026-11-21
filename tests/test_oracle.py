@@ -21,11 +21,12 @@ FIXTURE_DIR = os.path.join(ROOT, "tests", "fixtures")
 TOP_KEYS = ["file", "file_version", "layers", "material_graph", "materials", "max_version", "node_count", "nodes",
             "oracle_version", "render", "renderer", "time", "units"]
 NODE_KEYS = ["base_class_id", "base_class_name", "base_faces", "base_superclass", "base_verts", "bbox_max",
-             "bbox_min", "camera", "eval_faces", "eval_maps", "eval_verts", "frozen", "handle", "hidden", "index",
-             "instances", "layer", "material", "modifiers", "name", "object_transform", "offset_pos", "offset_rot",
-             "offset_scale", "parent", "renderable", "shape", "transform"]
+             "bbox_min", "camera", "eval_faces", "eval_maps", "eval_mesh", "eval_verts", "frozen", "handle", "hidden",
+             "index", "instances", "layer", "material", "modifiers", "name", "object_transform", "offset_pos",
+             "offset_rot", "offset_scale", "parent", "renderable", "shape", "transform"]
 MODIFIER_KEYS = ["class_id", "class_name", "context_bbox_max", "context_bbox_min", "context_tm", "enabled",
                  "enabled_in_renders", "enabled_in_views", "name"]
+LAYER_KEYS = ["frozen", "hidden", "name", "parent", "renderable"]
 CAMERA_KEYS = ["fov", "hither", "manual_clip", "ortho", "tdist", "yon"]
 RENDER_KEYS = ["camera", "height", "pixel_aspect", "width"]
 SHAPE_KEYS = ["adaptive", "angle", "display_render_mesh", "length", "optimize", "rectangular", "renderable", "sides",
@@ -33,7 +34,8 @@ SHAPE_KEYS = ["adaptive", "angle", "display_render_mesh", "length", "optimize", 
 KNOT_KEYS = ["in", "mid", "out", "pos", "segment", "type"]
 KNOT_TYPES = ("corner", "smooth", "bezier", "bezierCorner")
 GRAPH_KEYS = ["blocks", "class_id", "class_name", "index", "name", "parts", "subs", "superclass"]
-BLOCK_KEYS = ["block_id", "kind", "params", "ref"]
+BLOCK_KEYS = ["block_id", "controllers", "kind", "params", "ref"]
+CONTROLLER_KEYS = ["class_id", "id", "slot", "tab", "value"]
 PB2_PARAM_KEYS = ["id", "name", "transient", "type", "value"]
 PB1_PARAM_KEYS = ["index", "type", "value"]
 REF_TYPES = (14, 15)  # mtl, texmap: the value is an index into material_graph
@@ -119,7 +121,7 @@ class OracleFiles(unittest.TestCase):
             with self.subTest(name):
                 o = _oracle(name)
                 self.assertEqual(list(o), TOP_KEYS)
-                self.assertEqual(o["oracle_version"], 6)
+                self.assertEqual(o["oracle_version"], 10)
                 self.assertEqual(list(o["render"]), RENDER_KEYS)
                 self.assertTrue(o["render"]["width"] > 0 and o["render"]["height"] > 0)
                 self.assertEqual(o["file"], name + ".max")
@@ -149,6 +151,10 @@ class OracleFiles(unittest.TestCase):
                     self.assertEqual(n["eval_maps"] is not None, uvw, n["name"])
                     if n["eval_maps"] is not None:
                         self._check_maps(n["eval_maps"], n["eval_faces"])
+                    made = bool(n["modifiers"]) and n["eval_faces"] is not None
+                    self.assertEqual(n["eval_mesh"] is not None, made, n["name"])
+                    if n["eval_mesh"] is not None:
+                        self._check_eval_mesh(n["eval_mesh"], n["eval_faces"])
                     self.assertEqual(n["index"], i)
                     self.assertEqual(len(n["transform"]), 12)
                     self.assertEqual(len(n["object_transform"]), 12)
@@ -157,6 +163,11 @@ class OracleFiles(unittest.TestCase):
                     self.assertIn(n["handle"], n["instances"])
                     self.assertTrue(set(n["instances"]) <= handles)
                     self.assertIn(n["layer"], [layer["name"] for layer in o["layers"]])
+                layer_names = [layer["name"] for layer in o["layers"]]
+                self.assertEqual(len(set(layer_names)), len(layer_names))
+                for layer in o["layers"]:
+                    self.assertEqual(list(layer), LAYER_KEYS)
+                    self.assertTrue(layer["parent"] is None or layer["parent"] in layer_names, layer)
                 self.assertEqual([m["index"] for m in o["materials"]], list(range(len(o["materials"]))))
                 camera = o["render"]["camera"]
                 self.assertTrue(camera is None or any(n["handle"] == camera and n["camera"] is not None
@@ -184,6 +195,35 @@ class OracleFiles(unittest.TestCase):
             self.assertEqual(len(m["corners"]), 3 * faces)
             self.assertTrue(all(len(c) == 9 and all(isinstance(v, (int, float)) for v in c) for c in m["corners"]))
 
+    def _check_eval_mesh(self, mesh, faces):
+        """Per material ID, ascending, the triangles facing up, down and sideways; map channel 1's count and range;
+        the shading by smoothing groups."""
+        self.assertEqual(list(mesh), ["map_channel_1", "material_ids", "smoothing"])
+        sm = mesh["smoothing"]  # flat triangles, hard edges, smooth regions of the smoothed triangles
+        self.assertEqual(list(sm), ["flat", "hard_edges", "regions"])
+        self.assertTrue(all(isinstance(v, int) and v >= 0 for v in sm.values()), sm)
+        self.assertLessEqual(sm["flat"], faces)
+        self.assertLessEqual(sm["regions"], faces - sm["flat"])
+        self.assertEqual(sm["regions"] == 0, sm["flat"] == faces, sm)
+        self.assertLessEqual(sm["hard_edges"], 3 * faces // 2)
+        hist = mesh["material_ids"]
+        ids = [h[0] for h in hist]
+        self.assertEqual(ids, sorted(set(ids)))
+        for h in hist:  # [id, up, down, side]: 1-based, as 3ds Max shows it; an ID without a face is left out
+            self.assertEqual(len(h), 4, h)
+            self.assertTrue(all(isinstance(x, int) and x >= 0 for x in h), h)
+            self.assertTrue(h[0] >= 1 and sum(h[1:]) > 0, h)
+        self.assertEqual(sum(sum(h[1:]) for h in hist), faces)
+        m = mesh["map_channel_1"]
+        if m is not None:
+            self.assertEqual(list(m), ["count", "max", "min"])
+            self.assertGreaterEqual(m["count"], 0)
+            if m["min"] is None:  # no face uses a map vertex: no range
+                self.assertIsNone(m["max"])
+            else:
+                self.assertEqual((len(m["min"]), len(m["max"])), (3, 3), m)
+                self.assertTrue(all(lo <= hi for lo, hi in zip(m["min"], m["max"])), m)
+
     def _check_block(self, b, size):
         self.assertEqual(list(b), BLOCK_KEYS)
         self.assertIsInstance(b["ref"], int)
@@ -196,9 +236,19 @@ class OracleFiles(unittest.TestCase):
                 if p["type"] & 0x7FF in REF_TYPES:
                     values = p["value"] if p["type"] & 0x800 else [p["value"]]
                     self.assertTrue(all(v is None or 0 <= v < size for v in values), p)
+            params = {p["id"]: p for p in b["params"]}
+            slots = [c["slot"] for c in b["controllers"]]
+            self.assertEqual(len(slots), len(set(slots)), b["controllers"])
+            for c in b["controllers"]:
+                self.assertEqual(list(c), CONTROLLER_KEYS)
+                self.assertTrue(all(CLASS_ID.match(h) for h in c["class_id"]), c)
+                self.assertGreaterEqual(c["slot"], 0, c)  # every controller is one of the block's references
+                p = params[c["id"]]
+                self.assertEqual(c["value"], p["value"][c["tab"]] if p["type"] & 0x800 else p["value"], c)
         else:
             self.assertEqual(b["kind"], "pb1")
             self.assertIsNone(b["block_id"])
+            self.assertEqual(b["controllers"], [])  # an old ParamBlock's controllers are not dumped
             self.assertEqual([p["index"] for p in b["params"]], list(range(len(b["params"]))))
             for p in b["params"]:
                 self.assertEqual(list(p), PB1_PARAM_KEYS)

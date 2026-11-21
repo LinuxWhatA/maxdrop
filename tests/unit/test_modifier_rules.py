@@ -6,7 +6,8 @@
 Symmetry as Blender modifiers, no Blender. The stack_convert fixture: each node's converted modifiers in order with
 the settings its script set (tools/fixtures/stack_convert.ms), the mirror frames, the mesh shading a smoother sets,
 a TurboSmooth above a Bend not converted, nothing converted with the option off, the report's counts; stack_basic's
-TurboSmooth above its applied UVW Map. Hand-made blocks: defaults, clamps, refusals and the Solidify arithmetic.
+TurboSmooth above its applied UVW Map; stack_shell's one-sided and inside-out Shells. Hand-made blocks: defaults,
+clamps, refusals and the Solidify arithmetic.
 tests/blender/run.py checks the built modifiers against 3ds Max's evaluated meshes.
 
     python -I -m unittest discover tests
@@ -26,6 +27,7 @@ except ImportError:  # optional here: CI installs it, Blender ships it
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FIXTURE = os.path.join(ROOT, "tests", "fixtures", "stack_convert.max")
 STACK_BASIC = os.path.join(ROOT, "tests", "fixtures", "stack_basic.max")
+STACK_SHELL = os.path.join(ROOT, "tests", "fixtures", "stack_shell.max")
 MM = 0.001  # the fixture's unit
 
 _PKG = "maxdrop_convert_test"  # the same package as test_convert_scene: the add-on's __init__ never runs
@@ -51,8 +53,9 @@ def _subsurf(levels, render):
 
 
 def _solidify(inner, outer):
-    return (SOLIDIFY, {"solidify_mode": "EXTRUDE", "thickness": (inner + outer) * MM,
-                       "offset": (outer - inner) / (outer + inner), "use_even_offset": False, "use_rim": True})
+    lo, hi = min(-inner, outer), max(-inner, outer)  # the surfaces along the normal
+    return (SOLIDIFY, {"solidify_mode": "EXTRUDE", "thickness": (hi - lo) * MM, "offset": (hi + lo) / (hi - lo),
+                       "use_even_offset": False, "use_rim": True, "use_flip_normals": inner + outer < 0})
 
 
 def _mirror(axis, flip, slice_, weld, threshold):
@@ -73,6 +76,9 @@ CONVERTED = {
     "FixtureOrder": [_solidify(0.0, 1.0), _mirror(X, False, True, True, 0.1), _subsurf(1, 1)],
     "FixtureBlocked": [],
 }
+# From tools/fixtures/stack_shell.ms: (inner, outer) of each open box's Shell
+SHELLS = {"FixtureShellOut": (-1.0, 2.0), "FixtureShellIn": (3.0, -1.0), "FixtureShellCrossed": (-2.0, 1.0),
+          "FixtureShellNegative": (-1.0, -2.0), "FixtureShellRim": (0.0, 1.0)}
 SHADING = {"FixtureTurboOne": rules.SMOOTH, "FixtureTurboRender": rules.CREASE, "FixtureMeshSmooth": rules.SMOOTH,
            "FixtureOrder": rules.SMOOTH}
 SHARP_EDGES_BOX = 12  # a poly box: a smoothing group per side
@@ -170,6 +176,21 @@ class Fixture(unittest.TestCase):
                             for md in desc.meshes.values()))
         self.assertEqual(sum(report.gather(desc).modifiers.values()), 12)
 
+    def test_stack_shell_one_sided_and_inside_out(self):
+        desc = conv.read(STACK_SHELL)
+        self.assertEqual(sorted(n.name for n in desc.nodes), sorted(SHELLS))
+        self.assertEqual(desc.issues, [])  # auto smooth on: the override (off here) would not be named either
+        for node in desc.nodes:
+            want = dict(_solidify(*SHELLS[node.name])[1])
+            self.assertEqual([m.kind for m in node.converted], [SOLIDIFY], node.name)
+            got = dict(node.converted[0].settings)
+            self.assertEqual(sorted(got), sorted(want), node.name)
+            self.assertTrue(all(_close(got[a], want[a]) for a in want), "%s: %r" % (node.name, got))
+            self.assertEqual(node.modifiers, (), node.name)
+        flips = {n.name: dict(n.converted[0].settings)["use_flip_normals"] for n in desc.nodes}
+        self.assertEqual(flips, {"FixtureShellOut": False, "FixtureShellIn": False, "FixtureShellCrossed": True,
+                                 "FixtureShellNegative": True, "FixtureShellRim": False})
+
     def test_stack_basic_turbosmooth_above_its_uvw_map(self):
         desc = conv.read(STACK_BASIC)
         node = next(n for n in desc.nodes if n.name == "FixtureTurbo")
@@ -247,27 +268,38 @@ class Rules(unittest.TestCase):
         cases = ((classids.MESHSMOOTH, {9: rules.CLASSIC}), (classids.MESHSMOOTH, {9: 5}),
                  (classids.MESHSMOOTH, {2: 0.5}), (classids.MESHSMOOTH, {6: 1}), (classids.TURBOSMOOTH, {5: 1}),
                  (classids.SHELL, {12: 3}), (classids.SHELL, {19: 1}), (classids.SHELL, {2: 1}),
-                 (classids.SHELL, {8: 1}), (classids.SHELL, {17: 1}), (classids.SHELL, {4: 1}))
+                 (classids.SHELL, {8: 1}), (classids.SHELL, {17: 1}), (classids.SHELL, {4: 1, 14: 0}))
         for cid, values in cases:
             _md, issues = _convert(cid, values)
             self.assertEqual(len(issues), 1, repr(values))
-        _md, issues = _convert(classids.MESHSMOOTH, {9: rules.QUAD_OUTPUT})
-        self.assertEqual(issues, [])
+        # MeshSmooth quad output is Catmull-Clark; with auto smooth on (the default) 3ds Max ignores the override
+        for cid, values in ((classids.MESHSMOOTH, {9: rules.QUAD_OUTPUT}), (classids.SHELL, {4: 1}),
+                            (classids.SHELL, {4: 1, 14: 1}), (classids.SHELL, {14: 0})):
+            _md, issues = _convert(cid, values)
+            self.assertEqual(issues, [], repr(values))
 
     def test_shell_surfaces(self):
-        for (inner, outer), (thickness, offset) in (((1.0, 2.0), (1.5, 1.0 / 3.0)), ((0.0, 1.0), (0.5, 1.0)),
-                                                    ((1.0, 0.0), (0.5, -1.0)), ((1.0, 1.0), (1.0, 0.0))):
-            md, _i = _convert(classids.SHELL, {0: inner, 1: outer})
+        # (inner, outer) -> thickness (0.5 m per unit, _convert), offset, flip. Both surfaces outside (-1, 2) or inside
+        # (3, -1): an offset past -1 .. 1, which Solidify takes as it is (no hard range; 3ds Max's boxes and
+        # volumes, the stack_shell fixture). Inner + outer < 0 turns 3ds Max's shell inside out: Solidify flips.
+        for (inner, outer), want in (((1.0, 2.0), (1.5, 1.0 / 3.0, False)), ((0.0, 1.0), (0.5, 1.0, False)),
+                                     ((1.0, 0.0), (0.5, -1.0, False)), ((1.0, 1.0), (1.0, 0.0, False)),
+                                     ((-1.0, 2.0), (0.5, 3.0, False)), ((3.0, -1.0), (1.0, -2.0, False)),
+                                     ((-2.0, 1.0), (0.5, 3.0, True)),
+                                     ((1.0, -2.0), (0.5, -3.0, True)), ((-1.0, -2.0), (1.5, -1.0 / 3.0, True))):
+            md, issues = _convert(classids.SHELL, {0: inner, 1: outer})
             s = dict(md.settings)
-            self.assertAlmostEqual(s["thickness"], thickness, msg=repr((inner, outer)))
-            self.assertAlmostEqual(s["offset"], offset, msg=repr((inner, outer)))
+            self.assertAlmostEqual(s["thickness"], want[0], msg=repr((inner, outer)))
+            self.assertAlmostEqual(s["offset"], want[1], msg=repr((inner, outer)))
+            self.assertIs(s["use_flip_normals"], want[2], repr((inner, outer)))
+            self.assertEqual(issues, [], repr((inner, outer)))
 
     @unittest.skipIf(numpy is None, "numpy missing")  # a Symmetry's frame
     def test_refused(self):
         cases = ((classids.TURBOSMOOTH, None), (classids.TURBOSMOOTH, {0: pblock.Animated(3)}),
                  (classids.TURBOSMOOTH, {0: "two"}), (classids.TURBOSMOOTH, {0: float("nan")}),
                  (classids.TURBOSMOOTH, {0: True}), (classids.SHELL, {0: 0.0, 1: 0.0}),
-                 (classids.SHELL, {0: -1.0, 1: 1.0}), (classids.SHELL, {0: 2.0, 1: -1.0}),
+                 (classids.SHELL, {0: -1.0, 1: 1.0}), (classids.SHELL, {0: 2.0, 1: -2.0}),
                  (classids.SHELL, {1: float("inf")}), (classids.SYMMETRY, {0: 3}), (classids.SYMMETRY, {3: (1, 2)}))
         for cid, values in cases:
             with self.assertRaises(rules.ModifierError, msg=repr(values)):

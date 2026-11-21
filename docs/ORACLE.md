@@ -54,13 +54,13 @@ Top level:
 |---|---|
 | `file` | Base name of the scene file (`null` for an unsaved scene). |
 | `file_version` | `getMaxFileVersionData`: `[format version, version of the Max that saved it]`, e.g. `[20000, 22000]` = saved by 3ds Max 2020 as a 2018 file (checked by saving with `saveAsVersion:2018`). |
-| `layers` | Every layer in layer-manager order: `name`, `hidden`, `frozen`, `renderable`. |
+| `layers` | Every layer in layer-manager order: `name`, `hidden`, `frozen`, `renderable` (`isHidden`, `isFrozen`, `renderable` of the layer; whether a hidden or frozen parent layer shows in its child's is not known: no fixture has one), `parent` (the name of its parent layer, `getParent()`; `null` at the top level). |
 | `material_graph` | Every material and map reachable from a node's material, see [below](#the-material-graph). |
 | `materials` | The materials assigned to nodes, in order of first use in the node walk: `index`, `name`, `class_id`, `class_name`, `sub_count` (sub-materials, e.g. of a Multi/Sub-Object). |
 | `max_version` | The Max that made the dump: `[release, year]`, e.g. `[22000, 2020]`. |
 | `node_count` | Number of entries in `nodes`. |
 | `nodes` | Every node of the scene, see below. |
-| `oracle_version` | Version of this layout (2: `material_graph` added; 3: the modifier context, switches and name of each modifier; 4: `shape`; 5: `eval_maps`; 6: `camera` and `render`). |
+| `oracle_version` | Version of this layout (2: `material_graph` added; 3: the modifier context, switches and name of each modifier; 4: `shape`; 5: `eval_maps`; 6: `camera` and `render`; 7: a layer's `parent`, and a node's `hidden` and `frozen` its own flags; 8: a block's `controllers`; 9: `eval_mesh`; 10: `eval_mesh.smoothing`). |
 | `render` | The render settings: `width`, `height` (pixels), `pixel_aspect`, and `camera`: the handle of the camera of the view 3ds Max renders (the locked render view, `rendViewIndex`, else the active viewport; `viewport.getCamera`), `null` when that view looks through no camera. |
 | `renderer` | The current renderer: `class_id`, `class_name`. |
 | `time` | The frame every node was evaluated at: always 0. |
@@ -81,6 +81,7 @@ parent always comes before its children):
 | `base_verts`, `base_faces` | Counts of the base object: polygons for Editable Poly, triangles for Editable Mesh, `null` for every other class. |
 | `eval_verts`, `eval_faces` | The evaluated world-state mesh (`snapshotAsMesh`, after every modifier) as triangles; `null` when the node is not geometry or yields no mesh (lights, helpers, targets, particle flow events). |
 | `eval_maps` | `null` unless a modifier of the node is a UVW Map. Then, per map channel one of its UVW Maps writes (`mapChannel`, or 0 for the vertex color channel), ascending: `channel` and `corners`, one entry per corner of every triangle of that evaluated mesh in face order, `[x, y, z, nx, ny, nz, u, v, w]`: the world position (`getVert`), the face normal (`getFaceNormal`, world space) and the map vertex (`meshop.getMapVert` of `meshop.getMapFace`). |
+| `eval_mesh` | `null` unless the node has a modifier and `eval_faces` is not `null` (a switched-off Extrude leaves a shape: `null`). Then what that evaluated mesh carries per face: `material_ids`, per material ID (`getFaceMatID`, 1-based as 3ds Max shows it; an ID no face has is left out), ascending, `[id, up, down, side]`: its triangles by the way they face in **object space**: the three vertices of `snapshotAsMesh` taken back by the inverse object transform, the z of their winding normal, normalized, above 1e-4 `up`, below -1e-4 `down`, else (a degenerate face too) `side`. The counts add up to `eval_faces`. On extrude.max the world normals give the same counts (its mirrored node's transform is a point reflection, which keeps a winding normal), so the fixture does not choose the space; object space is the one the Extrude rule (cap facing +Z ID 1, -Z ID 2, sides 3) and the reader's mesh are in. `map_channel_1`: `null` without channel 1 support (an Extrude without mapping coordinates), else `count` (`meshop.getNumMapVerts`), `min` and `max`: `[u, v, w]` over the map vertices the map faces use (`null` when they use none). Count and range cannot show a U running the wrong way along a spline; `eval_maps` has every corner, for a UVW Map only. `smoothing`: how the mesh is shaded by its smoothing groups (`getFaceSmoothGroup`): `flat`, the triangles of group 0; `hard_edges`, the edges (a pair of vertex indices) of exactly two triangles, both smoothed, that share no group; `regions`, the smoothed triangles joined through such edges where they share a group, counted. A Blender mesh gives the same three from its flat faces' triangles and its smooth faces through edges marked sharp or not (`tests/blender/run.py`). An unwelded seam is no edge: it splits a region (stack_convert's FixtureOrder, 2 regions of one smooth surface). |
 | `modifiers` | The modifier stack from top to bottom (modifier_pivot: a Bend added over a UVW Map lists Bend first), each: `class_id`, `class_name`; `name` (`m.name`: the one the user gave, else the class's display name); `enabled`, `enabled_in_views`, `enabled_in_renders`; `context_tm` (`getModContextTM`, 12 floats as `transform`) and `context_bbox_min`, `context_bbox_max` (`getModContextBBoxMin/Max`): the modifier context on this node, which an instanced modifier has once per node. The box is the one Max holds after evaluating the node; the file may hold none (docs/FORMAT.md, Modifiers). |
 | `instances` | Sorted handles of every node that shares this node's base object, itself included (a one-element list when not instanced). Instances and references both count. |
 | `transform` | World node transform (`node.transform`, the pivot), 12 floats: rows 1 to 4, row 4 = translation. |
@@ -89,7 +90,7 @@ parent always comes before its children):
 | `camera` | `null` unless the base object is a camera (superclass 32). Then 3ds Max's camera state at frame 0 (`CameraObject::EvalCameraState`, through the SDK's .NET wrapper): `fov` the horizontal field of view in degrees that 3ds Max and V-Ray render with (after zoom, lens breathing and a specified FOV), `ortho`, `hither` and `yon` (the clipping planes, in file units), `manual_clip`, `tdist` (the target distance; 0 on a Target camera, whose distance is its target's). A lens shift (Physical, VRayPhysicalCamera) changes the state's FOV but not the rendered one (renders of a marker scene show the image only translated): the state is read with `horizontal_shift` and `vertical_shift` at 0, then they are put back. |
 | `bbox_min`, `bbox_max` | World-aligned bounding box of the evaluated object: `nodeGetBoundingBox node (matrix3 1)`. This is the tight box of the evaluated points (checked against the vertex extremes of a rotated, bent, parented sphere); `node.min` / `node.max` would instead transform the object's local box and be larger under rotation. |
 | `layer` | Name of the node's layer. |
-| `hidden`, `frozen`, `renderable` | The node's own flags (a layer's flags are in `layers`). |
+| `hidden`, `frozen`, `renderable` | The node's own flags (a layer's flags are in `layers`): `INode.IsObjectHidden` and `IsObjectFrozen` through the SDK's .NET wrapper, `renderable` from MAXScript. MAXScript's `isHidden` and `isFrozen` also answer true for a node on a hidden or frozen layer (layers_more: FixtureOnHiddenLayer, FixtureOnFrozenLayer), which version 6 wrote; the file keeps that state on the layer only (docs/FORMAT.md, Nodes). |
 | `material` | Index into `materials`, `null` without a material. Max materials have no handle that survives a reload. |
 | `shape` | `null` unless the base object is a shape (superclass 64). Then the base object as 3ds Max's own Bezier: a copy of the node without its modifiers, collapsed to an Editable Spline (`convertToSplineShape`). `splines`, each `closed` and its `knots`: `type` (`corner`, `smooth`, `bezier`, `bezierCorner`), `segment` (`curve` or `line`, the segment that starts at the knot; `null` after the last knot of an open spline), `pos`, `in`, `out` (`getKnotPoint`, `getInVec`, `getOutVec`, turned from world into object space by the inverse object transform) and `mid` (`interpBezier3D` at 0.5: the middle of that segment as 3ds Max interpolates it, `null` where `segment` is). The base object's `steps`, `optimize`, `adaptive`, and its rendering settings: `renderable` (Enable In Renderer), `display_render_mesh` (Enable In Viewport), `thickness`, `sides`, `angle`, `rectangular`, `width`, `length`. |
 
@@ -113,7 +114,15 @@ percentages and 0..255 colors MAXScript shows.
 | `subs` | The sub-materials and sub-maps that are set: `kind` (`material` or `map`), `slot` (0-based, as `getSubMtl` / `getSubTexmap` count), `target` (index into `material_graph`). |
 
 A block: `kind` `pb2` (ParamBlock2) or `pb1` (the old ParamBlock), `ref` (its reference slot in the entry or
-part), `block_id` (the ParamBlock2's descriptor id, `null` for `pb1`), and `params`:
+part), `block_id` (the ParamBlock2's descriptor id, `null` for `pb1`), `controllers` and `params`.
+
+`controllers`: one entry per animated parameter of a `pb2` (per element of an animated table), in parameter order:
+`id`, `tab` (the element, 0 for a scalar), `class_id` (the controller's, `IParamBlock2.GetControllerByID`), `slot`
+(the block's reference slot that holds the controller, found by comparing `GetReference` with it; -1 if none
+does), `value` (the parameter's value at frame 0, as in `params`). Always empty for `pb1`: its controllers are
+not dumped.
+
+`params`:
 
 - `pb2`: every parameter of the descriptor in its order: `id`, `name` (its internal name, may be empty), `type`
   (the SDK's ParamType2, `0x800` added for a table), `transient` (not saved in the file), `value`. A table's value
@@ -131,4 +140,10 @@ reference target, bitmap, matrix).
 - The 22 fixtures before stack_basic, 2026-11-17: under 0.4 s each to load, under 0.7 s to dump (vray_texmaps, the slowest, 0.64 s).
 - Scene A (746 nodes) and scene B (2,251 nodes), 3ds Max 2020, 2026-11-15: A loaded in 10 to 50 s (warm or cold
   disk cache) and dumped in 5 s, B loaded in 5 s and dumped in 17 s; the Max process peaked at 3.1 GB. Their dumps are kept outside the
-  repository.
+  repository. Both predate layout 9, whose `eval_mesh` walks every face of every modified mesh in MAXScript,
+  so a scene with deep TurboSmooth stacks dumps slower than this.
+- The 40 fixtures at layout 9, 2026-11-21: 0.6 s at most to dump (vray_texmaps).
+- Layout 10, 2026-11-21: the 41 fixtures as before (0.61 s at most, vray_texmaps). `smoothing` finds each edge in a
+  list per lower vertex: 0.53 s for a mesh of 64,512 triangles (a sphere of 64 segments under a TurboSmooth of two
+  iterations); asking `meshop.getEdgesReverseEdge` per edge, as a first version did, had not finished that mesh
+  after ten minutes.

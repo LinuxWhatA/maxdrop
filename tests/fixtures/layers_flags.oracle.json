@@ -2,15 +2,16 @@
   "file": "layers_flags.max",
   "file_version": [22000, 22000],
   "layers": [
-    {"frozen": false, "hidden": false, "name": "0", "renderable": true},
-    {"frozen": false, "hidden": false, "name": "FixtureLayerA", "renderable": true},
-    {"frozen": false, "hidden": false, "name": "FixtureLayerB", "renderable": true}
+    {"frozen": false, "hidden": false, "name": "0", "parent": null, "renderable": true},
+    {"frozen": false, "hidden": false, "name": "FixtureLayerA", "parent": null, "renderable": true},
+    {"frozen": false, "hidden": false, "name": "FixtureLayerB", "parent": null, "renderable": true}
   ],
   "material_graph": [
     {
       "blocks": [
       {
         "block_id": 0,
+        "controllers": [],
         "kind": "pb2",
         "params": [
           {"id": 0, "name": "shaderType", "transient": false, "type": 1, "value": 1},
@@ -24,6 +25,7 @@
       },
       {
         "block_id": 1,
+        "controllers": [],
         "kind": "pb2",
         "params": [
           {"id": 0, "name": "opacityType", "transient": false, "type": 1, "value": 0},
@@ -43,6 +45,7 @@
       },
       {
         "block_id": 2,
+        "controllers": [],
         "kind": "pb2",
         "params": [
           {"id": 0, "name": "sampler", "transient": false, "type": 1, "value": 3},
@@ -61,6 +64,7 @@
       },
       {
         "block_id": 3,
+        "controllers": [],
         "kind": "pb2",
         "params": [
           {"id": 0, "name": "mapEnables", "transient": false, "type": 2052, "value": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]},
@@ -72,6 +76,7 @@
       },
       {
         "block_id": 4,
+        "controllers": [],
         "kind": "pb2",
         "params": [
           {"id": 0, "name": "bounce", "transient": false, "type": 0, "value": 1},
@@ -90,6 +95,7 @@
         "blocks": [
         {
         "block_id": 0,
+        "controllers": [],
         "kind": "pb2",
         "params": [
           {"id": 0, "name": "ambient", "transient": false, "type": 2, "value": [0.588, 0.588, 0.588]},
@@ -115,6 +121,7 @@
         "blocks": [
         {
         "block_id": null,
+        "controllers": [],
         "kind": "pb1",
         "params": [
           {"index": 0, "type": 0, "value": 0.5},
@@ -149,6 +156,7 @@
       "camera": null,
       "eval_faces": 12,
       "eval_maps": null,
+      "eval_mesh": null,
       "eval_verts": 8,
       "frozen": false,
       "handle": 1,
@@ -179,6 +187,7 @@
       "camera": null,
       "eval_faces": 12,
       "eval_maps": null,
+      "eval_mesh": null,
       "eval_verts": 8,
       "frozen": false,
       "handle": 2,
@@ -209,6 +218,7 @@
       "camera": null,
       "eval_faces": 12,
       "eval_maps": null,
+      "eval_mesh": null,
       "eval_verts": 8,
       "frozen": false,
       "handle": 3,
@@ -239,6 +249,7 @@
       "camera": null,
       "eval_faces": null,
       "eval_maps": null,
+      "eval_mesh": null,
       "eval_verts": null,
       "frozen": false,
       "handle": 6,
@@ -269,6 +280,7 @@
       "camera": null,
       "eval_faces": 12,
       "eval_maps": null,
+      "eval_mesh": null,
       "eval_verts": 8,
       "frozen": false,
       "handle": 4,
@@ -299,6 +311,7 @@
       "camera": null,
       "eval_faces": 12,
       "eval_maps": null,
+      "eval_mesh": null,
       "eval_verts": 8,
       "frozen": false,
       "handle": 5,
@@ -319,7 +332,7 @@
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 20, 30, 0]
     }
   ],
-  "oracle_version": 6,
+  "oracle_version": 10,
   "render": {"camera": null, "height": 480, "pixel_aspect": 1, "width": 640},
   "renderer": {"class_id": ["0x00000001", "0x00000000"], "class_name": "Default_Scanline_Renderer"},
   "time": 0,

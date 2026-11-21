@@ -17,7 +17,7 @@ global MaxDropOracle
 
 struct MaxDropOracleStruct
 (
-	version = 6,
+	version = 10,
 
 	fn num v =
 	(
@@ -267,6 +267,122 @@ struct MaxDropOracleStruct
 		block items 6
 	),
 
+	-- the root of face f in the union-find array par (path halving)
+	fn ufRoot par f =
+	(
+		while par[f] != f do
+		(
+			par[f] = par[par[f]]
+			f = par[f]
+		)
+		f
+	),
+
+	-- how a TriMesh is shaded by its smoothing groups: flat, its triangles of group 0; hard_edges, the edges with
+	-- exactly two triangles, both smoothed, without a common group; regions, the smoothed triangles joined through
+	-- the edges of two triangles with a common group, counted. An edge is a pair of vertex indices (an unwelded
+	-- seam is no edge), found in a list per lower vertex: no meshop call per edge, which took minutes on 100,000
+	-- triangles.
+	fn smoothJson s =
+	(
+		local nf = s.numfaces
+		local g = for f = 1 to nf collect getFaceSmoothGroup s f
+		local par = for f = 1 to nf collect f
+		local edges = for v = 1 to s.numverts collect #()  -- per lower vertex: higher vertex, face, ...
+		for f = 1 to nf do
+		(
+			local fc = getFace s f
+			local vs = #(fc.x as integer, fc.y as integer, fc.z as integer)
+			for k = 1 to 3 do
+			(
+				local a = vs[k]
+				local b = vs[(mod k 3) as integer + 1]
+				if a > b do swap a b
+				append edges[a] b
+				append edges[a] f
+			)
+		)
+		local hard = 0
+		for l in edges where l.count > 2 do
+		(
+			local done = #{}
+			for i = 1 to l.count by 2 where not done[i] do
+			(
+				local fs = #(l[i + 1])
+				for j = i + 2 to l.count by 2 where l[j] == l[i] do
+				(
+					append fs l[j + 1]
+					done[j] = true
+				)
+				if fs.count == 2 and g[fs[1]] != 0 and g[fs[2]] != 0 do
+				(
+					if (bit.and g[fs[1]] g[fs[2]]) != 0 then
+					(
+						local a = ufRoot par fs[1]
+						local b = ufRoot par fs[2]
+						if a != b do par[a] = b
+					)
+					else hard += 1
+				)
+			)
+		)
+		local flat = 0
+		local roots = #{}
+		for f = 1 to nf do if g[f] == 0 then flat += 1 else roots[ufRoot par f] = true
+		inline #(#("flat", flat as string), #("hard_edges", hard as string), #("regions", roots.numberSet as string))
+	),
+
+	-- what an evaluated mesh carries per face: the triangles of each material ID (1-based, as 3ds Max shows it) by
+	-- the way they face in object space (the vertices of snapshotAsMesh taken back by the inverse object transform,
+	-- the winding normal's z: up, down, side; a degenerate face is side), map channel 1's vertex count and range over
+	-- the map vertices its faces use, and its shading by smoothing groups; null unless a modifier made the mesh
+	fn evalMeshJson n =
+	(
+		if n.modifiers.count == 0 or superClassOf n != GeometryClass do return "null"
+		local s = try (snapshotAsMesh n) catch undefined
+		if s == undefined do return "null"
+		local inv = inverse n.objectTransform
+		local hist = #()
+		for f = 1 to s.numfaces do
+		(
+			local fc = getFace s f
+			local a = (getVert s fc[1]) * inv
+			local nrm = cross (((getVert s fc[2]) * inv) - a) (((getVert s fc[3]) * inv) - a)
+			local z = if (length nrm) < 1e-12 then 0.0 else (normalize nrm).z
+			local k = if z > 1e-4 then 2 else (if z < -1e-4 then 3 else 4)
+			local id = getFaceMatID s f
+			while hist.count < id do append hist #(hist.count + 1, 0, 0, 0)
+			hist[id][k] += 1
+		)
+		local ids = for h in hist where (h[2] + h[3] + h[4]) > 0 collect list (for x in h collect x as string)
+		local map1 = "null"
+		if meshop.getMapSupport s 1 do
+		(
+			local used = #{}
+			for f = 1 to s.numfaces do
+			(
+				local mf = meshop.getMapFace s 1 f
+				for x in #(mf.x, mf.y, mf.z) do used[x as integer] = true
+			)
+			local lo = undefined
+			local hi = undefined
+			for i in used do
+			(
+				local t = meshop.getMapVert s 1 i
+				if lo == undefined then (lo = t; hi = t)
+				else
+				(
+					lo = [amin lo.x t.x, amin lo.y t.y, amin lo.z t.z]
+					hi = [amax hi.x t.x, amax hi.y t.y, amax hi.z t.z]
+				)
+			)
+			map1 = inline #(#("count", (meshop.getNumMapVerts s 1) as string), #("max", vec hi), #("min", vec lo))
+		)
+		local smoothing = smoothJson s
+		free s
+		obj #(#("map_channel_1", map1), #("material_ids", list ids), #("smoothing", smoothing)) 6
+	),
+
 	-- a camera's state as 3ds Max (and V-Ray) render it: CameraObject::EvalCameraState at frame 0, the horizontal FOV in
 	-- degrees after zoom, lens breathing and a specified FOV. A lens shift changes the state's FOV (Physical and
 	-- VRayPhysicalCamera) but not the rendered one, which renders show: the state is read with the shift at 0, then
@@ -310,6 +426,8 @@ struct MaxDropOracleStruct
 		local mods = for m in n.modifiers collect modJson n m
 		local matIndex = if n.material == undefined then "null" else (((findItem mats n.material) - 1) as string)
 		local parent = if n.parent == undefined then "null" else (n.parent.handle as string)
+		-- the node's own flags: MAXScript's isHidden and isFrozen also say true for a node on a hidden or frozen layer
+		local inode = (dotNetClass "Autodesk.Max.GlobalInterface").Instance.COREInterface.GetINodeByHandle n.handle
 		obj #( \
 			#("base_class_id", cid (classOf b)), \
 			#("base_class_name", str ((classOf b) as string)), \
@@ -321,10 +439,11 @@ struct MaxDropOracleStruct
 			#("camera", cameraJson n), \
 			#("eval_faces", intOrNull ev[2]), \
 			#("eval_maps", evalMapsJson n), \
+			#("eval_mesh", evalMeshJson n), \
 			#("eval_verts", intOrNull ev[1]), \
-			#("frozen", bool n.isFrozen), \
+			#("frozen", bool inode.IsObjectFrozen), \
 			#("handle", n.handle as string), \
-			#("hidden", bool n.isHidden), \
+			#("hidden", bool inode.IsObjectHidden), \
 			#("index", index as string), \
 			#("instances", list (for h in (instanceHandles n) collect h as string)), \
 			#("layer", str n.layer.name), \
@@ -428,9 +547,35 @@ struct MaxDropOracleStruct
 		list items
 	),
 
+	fn classPair c = list #(str ("0x" + (formattedPrint c.ClassID.PartA format:"08x")), str ("0x" + (formattedPrint c.ClassID.PartB format:"08x"))),
+
+	-- the controllers of a block's animated parameters (one per table element that has one): the controller's class,
+	-- the block reference that holds it (-1: none of them) and the parameter's value at frame 0
+	fn controllersOf pb id tp acc =
+	(
+		local out = #()
+		local n = if (bit.and tp 0x800) != 0 then pb.Count id else 1
+		for k = 0 to n - 1 do
+		(
+			local c = try (pb.GetControllerByID id k) catch undefined
+			if c != undefined do
+			(
+				local slot = -1
+				for s = 0 to pb.NumRefs - 1 do
+				(
+					local x = pb.GetReference s
+					if x != undefined and (ptrOf x) == (ptrOf c) do slot = s
+				)
+				append out (inline #(#("class_id", classPair c), #("id", (id as integer) as string), #("slot", slot as string), #("tab", k as string), #("value", pbValue pb id tp k acc)))
+			)
+		)
+		out
+	),
+
 	fn pb2Json pb r acc =
 	(
 		local items = #()
+		local ctrls = #()
 		for i = 0 to pb.NumParams - 1 do
 		(
 			local id = pb.IndextoID i
@@ -438,8 +583,9 @@ struct MaxDropOracleStruct
 			local tp = d.Type.value__
 			local v = if (bit.and tp 0x800) != 0 then tabValue pb id tp acc else pbValue pb id tp 0 acc
 			append items (inline #(#("id", (id as integer) as string), #("name", str d.IntName), #("transient", bool ((bit.and (d.Flags as integer) 2) != 0)), #("type", tp as string), #("value", v)))
+			join ctrls (controllersOf pb id tp acc)
 		)
-		obj #(#("block_id", (pb.Id as integer) as string), #("kind", str "pb2"), #("params", block items 8), #("ref", r as string)) 6
+		obj #(#("block_id", (pb.Id as integer) as string), #("controllers", block ctrls 8), #("kind", str "pb2"), #("params", block items 8), #("ref", r as string)) 6
 	),
 
 	fn pb1Value pb i tp =
@@ -463,7 +609,7 @@ struct MaxDropOracleStruct
 			local tp = (pb.GetParameterType i).value__
 			append items (inline #(#("index", i as string), #("type", tp as string), #("value", pb1Value pb i tp)))
 		)
-		obj #(#("block_id", "null"), #("kind", str "pb1"), #("params", block items 8), #("ref", r as string)) 6
+		obj #(#("block_id", "null"), #("controllers", "[]"), #("kind", str "pb1"), #("params", block items 8), #("ref", r as string)) 6
 	),
 
 	fn ownBlocks t acc =
@@ -480,9 +626,7 @@ struct MaxDropOracleStruct
 
 	fn partJson t r acc =
 	(
-		local c = t.ClassID
-		local pcid = list #(str ("0x" + (formattedPrint c.PartA format:"08x")), str ("0x" + (formattedPrint c.PartB format:"08x")))
-		obj #(#("blocks", block (ownBlocks t acc) 6), #("class_id", pcid), #("ref", r as string)) 6
+		obj #(#("blocks", block (ownBlocks t acc) 6), #("class_id", classPair t), #("ref", r as string)) 6
 	),
 
 	-- the parameter blocks among the references of a, and the parts that carry blocks of their own (a map's
@@ -554,7 +698,8 @@ struct MaxDropOracleStruct
 		for i = 0 to LayerManager.count - 1 do
 		(
 			local l = LayerManager.getLayer i
-			append items (inline #(#("frozen", bool l.isFrozen), #("hidden", bool l.isHidden), #("name", str l.name), #("renderable", bool l.renderable)))
+			local p = l.getParent()
+			append items (inline #(#("frozen", bool l.isFrozen), #("hidden", bool l.isHidden), #("name", str l.name), #("parent", if p == undefined then "null" else str p.name), #("renderable", bool l.renderable)))
 		)
 		block items 2
 	),

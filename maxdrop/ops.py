@@ -68,6 +68,9 @@
 # the run as a RuntimeError, so the progress runner still tears down and removes what the run made.
 # Modified for MaxDrop, 2026-11-20 (jsiovn). Esc during a windowed import's read stops the worker at the next node
 # (_read_scene's cancel check, _in_thread's wait).
+# Modified for MaxDrop, 2026-11-21 (jsiovn). The read's cancel check is also asked inside a large mesh (comments).
+# Modified for MaxDrop, 2026-11-21 (jsiovn). A TypeError or KeyError of the reading (a reader defect) reports the
+# file as not imported, with its traceback in the console, instead of ending the operator.
 
 
 __author__ = "Sebastian Sille <nrgsille@gmail.com>"
@@ -116,6 +119,12 @@ _SHOWN_FILES = 5
 # MemoryError and RecursionError are caught too, so that a gap in its checks still reports the file as not imported
 # instead of stopping the run.
 _UNREADABLE = (OSError, ValueError, IndexError, struct.error, MemoryError, RecursionError)
+# A defect of the reading (reader and scene description), never raised on purpose: _read_scene and _preflight report
+# it as _ReadDefect, one of _UNREADABLE, its traceback in the console. Not in _UNREADABLE itself, whose net in
+# _Run.steps also covers the build: a build's TypeError is a defect on Blender's side, not a file that cannot be
+# read. tests/unit/fuzz.py still counts both as escaped. A windowed import may print the traceback twice for one
+# file, from the pre-flight in invoke() and from the read: both are kept, they need not be the same.
+_DEFECTS = (TypeError, KeyError)
 # What a build makes besides objects and collections, in the order a failed build removes them. Addresses, not
 # names: a new datablock could reuse the address of one freed meanwhile, but the build frees none.
 _MADE = ("meshes", "curves", "lights", "cameras", "materials", "images")
@@ -124,7 +133,7 @@ _RENDER = ("resolution_x", "resolution_y", "resolution_percentage", "pixel_aspec
 # A modal run: seconds of work per timer event, the timer's interval, the steps of the progress shown in the cursor,
 # the share of a scene's progress its reading takes (scene B: 9 s of reading and describing, 7 s of building), how
 # long an Esc during an unpack waits for the unpacker to stop and remove its staging folder, and how long one during
-# a read waits for it to stop at the next node (one node of scene B takes 1.5 s; past this, _busy() covers the rest).
+# a read waits for it to stop (asked between nodes and inside a large mesh; past this, _busy() covers the rest).
 _SLICE = 0.1
 _TICK = 0.05
 _PROGRESS_STEPS = 1000
@@ -376,6 +385,18 @@ def _scene_search(self, context, edit_text):
     return [s for s in scenes if text in s.casefold()] or scenes
 
 
+class _ReadDefect(ValueError):
+    """One of _DEFECTS raised while reading a file. Not a MaxFileError: the reader failed, not the file."""
+
+
+def _defect(name, e):
+    """The _ReadDefect of e (one of _DEFECTS) raised while reading the file name, its traceback printed for a bug
+    report. Called inside the except clause."""
+    print("MaxDrop: reading %s failed, a defect in MaxDrop (please report it with this traceback):\n%s"
+          % (name, traceback.format_exc()), end="")
+    return _ReadDefect("a defect in MaxDrop's reader (%s: %s), see the console" % (type(e).__name__, e))
+
+
 def _reason(e):
     """The message of one of _UNREADABLE for the report; a MemoryError or RecursionError often has none."""
     if isinstance(e, MemoryError):
@@ -416,6 +437,8 @@ def _preflight(path):
             names = sc.strings
     except _UNREADABLE as e:
         return "Not readable as a .max file (%s)" % _reason(e)
+    except _DEFECTS as e:
+        return "Not readable as a .max file (%s)" % _reason(_defect(os.path.basename(path), e))
     release = info.get("max_release")
     parts = ["3ds Max %s" % release if release else "3ds Max version not stated"]
     renderer = (info.get("renderer") or {}).get("name")
@@ -571,8 +594,17 @@ class _Read:
 def _read_scene(max_path, opts, dirs, cancel=None):
     """Reader, scene description and material conversion of one .max (ImportOptions opts, texture search folders
     dirs): everything the build needs, in a _Read. One of _UNREADABLE when the file cannot be read;
-    convert.scene.Cancelled once cancel() holds, asked between nodes and around the material conversion. Touches no
-    Blender data: a modal run calls it in a worker thread."""
+    convert.scene.Cancelled once cancel() holds, asked between nodes, inside a large mesh and around the material
+    conversion. Touches no Blender data: a modal run calls it in a worker thread. A defect of the reading (one of
+    _DEFECTS) is raised as _ReadDefect."""
+    try:
+        return _read_file(max_path, opts, dirs, cancel)
+    except _DEFECTS as e:
+        raise _defect(os.path.basename(max_path), e) from e
+
+
+def _read_file(max_path, opts, dirs, cancel):
+    """_read_scene() without its net for _DEFECTS."""
     from .convert import cameras, colors
     from .convert import scene as convert_scene
     from .reader import assets, cfb, units
@@ -658,7 +690,7 @@ def _scene_steps(opts, scene, view_layer, max_path, pack=None, pack_name="", dir
     materials = 'MATERIAL' in opts.object_filter
     progress("reading " + name, 0.0)
     if threaded:
-        stop = threading.Event()  # set when the steps are closed: the reading ends at the next node
+        stop = threading.Event()  # set when the steps are closed: the reading ends at its next check
         read = yield from _in_thread(_read_scene, max_path, opts, dirs, stop.is_set, stop=stop, wait=_READ_WAIT)
     else:
         read = _read_scene(max_path, opts, dirs)

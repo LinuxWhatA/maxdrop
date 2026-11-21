@@ -85,21 +85,26 @@ Reference slots of a node, checked on every node of every fixture (`test_scene.p
 - slot 6: the layer, a Base Layer (superclass `0x10F0`).
 
 Flags in `0x0960` seen so far: `0x800` on most nodes, `0` on the three instances and the copy in instances (the
-source has `0x800`) and on the two references in modifier_pivot, `0x100800` on the hidden node of layers_flags,
-`0x40` on its group head, `0x900` on the two group members and `0x4800` on the six nodes of lookat a Look At
-controller aims at (`test_scene.py`, `test_flags_and_pair_heads`, which also checks the first `0x2035` values
-above). Decoded from layers_flags and lookat:
+source has `0x800`) and on the two references in modifier_pivot, `0x100800` on the hidden node of layers_flags
+and on FixtureHiddenParent of layers_more, `0x200800` on FixtureFrozen of layers_more, `0x40` on the group head of
+layers_flags, `0x900` on the two group members and `0x4800` on the six nodes of lookat a Look At controller aims at
+(`test_scene.py`, `test_flags_and_pair_heads`, which also checks the first `0x2035` values above). Decoded from
+layers_flags, layers_more and lookat:
 
 | Bit | Meaning |
 |---|---|
-| `0x100000` | hidden (FixtureHidden; that node also has an empty `0x0975` chunk) |
+| `0x100000` | hidden (FixtureHidden, FixtureHiddenParent; such a node also has an empty `0x0975` chunk). The node's own flag: a hidden parent leaves its child visible (FixtureVisibleChild, `0x800`) |
+| `0x200000` | frozen (FixtureFrozen, which also has an empty `0x0976` chunk) |
 | `0x40` | group head (FixtureGroup, a Dummy whose children are the members) |
 | `0x100` | group member (FixtureGroupA and FixtureGroupB) |
 | `0x4000` | the target of a Look At controller (the five Target objects and FixtureAim; not on a node only a LookAt Constraint aims at). Not read: the controller names its target |
 
 `0x800` is not decoded. Renderable is not in `0x0960` (FixtureNoRender has `0x800`) but in `0x099C`, a `u32` on
 every node of every fixture: `0x0F00D600` on each node, `0x0F005600` on FixtureNoRender, so bit `0x8000` is
-renderable. `test_scene.py` checks every node's hidden, frozen and renderable flags against the oracle.
+renderable. A layer's flags stay on the layer: the nodes of layers_more's hidden, frozen and non-rendering layers
+have `0x800` and `0x0F00D600`, no `0x0975` or `0x0976` (MAXScript's `isHidden` and `isFrozen` still answer true
+for them; the oracle writes the node's own flags, see [ORACLE.md](ORACLE.md)). `test_scene.py` checks every node's
+hidden, frozen and renderable flags against the oracle.
 
 ## Modifiers
 
@@ -154,18 +159,24 @@ follows it; `Scene.object_stack` does not yet. Neither corpus scene has one.
 ## Layers
 
 A layer is an object of class Base Layer `(0x7E9858FE, 0x1DBA1DF0)`, superclass `0x10F0`; a node's slot 6 points
-to it. layers_flags has three (`0`, FixtureLayerA, FixtureLayerB), the other fixtures one (`0`):
+to it. layers_flags has three (`0`, FixtureLayerA, FixtureLayerB), layers_more seven (`0`, FixtureHiddenLayer,
+FixtureFrozenLayer, FixtureNoRenderLayer, FixtureParentLayer, FixtureChildLayer, `FixtureLäyer中`), the saved_as
+fixtures two (`0`, `FixtureLäyer中`), the other fixtures one (`0`):
 
 | Chunk | Content | Shown by |
 |---|---|---|
-| `0x1010` | the layer name, 8-bit, no terminator | layers_flags: `46 69 78 ...` (`FixtureLayerA`), `30` (`0`) |
-| `0x1020` | `u32` flags | `0` on every layer of every fixture (none is hidden or frozen) |
-| `0x1050` | `u32` | `0x0B00D600` on every layer (all render): the layout of a node's `0x099C` |
-| `0x1090` | `u8` | `0` on every layer (none has a parent layer) |
+| `0x1010` | the layer name, no terminator: UTF-8 in every file 3ds Max 2020 saves (saved_as included), unlike the UTF-16 node names | layers_flags: `46 69 78 ...` (`FixtureLayerA`), `30` (`0`); layers_more: `46 69 78 74 75 72 65 4c c3 a4 79 65 72 e4 b8 ad` (`FixtureLäyer中`) |
+| `0x1020` | `u32` flags: `0x100000` hidden, `0x200000` frozen (the node's bits) | layers_more: `0x100000` on FixtureHiddenLayer, `0x200000` on FixtureFrozenLayer; `0` on every other layer of every fixture |
+| `0x1050` | `u32`, bit `0x8000` = renderable: the layout of a node's `0x099C` | `0x0B00D600` on every layer but layers_more's FixtureNoRenderLayer, `0x0B005600` |
+| `0x1090` | `u8`, not `0` = the layer has a parent layer | layers_more: `1` on FixtureChildLayer, `0` on every other layer of every fixture |
+| `0x10A0` | the parent layer's name, UTF-16LE (not read: `0x10B0` names it) | layers_more: `FixtureParentLayer` on FixtureChildLayer |
+| `0x10B0` | `i32` the parent layer's object index | layers_more: FixtureChildLayer's is FixtureParentLayer's (`0x236`), a higher index than its own |
 
-The one Layer Manager `(0x0D7374FC, 0x51FF028E)`, superclass `0x200`, references the layers in `0x2034`: slot 0
-is layer `0`, then FixtureLayerA and FixtureLayerB, the order of the oracle's `layers` (`test_scene.py` checks
-names, order and flags of every fixture's layers against the oracle).
+A layer's flags are not copied to its nodes (see [Nodes](#nodes)); a parent layer may hold no node
+(FixtureParentLayer). The one Layer Manager `(0x0D7374FC, 0x51FF028E)`, superclass `0x200`, references the layers
+in `0x2034`: slot 0 is layer `0`, then the others in the order the fixture scripts made them, the order of the
+oracle's `layers` (`test_scene.py` checks names, order, flags and parent of every fixture's layers against the
+oracle).
 
 ## Hierarchy
 
@@ -505,7 +516,7 @@ Max 2020 with every parameter set apart from its default, then the stack_convert
 | Symmetry | 0 axis (0 X, 1 Y, 2 Z), 1 slice along mirror, 2 weld seam, 3 threshold, 4 flip |
 
 What 3ds Max 2020 makes, against Blender's evaluated meshes (`tests/blender/run.py`, the oracle's `eval_verts`,
-`eval_faces` and box after the stack):
+`eval_faces`, box and `eval_mesh.smoothing` after the stack):
 
 - **TurboSmooth, MeshSmooth NURMS / quad output**: Catmull-Clark on the control points, not the limit surface: a
   box gives 26 vertices after one iteration, 98 after two, and Blender's Subdivision Surface with
@@ -513,7 +524,17 @@ What 3ds Max 2020 makes, against Blender's evaluated meshes (`tests/blender/run.
   is another scheme (80 vertices after two iterations). Separate by smoothing groups keeps the vertex count and
   hardens the edges between groups (a crease of 1 in Blender).
 - **Shell**: the new surfaces lie at -inner and +outer amount along the vertex normals, not at an even thickness: a
-  box with outer amount 2 grows by 2 / √3 along each axis (Solidify with `use_even_offset` off).
+  box with outer amount 2 grows by 2 / √3 along each axis (Solidify with `use_even_offset` off). Both may lie on
+  one side of the original (inner -1, outer 2; inner 3, outer -1): Solidify's offset (hi + lo) / (hi - lo) past
+  -1 .. 1 places them alike (no hard range). The outer surface faces out and the inner one in wherever they lie, so
+  inner + outer < 0 turns the shell inside out (negative signed volume): Solidify with `use_flip_normals`
+  (stack_shell, checked by the facing of the open boxes' triangles). The rim of an open mesh: 3ds Max gives it
+  smoothing groups of its own, hard against both surfaces; auto smooth (id 14, on by default, angle id 15, 45°)
+  also splits it where two rim faces meet at a sharper angle, and with auto smooth off the rim is one group, the
+  override's (ids 4, 5) when set, which merges into a surface face of that group (an open box: 11 regions and 24
+  hard edges; a plane with auto smooth 6 and 12, without 3 and 8). Solidify smooths the rim into both surfaces (the
+  open box: 3 regions, 16 hard edges); marking the open edges sharp before it gives 3ds Max's open box on Blender
+  4.2 and 5.2 (not done yet: maxdrop-em3.101).
 - **Symmetry**: the mirror plane is in the gizmo's space, q = p * context * inverse(gizmo), as UVW Map's; without
   flip the side where q along the axis is positive stays, sliced at the plane; without slice the whole object is
   mirrored and both copies stay (FixtureSymmetryNoSlice: 16 vertices). Weld seam: 3ds Max slices beside a vertex
@@ -859,7 +880,9 @@ picker and Material Editor switches off).
 `maxdrop/reader/pblock.py` reads them; `tests/unit/test_materials.py` (RAW-PARAM PARITY) checks every stored
 parameter of every block of every material and map in every fixture against the oracle's `material_graph`, by
 parameter id, within 1e-5 (relative above 1): 193 values in vray_basic, 637 in vray_maps, 2,024 in vray_wrappers,
-295 in standard_physical. `tests/unit/test_pblock.py` covers each rule on synthetic bytes.
+295 in standard_physical. An animated parameter is checked against the oracle's `controllers`: the reader's
+controller is the block reference 3ds Max holds it at, of the same class, and its saved value is the value at frame 0
+(pblock_animated: 6 controllers). `tests/unit/test_pblock.py` covers each rule on synthetic bytes.
 
 A ParamBlock2 is an object of class `(0x82, 0)`, superclass `0x82`, referenced by its owner (the material, map or
 part whose parameters it holds):
@@ -878,8 +901,11 @@ parameter definition's flags (the same bits the SDK's `ParamDef.Flags` reports: 
 transient, `0x100` P_NO_REF, `0x200` P_OWNERS_REF), `u32` unknown, then:
 
 - a scalar: a `u8` tag and the value. Tag `0x40` = a stored value, `0xC0` = the stored value of an animatable
-  parameter, `0x80` = a controller, no value (a probe saved by 3ds Max 2020 with three animated VRayMtl
-  parameters; no fixture);
+  parameter, `0x80` = a controller, no value (pblock_animated: VRayMtl `diffuse` and `reflection_glossiness`,
+  VRayBlendMtl `blend` element 1 and `texmap_blend_multiplier` element 0, VRayNormalMap `normal_map_multiplier` and
+  `bump_map_multiplier`). The controller is a reference of the block, below; a Bezier Float keeps its saved value
+  in `0x7127{0x2501: f32}`, a Bezier Color in `0x7127{0x2501: 3 x f32}` (0..1), the value at frame 0 when saved
+  there;
 - a table: a `u8` 0, a `u32` element count, then a tag and a value per element. vray_wrappers: Multi/Sub-Object
   `materialList`, `mapEnabled`, `names`, `materialIDList` (3 each); VRayBlendMtl `coatMtl`, `blend`,
   `texmap_blend`, `texmap_blend_multiplier` (9 each); Standard `maps`, `mapAmounts` (24 each).
@@ -924,6 +950,14 @@ Reference parameters, checked against the oracle's targets on every fixture:
   and transient entries included: VRayBlendMtl `baseMtl` 0, `coatMtl` 1-9, `texmap_blend` 10-18, its transient
   aliases `coatMtl_0`... and `texmap_blend_0`... 19-36 (37 slots, the block's `0x2035` count; the aliases' slots
   are empty); VRayNormalMap `normal_map` 0, `bump_map` 1.
+- A controller takes the next slot of the same sequence, in entry order, whichever was animated first
+  (pblock_animated, slots from 3ds Max's `GetControllerByID` and the block's references): VRayBlendMtl `baseMtl`
+  0, `coatMtl` 1-9, the controller of `blend` element 1 at 10, `texmap_blend` 11-19, the controller of
+  `texmap_blend_multiplier` element 0 at 20 (39 slots); VRayNormalMap `normal_map` 0, the controller of
+  `normal_map_multiplier` 1, `bump_map` 2, the controller of `bump_map_multiplier` 3; VRayMtl block 1 (no block
+  references) `diffuse` 0, `reflection_glossiness` 1. A parameter without a controller takes no slot. A damaged
+  entry that may have taken slots (head unreadable, a block-held reference type, any table, a scalar cut before
+  its tag) leaves every later slot unresolved.
 
 Transient parameters are mostly not stored (VRayMtl: 25 of the 80 parameters of block 1, among them
 `bump_multiplier` 102 and the `texmap_*` 109-128 that mirror block 4). Some are stored anyway with a stale value
@@ -1097,9 +1131,6 @@ Not shown by any fixture yet, so not stated above:
 - Parameter blocks seen only elsewhere (`pblock.py` relies on them):
   - entries in `0x000E` instead of `0x100E`, same layout, in corpus scene A (saved as 3ds Max 2012); scenes A and
     B walk without an issue: 726 and 560 materials and maps, 33,543 and 41,274 stored parameters;
-  - a controller on a parameter (tag `0x80`, no value): a probe with three animated VRayMtl parameters had them at
-    the block's reference slots 0, 1, 2 in entry order (`Animated(index)` in the reader). Where controllers go
-    when the block also holds references is assumed (after those), not shown; corpus scene A has 4 such values.
   - not known: the first `u32` of `0x0009`, the fourth `u32` of an entry, the third `u16` of a `0x0013` record,
     `0x0005` and `0x0004` of the old ParamBlock, and the value layout of the types no file has shown (matrix3,
     and the others the reader keeps as raw bytes).
@@ -1120,16 +1151,9 @@ Not shown by any fixture yet, so not stated above:
   gizmo controller combines with the context matrix; a modifier without `0x39BF` (4 of 74 modifier objects in scene
   A, 3 of 46 in scene B: read with every switch on and the class name).
 - The meaning of bit `0x800` and the other flag bits in `0x0960`.
-- Layer and node flags no fixture has, found with `tools/maxdiff.py` on scratch files saved by 3ds Max 2020 (three
-  boxes on two layers; the same scene saved again; then one change per file). `reader/scene.py` relies on them:
-  - node frozen: `0x0960` bit `0x200000`, plus an empty `0x0976` chunk; node not renderable: `0x099C` bit
-    `0x8000` cleared (as in layers_flags);
-  - layer hidden: `0x1020` bit `0x100000`, layer frozen: bit `0x200000` (the node's bits); layer not
-    renderable: `0x1050` bit `0x8000` cleared;
-  - a nested layer: `0x1090` = `1`, `0x10A0` = the parent layer's name (UTF-16), `0x10B0` = `i32` the parent
-    layer's object index;
-  - the layer name `0x1010` is UTF-8 (a name with U+00E4 and U+4E2D is stored `4c c3 a4 e4 b8 ad`) in 3ds Max
-    2020; the encoding other versions write is not known (the reader replaces bytes that are not UTF-8).
+- Layers: a layer nested more than one level deep, a hidden or frozen parent layer (whether 3ds Max writes its
+  flags to the child layers), and the layer name's encoding in a version other than 3ds Max 2020 (the reader
+  replaces bytes that are not UTF-8).
 - System unit types 1, 2, 5, 6 (feet, miles, meters, kilometers) and a scale other than 1: taken from the 3ds Max
   SDK, no fixture has them. A `Compressed` part in General (instead of `Uncompressed`) is assumed for a compressed
   file.

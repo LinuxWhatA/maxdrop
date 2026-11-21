@@ -2,13 +2,14 @@
   "file": "uvwmap.max",
   "file_version": [22000, 22000],
   "layers": [
-    {"frozen": false, "hidden": false, "name": "0", "renderable": true}
+    {"frozen": false, "hidden": false, "name": "0", "parent": null, "renderable": true}
   ],
   "material_graph": [
     {
       "blocks": [
       {
         "block_id": 0,
+        "controllers": [],
         "kind": "pb2",
         "params": [
           {"id": 0, "name": "shaderType", "transient": false, "type": 1, "value": 1},
@@ -22,6 +23,7 @@
       },
       {
         "block_id": 1,
+        "controllers": [],
         "kind": "pb2",
         "params": [
           {"id": 0, "name": "opacityType", "transient": false, "type": 1, "value": 0},
@@ -41,6 +43,7 @@
       },
       {
         "block_id": 2,
+        "controllers": [],
         "kind": "pb2",
         "params": [
           {"id": 0, "name": "sampler", "transient": false, "type": 1, "value": 3},
@@ -59,6 +62,7 @@
       },
       {
         "block_id": 3,
+        "controllers": [],
         "kind": "pb2",
         "params": [
           {"id": 0, "name": "mapEnables", "transient": false, "type": 2052, "value": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]},
@@ -70,6 +74,7 @@
       },
       {
         "block_id": 4,
+        "controllers": [],
         "kind": "pb2",
         "params": [
           {"id": 0, "name": "bounce", "transient": false, "type": 0, "value": 1},
@@ -88,6 +93,7 @@
         "blocks": [
         {
         "block_id": 0,
+        "controllers": [],
         "kind": "pb2",
         "params": [
           {"id": 0, "name": "ambient", "transient": false, "type": 2, "value": [0.588, 0.588, 0.588]},
@@ -113,6 +119,7 @@
         "blocks": [
         {
         "block_id": null,
+        "controllers": [],
         "kind": "pb1",
         "params": [
           {"index": 0, "type": 0, "value": 0.5},
@@ -345,6 +352,11 @@
           ]
         }
       ],
+      "eval_mesh": {
+        "map_channel_1": {"count": 34, "max": [1, 1, 1], "min": [0, 0, 0]},
+        "material_ids": [[1, 12, 0, 0], [2, 0, 12, 0], [3, 0, 0, 8], [4, 0, 0, 8], [5, 0, 0, 12], [6, 0, 0, 12]],
+        "smoothing": {"flat": 0, "hard_edges": 28, "regions": 6}
+      },
       "eval_verts": 34,
       "frozen": false,
       "handle": 1,
@@ -573,6 +585,11 @@
           ]
         }
       ],
+      "eval_mesh": {
+        "map_channel_1": {"count": 66, "max": [1, 1, 0], "min": [0, 0, 0]},
+        "material_ids": [[1, 12, 0, 0], [2, 0, 12, 0], [3, 0, 0, 8], [4, 0, 0, 8], [5, 0, 0, 12], [6, 0, 0, 12]],
+        "smoothing": {"flat": 0, "hard_edges": 28, "regions": 6}
+      },
       "eval_verts": 34,
       "frozen": false,
       "handle": 2,
@@ -801,6 +818,11 @@
           ]
         }
       ],
+      "eval_mesh": {
+        "map_channel_1": {"count": 82, "max": [1.35126, 1.85198, 1.39513], "min": [-0.851979, -0.395125, -0.851979]},
+        "material_ids": [[1, 12, 0, 0], [2, 0, 12, 0], [3, 0, 0, 8], [4, 0, 0, 8], [5, 0, 0, 12], [6, 0, 0, 12]],
+        "smoothing": {"flat": 0, "hard_edges": 28, "regions": 6}
+      },
       "eval_verts": 34,
       "frozen": false,
       "handle": 3,
@@ -1113,6 +1135,11 @@
           ]
         }
       ],
+      "eval_mesh": {
+        "map_channel_1": {"count": 98, "max": [1.75, 1, 2.5], "min": [0, 0, 0]},
+        "material_ids": [[1, 14, 0, 0], [2, 0, 14, 0], [3, 0, 0, 64]],
+        "smoothing": {"flat": 0, "hard_edges": 32, "regions": 3}
+      },
       "eval_verts": 48,
       "frozen": false,
       "handle": 4,
@@ -1341,6 +1368,11 @@
           ]
         }
       ],
+      "eval_mesh": {
+        "map_channel_1": {"count": 46, "max": [1.73978, 1.42316, 2.35707], "min": [-0.993007, -1.26797, 0.183728]},
+        "material_ids": [[1, 12, 0, 0], [2, 0, 12, 0], [3, 0, 0, 8], [4, 0, 0, 8], [5, 0, 0, 12], [6, 0, 0, 12]],
+        "smoothing": {"flat": 0, "hard_edges": 28, "regions": 6}
+      },
       "eval_verts": 34,
       "frozen": false,
       "handle": 5,
@@ -1737,6 +1769,11 @@
           ]
         }
       ],
+      "eval_mesh": {
+        "map_channel_1": {"count": 98, "max": [2, 1, 1], "min": [-1.19209e-07, 0, 1]},
+        "material_ids": [[2, 60, 60, 0]],
+        "smoothing": {"flat": 0, "hard_edges": 0, "regions": 1}
+      },
       "eval_verts": 62,
       "frozen": false,
       "handle": 6,
@@ -1965,6 +2002,11 @@
           ]
         }
       ],
+      "eval_mesh": {
+        "map_channel_1": {"count": 34, "max": [1, 0.75, 1.5], "min": [0, 0.25, -0.5]},
+        "material_ids": [[1, 12, 0, 0], [2, 0, 12, 0], [3, 0, 0, 8], [4, 0, 0, 8], [5, 0, 0, 12], [6, 0, 0, 12]],
+        "smoothing": {"flat": 0, "hard_edges": 28, "regions": 6}
+      },
       "eval_verts": 34,
       "frozen": false,
       "handle": 7,
@@ -2193,6 +2235,11 @@
           ]
         }
       ],
+      "eval_mesh": {
+        "map_channel_1": {"count": 34, "max": [0.25, 5.71429, 2.16667], "min": [-0.25, -5.71429, -1.16667]},
+        "material_ids": [[1, 12, 0, 0], [2, 0, 12, 0], [3, 0, 0, 8], [4, 0, 0, 8], [5, 0, 0, 12], [6, 0, 0, 12]],
+        "smoothing": {"flat": 0, "hard_edges": 28, "regions": 6}
+      },
       "eval_verts": 34,
       "frozen": false,
       "handle": 8,
@@ -2421,6 +2468,11 @@
           ]
         }
       ],
+      "eval_mesh": {
+        "map_channel_1": {"count": 34, "max": [0.984416, 1.08082, 0.32], "min": [0.546542, -0.273329, -0.08]},
+        "material_ids": [[1, 12, 0, 0], [2, 0, 12, 0], [3, 0, 0, 8], [4, 0, 0, 8], [5, 0, 0, 12], [6, 0, 0, 12]],
+        "smoothing": {"flat": 0, "hard_edges": 28, "regions": 6}
+      },
       "eval_verts": 34,
       "frozen": false,
       "handle": 9,
@@ -2493,6 +2545,11 @@
           ]
         }
       ],
+      "eval_mesh": {
+        "map_channel_1": {"count": 8, "max": [0.253541, 0.809313, 0.92], "min": [0.0965227, 0.196941, -0.08]},
+        "material_ids": [[1, 2, 0, 0], [2, 0, 2, 0], [3, 0, 0, 2], [4, 0, 0, 2], [5, 0, 0, 2], [6, 0, 0, 2]],
+        "smoothing": {"flat": 0, "hard_edges": 12, "regions": 6}
+      },
       "eval_verts": 8,
       "frozen": false,
       "handle": 10,
@@ -2565,6 +2622,11 @@
           ]
         }
       ],
+      "eval_mesh": {
+        "map_channel_1": {"count": 24, "max": [1, 1, 1], "min": [0, 0, 0]},
+        "material_ids": [[1, 2, 0, 0], [2, 0, 2, 0], [3, 0, 0, 8]],
+        "smoothing": {"flat": 0, "hard_edges": 12, "regions": 6}
+      },
       "eval_verts": 8,
       "frozen": false,
       "handle": 11,
@@ -3013,6 +3075,11 @@
           ]
         }
       ],
+      "eval_mesh": {
+        "map_channel_1": {"count": 34, "max": [1, 1, 1], "min": [0, 0, 0]},
+        "material_ids": [[1, 12, 0, 0], [2, 0, 12, 0], [3, 0, 0, 8], [4, 0, 0, 8], [5, 0, 0, 12], [6, 0, 0, 12]],
+        "smoothing": {"flat": 0, "hard_edges": 28, "regions": 6}
+      },
       "eval_verts": 34,
       "frozen": false,
       "handle": 12,
@@ -3241,6 +3308,11 @@
           ]
         }
       ],
+      "eval_mesh": {
+        "map_channel_1": {"count": 34, "max": [0.811543, 0.926208, 1.92209], "min": [0.188457, 0.0737918, 0.833333]},
+        "material_ids": [[1, 12, 0, 0], [2, 0, 12, 0], [3, 0, 0, 8], [4, 0, 0, 8], [5, 0, 0, 12], [6, 0, 0, 12]],
+        "smoothing": {"flat": 0, "hard_edges": 28, "regions": 6}
+      },
       "eval_verts": 34,
       "frozen": false,
       "handle": 13,
@@ -3469,6 +3541,11 @@
           ]
         }
       ],
+      "eval_mesh": {
+        "map_channel_1": {"count": 66, "max": [1, 1, 0], "min": [0, 0, 0]},
+        "material_ids": [[1, 12, 0, 0], [2, 0, 12, 0], [3, 0, 0, 8], [4, 0, 0, 8], [5, 0, 0, 12], [6, 0, 0, 12]],
+        "smoothing": {"flat": 0, "hard_edges": 28, "regions": 6}
+      },
       "eval_verts": 34,
       "frozen": false,
       "handle": 14,
@@ -3697,6 +3774,11 @@
           ]
         }
       ],
+      "eval_mesh": {
+        "map_channel_1": {"count": 40, "max": [1.25, 1, 1.83393], "min": [-0.25, 0, 0.499365]},
+        "material_ids": [[1, 12, 0, 0], [2, 0, 12, 0], [3, 0, 8, 0], [4, 0, 8, 0], [5, 0, 0, 12], [6, 0, 0, 12]],
+        "smoothing": {"flat": 0, "hard_edges": 28, "regions": 6}
+      },
       "eval_verts": 34,
       "frozen": false,
       "handle": 15,
@@ -3717,7 +3799,7 @@
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 300, 0]
     }
   ],
-  "oracle_version": 6,
+  "oracle_version": 10,
   "render": {"camera": null, "height": 480, "pixel_aspect": 1, "width": 640},
   "renderer": {"class_id": ["0x00000001", "0x00000000"], "class_name": "Default_Scanline_Renderer"},
   "time": 0,

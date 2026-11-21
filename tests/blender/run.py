@@ -17,21 +17,27 @@ hidden, renderable and frozen flags, world matrices (1e-4, in file units), world
 vertex and face counts, UV layers, sharp edges and flat faces, material indices, which objects share a mesh (the
 oracle's instances), outward normals as rendered (the inverse transpose of the world matrix times each face normal
 points away from the oracle's bounding box center, also on the mirrored object) and the class of each placeholder. The
-oracle has no map channels or smoothing groups: those expectations come from the fixture scripts (tools/fixtures/*.ms).
+oracle has no map channels or smoothing groups of a base mesh: those expectations come from the fixture scripts
+(tools/fixtures/*.ms).
 shapes: each shape node a curve object (3D, FREE handles) with the oracle's splines, point counts and cyclic flags,
 its points where 3ds Max has its knots, each segment's middle (mathutils.geometry.interpolate_bezier) where 3ds Max
 interpolates it (the straight segment included), the resolution from the steps, a bevel and faces only on the
 renderable FixtureLine.
 Converted modifiers (TurboSmooth, MeshSmooth, Shell, Symmetry): each object's Blender modifiers in 3ds Max's order with
 the description's settings and mirror empties, creases where a smoother separates by smoothing groups, and the
-evaluated mesh with 3ds Max's vertex and triangle counts and world box (stack_convert, stack_basic, modifier_pivot);
-stack_convert imported with Modifiers: Ignore gets none.
+evaluated mesh with 3ds Max's vertex and triangle counts, world box and shading (flat faces, smooth regions and hard
+edges, the oracle's eval_mesh.smoothing; SMOOTHING_DIFFERS pins Blender's where it differs: a Shell's rim, a weld);
+under a Solidify its triangles facing up, down and sideways in object space as 3ds Max's (stack_shell: Shells on
+one side of the original and inside out) (stack_convert, stack_shell, stack_basic, modifier_pivot; not FixtureOrder,
+whose seam 3ds Max leaves unwelded: EVAL_COUNT_DIFFERS); stack_convert imported with Modifiers: Ignore gets none.
 primitives (convert/primitives.py): each node a mesh with 3ds Max's vertex and triangle counts (eval_verts, eval_faces)
 and world box, its UV layer (none without Generate Mapping Coords), sharp edges, the unsmoothed GeoSphere flat, normals
 outward but for the Planes (up, or down for the one of negative width) and the Box of negative width (in, as 3ds Max
 makes it); the instance shares FixtureBox's mesh; the TurboSmooth over a Box evaluates to 3ds Max's counts.
 layers_flags: two layer collections, one hidden object, one with hide_render, the group head as the parent of its two
-members. modifier_pivot: a node with modifiers gets its base mesh (no bounding box check, the oracle's is after the
+members. layers_more: the hidden layer's collection excluded, hide_select on the frozen layer's, hide_render on the
+non-rendering layer's, the child layer's collection below its parent's (which holds no node), the non-ASCII layer
+name, only the nodes' own flags on objects, the hidden parent's child visible. modifier_pivot: a node with modifiers gets its base mesh (no bounding box check, the oracle's is after the
 modifiers), the report names the modifiers not applied, and the node whose pivot alone is rotated keeps its object
 in place. lookat: the nodes aimed by a Look At controller or a LookAt Constraint have 3ds Max's world matrices (above),
 the Target objects are empties; imported again with Keep Targets, each Look At a Track To can follow gets one aimed at
@@ -52,8 +58,8 @@ oracle's, and scene.camera the oracle's render camera (cameras: CamTarget, the l
 camera (lookat: FixtureCam); cameras holds eleven camera objects with a Camera each. Without a camera the scene's render
 size and camera stay as they were.
 Each fixture's import report is published (build.report) and must say nothing was left out; the one the
-operator published for vray_wrappers lists its three peeled wrappers by class. A changed layers_flags description
-checks a hidden, a frozen, a non-rendering and a nested layer, which no fixture has. A hand-made description with sheared local matrices (top-level and parented, hidden, a zero scale) checks that
+operator published for vray_wrappers lists its three peeled wrappers by class. A changed layers_more description
+checks a hidden parent layer, which no fixture has: its child layer is out of the view layer with it. A hand-made description with sheared local matrices (top-level and parented, hidden, a zero scale) checks that
 Blender's world matrices equal the products of the locals, through the helper empty for top-level ones. Material
 slots (build with convert.materials.assign): vray_wrappers' Multi/Sub-Object box with its faces set to IDs 1, 3
 and 7 lands them on the slots of FixtureSubOne, an empty one (ID 3 is switched off) and FixtureSubSeven; the same
@@ -107,13 +113,16 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
     "hierarchy": [],
     "instances": ["UVMap"],
     "layers_flags": [],
+    "layers_more": [],
     "lookat": [],  # boxes without Generate Mapping Coords
     "modifier_pivot": ["UVMap"],  # FixtureBent's UVW Map writes channel 1 (applied, the Bend above it is not)
     "multi_uv": ["UVMap", "UVChannel_2", "UVChannel_3"],
+    "pblock_animated": ["UVMap"],
     "primitives": {"FixtureBoxNoMap": []},  # else UVMap: Generate Mapping Coords
     "shapes": ["UVMap"],  # FixtureBox; the shapes are curves
     "stack_basic": ["UVMap"],  # FixtureTurbo's UVW Map writes channel 1; no other modifier is applied
     "stack_convert": ["UVMap"],  # the modifiers become Blender modifiers on the base meshes
+    "stack_shell": ["UVMap"],  # the Shells become Solidify on the base meshes (open boxes)
     "standard_physical": ["UVMap"],
     "saved_as_2017": ["UVMap"],
     "saved_as_2018": ["UVMap"],
@@ -140,6 +149,7 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
 SHARP_EDGES = {"editable_mesh": 8, "modifier_pivot": {"FixtureSmooth": 0, None: 24},
                "stack_basic": {"FixtureTurbo": 0, None: 12},
                "stack_convert": {"FixtureTurboOne": 0, "FixtureMeshSmooth": 0, "FixtureOrder": 0, None: 12},
+               "stack_shell": 8,  # boxes without their top: the 4 vertical and the 4 bottom edges
                # boxes of 3 x 2 x 2 segments: 28; the cylinder's rims 2 x 16; the sphere is smooth
                "uvwmap": {"FixtureUVWCyl": 32, "FixtureUVWSphere": 0, "FixtureUVWSharedB": 12, None: 28},
                # smooth spheres, the rims of a 10-sided cylinder
@@ -478,10 +488,23 @@ def run_fixture(path, modules):
         mirrored = [n.name for n in desc.nodes if n.mirrored]
         check("hierarchy: FixtureLeaf is the mirrored node", mirrored == ["FixtureLeaf"], str(mirrored))
     layer_names = [c.name for c in root.children] if root else []
-    expected = [la["name"] for la in oracle["layers"] if any(o["layer"] == la["name"] for o in nodes)]
-    check("%s: one collection per layer below the file's collection" % name,
-          root is not None and layer_names == expected and root.name in bpy.context.scene.collection.children,
-          "%s: %s" % (root and root.name, layer_names))
+    parent_of = {la["name"]: la["parent"] for la in oracle["layers"]}
+    kept = {o["layer"] for o in nodes}
+    for layer in list(kept):  # a parent layer is kept, nodes or not
+        while parent_of[layer] is not None:
+            layer = parent_of[layer]
+            kept.add(layer)
+    order = [la["name"] for la in oracle["layers"]]
+
+    def tree(col):
+        return [(c.name, tree(c)) for c in col.children]
+
+    def layer_tree(parent):  # Layer Manager order: every fixture makes a parent layer before its children
+        return [(la, layer_tree(la)) for la in order if la in kept and parent_of[la] == parent]
+    got = tree(root) if root else []
+    check("%s: one collection per layer below the file's collection, nested as the layers" % name,
+          root is not None and got == layer_tree(None) and root.name in bpy.context.scene.collection.children,
+          "%s: %s" % (root and root.name, got))
     if name == "layers_flags":
         check("layers_flags: two layer collections", layer_names == ["FixtureLayerA", "FixtureLayerB"])
         hidden = [ob.name for ob in obs if ob.hide_viewport and ob.hide_get(view_layer=view_layer)]
@@ -494,6 +517,8 @@ def run_fixture(path, modules):
               group.type == 'EMPTY' and members == ["FixtureGroupA", "FixtureGroupB"], "%s %s" % (group.type, members))
         excluded = [lc.name for lc in view_layer.layer_collection.children[name].children if lc.exclude]
         check("layers_flags: no layer excluded (none is hidden in 3ds Max)", excluded == [], str(excluded))
+    if name == "layers_more":
+        check_layers_more(root, obs, view_layer)
     bare = sorted(ob.name for ob in obs if ob.type == 'MESH' and not any(sl.material for sl in ob.material_slots))
     check("%s: a material on every mesh" % name, bare == [], str(bare))
     check_fixture_materials(name, plan, desc, obs)
@@ -745,6 +770,70 @@ def check_extruded(label, ob, node, o, meters, plan):
 # 3ds Max leaves the seam of FixtureOrder's shelled boxes unwelded (32 vertices before the TurboSmooth, 100 after);
 # Blender's Mirror welds it (84): the same surface, so only the box is compared there
 EVAL_COUNT_DIFFERS = {"FixtureOrder"}
+# Blender's evaluated (flat, regions, hard edges) where it is not 3ds Max's, pinned so that a change shows. 3ds Max
+# gives a Shell's rim smoothing groups of its own, hard against both surfaces (every stack_shell box: 11 regions, 24
+# hard edges); Blender's Solidify smooths the rim into both surfaces, until the rim is converted (maxdrop-em3.101).
+# FixtureSymmetryTurned: Blender's Mirror welds the corner 0.062 off the plane onto it, where 3ds Max slices beside
+# it: 3ds Max keeps a sliver of the side beyond the box's sharp vertical corner edge, smooth with its mirror copy;
+# in Blender that corner edge lands on the plane as the seam between the other side and its copy, a hard edge that
+# splits one more region (the vertex and triangle counts agree).
+SMOOTHING_DIFFERS = {"FixtureShellOut": (0, 3, 16), "FixtureShellIn": (0, 3, 16), "FixtureShellCrossed": (0, 3, 16),
+                     "FixtureShellNegative": (0, 3, 16), "FixtureShellRim": (0, 3, 16),
+                     "FixtureSymmetryTurned": (0, 7, 17)}
+FACING_TOLERANCE = 1e-4  # the oracle's: a winding normal's z within it faces sideways
+
+
+def _smoothing(mesh):
+    """How an evaluated mesh is shaded, as the oracle's eval_mesh.smoothing: (flat, regions, hard edges): the
+    triangles of flat faces; the smooth faces joined through the edges with exactly two faces, both smooth, not
+    sharp, counted; such edges marked sharp."""
+    n = len(mesh.polygons)
+    attr = mesh.attributes.get("sharp_face")
+    flat = [d.value for d in attr.data] if attr else [False] * n
+    attr = mesh.attributes.get("sharp_edge")
+    sharp = [d.value for d in attr.data] if attr else [False] * len(mesh.edges)
+    faces_of = collections.defaultdict(list)
+    for p in mesh.polygons:
+        for i in p.loop_indices:
+            faces_of[mesh.loops[i].edge_index].append(p.index)
+    parent = list(range(n))
+
+    def root(f):
+        while parent[f] != f:
+            parent[f] = parent[parent[f]]
+            f = parent[f]
+        return f
+
+    hard = 0
+    for e, fs in faces_of.items():
+        if len(fs) != 2 or flat[fs[0]] or flat[fs[1]]:
+            continue
+        if sharp[e]:
+            hard += 1
+        else:
+            a, b = root(fs[0]), root(fs[1])
+            if a != b:
+                parent[a] = b
+    return (sum(len(p.vertices) - 2 for p in mesh.polygons if flat[p.index]),
+            len({root(p.index) for p in mesh.polygons if not flat[p.index]}), hard)
+
+
+def _facing(mesh, mw, meters, object_transform):
+    """The evaluated triangles by the way they face in 3ds Max's object space, as the oracle's eval_mesh counts
+    them, summed over material IDs: [up, down, side]. The world vertices (file units) are taken back by the
+    inverse of the oracle's object transform (rows, row vectors); a face's triangles share its winding normal."""
+    t = object_transform
+    to_object = Matrix(((t[0], t[3], t[6], t[9]), (t[1], t[4], t[7], t[10]), (t[2], t[5], t[8], t[11]),
+                        (0.0, 0.0, 0.0, 1.0))).inverted()
+    pts = [to_object @ ((mw @ v.co) / meters) for v in mesh.vertices]
+    counts = [0, 0, 0]
+    for p in mesh.polygons:
+        v = [pts[i] for i in p.vertices]
+        for k in range(1, len(v) - 1):
+            nrm = (v[k] - v[0]).cross(v[k + 1] - v[0])
+            z = nrm.normalized().z if nrm.length > 1e-12 else 0.0
+            counts[0 if z > FACING_TOLERANCE else 1 if z < -FACING_TOLERANCE else 2] += 1
+    return counts
 
 
 def _setting_ok(got, want):
@@ -795,6 +884,9 @@ def check_converted(label, ob, node, o, meters, desc):
         world = [mw @ v.co for v in mesh.vertices]
         triangles = sum(len(p.vertices) - 2 for p in mesh.polygons)
         counts = (len(mesh.vertices), triangles)
+        smoothing = _smoothing(mesh)
+        facing = _facing(mesh, mw, meters, o["object_transform"]) if any(
+            c.kind == 'SOLIDIFY' for c in node.converted) else None
     finally:
         ev.to_mesh_clear()
     lo = [min(p[k] for p in world) / meters for k in range(3)]
@@ -811,6 +903,18 @@ def check_converted(label, ob, node, o, meters, desc):
         check(label + ": evaluated vertex and triangle counts = 3ds Max's", counts == (o["eval_verts"],
                                                                                        o["eval_faces"]),
               "%d, %d vs %s, %s" % (counts + (o["eval_verts"], o["eval_faces"])))
+        sm = o["eval_mesh"]["smoothing"]
+        want = (sm["flat"], sm["regions"], sm["hard_edges"])
+        if o["name"] in SMOOTHING_DIFFERS:
+            check(label + ": evaluated shading (flat, regions, hard edges) as pinned, 3ds Max's %s" % (want,),
+                  smoothing == SMOOTHING_DIFFERS[o["name"]] and smoothing != want, str(smoothing))
+        else:
+            check(label + ": evaluated shading (flat, regions, hard edges) = 3ds Max's", smoothing == want,
+                  "%s vs %s" % (smoothing, want))
+        if facing is not None:  # a Shell's side and facing (inside out or not)
+            want = [sum(h[k] for h in o["eval_mesh"]["material_ids"]) for k in (1, 2, 3)]
+            check(label + ": evaluated triangles facing up, down, sideways = 3ds Max's", facing == want,
+                  "%s vs %s" % (facing, want))
 
 
 def check_ignore_option(path, modules):
@@ -2286,6 +2390,76 @@ def check_light_note_on_failure(max_path):
     empty_scene()
 
 
+def check_reader_defect(first, second):
+    """A TypeError or KeyError of the reading (a reader defect, never raised on purpose) reports the file as not
+    imported, its type in the reason, instead of ending the operator: in a run of two files, synchronous and with the
+    reading in the worker thread, the other file is still imported; alone, the operator reports Nothing imported;
+    the pre-flight line says it is not readable."""
+    import contextlib
+    import io
+    from maxdrop import ops
+    from maxdrop.reader import assets
+    from maxdrop.reader import scene as reader_scene
+    name = os.path.basename(first)
+    reason = "a defect in MaxDrop's reader (TypeError: maxdrop test: reader defect), see the console"
+    original_table = assets.AssetTable.__dict__["from_file"]  # the classmethods themselves, put back as they were
+    original_scene = reader_scene.Scene.__dict__["from_file"]
+    calls = []
+
+    def failing_first(cls, cf):
+        calls.append(cf)
+        if len(calls) == 1:
+            raise TypeError("maxdrop test: reader defect")
+        return original_table.__func__(cls, cf)
+
+    def no_scene(cls, *args, **kwargs):
+        raise KeyError("maxdrop test")
+
+    try:
+        for threaded in (False, True):
+            label = "threaded" if threaded else "synchronous"
+            empty_scene()
+            del calls[:]
+            assets.AssetTable.from_file = classmethod(failing_first)
+            run = _cancel_run([first, second])
+            steps = run.steps(threaded=threaded)
+            console = io.StringIO()
+            with contextlib.redirect_stdout(console):
+                _advance(steps, lambda: False)
+            assets.AssetTable.from_file = original_table
+            printed = console.getvalue()
+            sys.stdout.write(printed)
+            check("reader defect: %s run, the traceback is in the console" % label,
+                  "MaxDrop: reading %s failed, a defect in MaxDrop (please report it with this traceback):" % name
+                  in printed and "Traceback (most recent call last)" in printed
+                  and "TypeError: maxdrop test: reader defect" in printed, printed[-500:])
+            check("reader defect: %s run, the file is not imported, the other one is" % label,
+                  ('WARNING', "Not imported: %s: %s" % (name, reason)) in run.lines and len(bpy.data.objects) > 0
+                  and len(calls) == 2,
+                  "%d objects, %d calls | %s" % (len(bpy.data.objects), len(calls), run.lines[-3:]))
+        empty_scene()
+        del calls[:]
+        assets.AssetTable.from_file = classmethod(failing_first)
+        try:
+            result, message = bpy.ops.import_scene.maxdrop(filepath=first), ""
+        except RuntimeError as e:  # bpy.ops raises with the message when the operator reports an error
+            result, message = {'CANCELLED'}, str(e)
+        assets.AssetTable.from_file = original_table
+        check("reader defect: one file, the operator reports Nothing imported with the reason",
+              result == {'CANCELLED'} and "Nothing imported. %s: %s" % (name, reason) in message
+              and not bpy.data.objects, "%s %r" % (result, message))
+        reader_scene.Scene.from_file = classmethod(no_scene)
+        line = ops._preflight(first)
+        reader_scene.Scene.from_file = original_scene
+        check("reader defect: the pre-flight line of a KeyError says the file is not readable",
+              line == "Not readable as a .max file (a defect in MaxDrop's reader (KeyError: 'maxdrop test'), see "
+                      "the console)", repr(line))
+    finally:
+        assets.AssetTable.from_file = original_table
+        reader_scene.Scene.from_file = original_scene
+        empty_scene()
+
+
 def check_asset_table_once(max_path):
     """One import of a file with lights and materials reads the file's asset table once (the scene description and
     the material conversion share it)."""
@@ -2556,37 +2730,53 @@ def check_wrapper_wiring(builder, cm, tx, srgb, data):
           "%s %s" % (mf, builder.issues()[-1:]))
 
 
-def check_layer_flags(modules):
-    """layers_flags with its description changed: FixtureLayerB hidden in 3ds Max, FixtureLayerA frozen and not
-    rendering, a child layer of FixtureLayerB holding FixtureHidden."""
+def check_layers_more(root, obs, view_layer):
+    """layers_more as 3ds Max saved it: the flags of a hidden, a frozen and a non-rendering layer go on their
+    collections, not on their objects; the child layer sits below its parent (which holds no node); a hidden parent
+    leaves its child visible."""
+    text = "FixtureLäyer中"
+    check("layers_more: the layer collections, the child layer below its parent",
+          [c.name for c in root.children] == ["0", "FixtureHiddenLayer", "FixtureFrozenLayer", "FixtureNoRenderLayer",
+                                              "FixtureParentLayer", text]
+          and [c.name for c in root.children["FixtureParentLayer"].children] == ["FixtureChildLayer"],
+          str([c.name for c in root.children]))
+    lcs = view_layer.layer_collection.children[root.name].children
+    excluded = [lc.name for lc in lcs if lc.exclude]
+    check("layers_more: the hidden layer excluded in the view layer", excluded == ["FixtureHiddenLayer"], str(excluded))
+    flags = {c.name: (c.hide_select, c.hide_render) for c in root.children_recursive}
+    want = {c: (c == "FixtureFrozenLayer", c == "FixtureNoRenderLayer") for c in flags}
+    check("layers_more: hide_select on the frozen layer's collection, hide_render on the non-rendering one's",
+          flags == want, str(flags))
+    visible = {ob.name for ob in view_layer.objects}
+    check("layers_more: only the hidden layer's object is out of the view layer",
+          {ob.name for ob in obs} - visible == {"FixtureOnHiddenLayer"}, str(sorted(visible)))
+    own = {ob.name: (ob.hide_get(view_layer=view_layer), ob.hide_select, ob.hide_render) for ob in obs
+           if ob.name in visible}
+    check("layers_more: only the nodes' own flags on objects (FixtureHiddenParent hidden, FixtureFrozen frozen)",
+          {k: v for k, v in own.items() if any(v)} == {"FixtureHiddenParent": (True, False, False),
+                                                       "FixtureFrozen": (False, True, False)}, str(own))
+    child = bpy.data.objects["FixtureVisibleChild"]
+    check("layers_more: the hidden parent's child is visible, its child in Blender",
+          child.parent is bpy.data.objects["FixtureHiddenParent"] and child.visible_get(view_layer=view_layer))
+
+
+def check_hidden_parent_layer(modules):
+    """layers_more with its description changed: FixtureParentLayer hidden in 3ds Max, so its child layer
+    (FixtureChildLayer, holding FixtureNested) is out of the view layer with it. No fixture has a hidden parent
+    layer."""
     convert_scene = modules[0]
     empty_scene()
-    desc = convert_scene.read(os.path.join(ROOT, "tests", "fixtures", "layers_flags.max"))
-    a, b = desc.layers
-    b.hidden, a.frozen, a.renderable = True, True, False
-    child = convert_scene.LayerDescription(-1, "FixtureChildLayer", parent=b.index)
-    desc.layers.append(child)
-    moved = next(n for n in desc.nodes if n.name == "FixtureHidden")
-    moved.layer = child.index
-    head = next(n for n in desc.nodes if n.name == "FixtureGroup")
-    head.hidden = True  # hiding a parent in 3ds Max leaves its children visible
-    cols, _built, view_layer = build_scene(desc, "layer_flags", modules)
-    members = {ob.name: ob for ob in bpy.data.objects["FixtureGroup"].children}
-    placed = {name: tuple(round(v / desc.meters, 4) for v in ob.matrix_world.translation)
-              for name, ob in members.items()}
-    check("hidden parent: its visible children are placed by Blender",
-          placed == {"FixtureGroupA": (0.0, 30.0, 0.0), "FixtureGroupB": (20.0, 30.0, 0.0)}
-          and not any(ob.hide_get(view_layer=view_layer) for ob in members.values()), str(placed))
-    lcs = view_layer.layer_collection.children["layer_flags"].children
-    check("hidden layer: excluded in the view layer", lcs[b.name].exclude and not lcs[a.name].exclude)
-    check("hidden layer: its child layer is nested below it",
-          [c.name for c in cols.layers[b.index].children] == ["FixtureChildLayer"])
+    desc = convert_scene.read(os.path.join(ROOT, "tests", "fixtures", "layers_more.max"))
+    by_name = {la.name: la for la in desc.layers}
+    parent, child = by_name["FixtureParentLayer"], by_name["FixtureChildLayer"]
+    parent.hidden = True
+    cols, _built, view_layer = build_scene(desc, "hidden_parent_layer", modules)
+    lcs = view_layer.layer_collection.children["hidden_parent_layer"].children
+    check("hidden parent layer: excluded in the view layer, its child layer nested below it",
+          lcs[parent.name].exclude and [c.name for c in cols.layers[parent.index].children] == [child.name])
     visible = {ob.name for ob in view_layer.objects}
-    check("hidden layer: its objects and its child layer's are out of the view layer",
-          not visible & {"FixtureHidden", "FixtureNoRender"} and "FixtureVisible" in visible, str(sorted(visible)))
-    col_a = cols.layers[a.index]
-    check("frozen, non-rendering layer: hide_select and hide_render on its collection",
-          col_a.hide_select and col_a.hide_render and not cols.layers[b.index].hide_render)
+    check("hidden parent layer: its child layer's object is out of the view layer",
+          "FixtureNested" not in visible and "FixtureOnTextLayer" in visible, str(sorted(visible)))
 
 
 def _local(a, t):
@@ -2762,7 +2952,7 @@ def main():
             check("%s: no exception" % os.path.basename(path), False)
     if not argv:
         try:
-            check_layer_flags(modules)
+            check_hidden_parent_layer(modules)
         except Exception:
             traceback.print_exc()
             check("layer flags: no exception", False)
@@ -2791,6 +2981,9 @@ def main():
                                      os.path.join(ROOT, "tests", "fixtures", "vray_maps.max"))),
                                  ("light note on failure", lambda: check_light_note_on_failure(
                                      os.path.join(ROOT, "tests", "fixtures", "vray_lights.max"))),
+                                 ("reader defect", lambda: check_reader_defect(
+                                     os.path.join(ROOT, "tests", "fixtures", "primitives.max"),
+                                     os.path.join(ROOT, "tests", "fixtures", "multi_uv.max"))),
                                  ("asset table once", lambda: check_asset_table_once(
                                      os.path.join(ROOT, "tests", "fixtures", "vray_lights.max"))),
                                  ("benchmark", lambda: _bench().run(check))):
