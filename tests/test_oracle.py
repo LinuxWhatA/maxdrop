@@ -21,9 +21,10 @@ FIXTURE_DIR = os.path.join(ROOT, "tests", "fixtures")
 TOP_KEYS = ["file", "file_version", "layers", "material_graph", "materials", "max_version", "node_count", "nodes",
             "oracle_version", "render", "renderer", "time", "units"]
 NODE_KEYS = ["base_class_id", "base_class_name", "base_faces", "base_superclass", "base_verts", "bbox_max",
-             "bbox_min", "camera", "eval_faces", "eval_maps", "eval_mesh", "eval_verts", "frozen", "handle", "hidden",
-             "index", "instances", "layer", "material", "modifiers", "name", "object_transform", "offset_pos",
-             "offset_rot", "offset_scale", "parent", "renderable", "shape", "transform"]
+             "bbox_min", "camera", "cast_shadows", "eval_faces", "eval_maps", "eval_mesh", "eval_verts", "frozen",
+             "handle", "hidden", "index", "instances", "layer", "material", "modifiers", "name", "object_transform",
+             "offset_pos", "offset_rot", "offset_scale", "parent", "receive_shadows", "renderable", "shape",
+             "transform"]
 MODIFIER_KEYS = ["class_id", "class_name", "context_bbox_max", "context_bbox_min", "context_tm", "enabled",
                  "enabled_in_renders", "enabled_in_views", "name"]
 LAYER_KEYS = ["frozen", "hidden", "name", "parent", "renderable"]
@@ -31,7 +32,7 @@ CAMERA_KEYS = ["fov", "hither", "manual_clip", "ortho", "tdist", "yon"]
 RENDER_KEYS = ["camera", "height", "pixel_aspect", "width"]
 SHAPE_KEYS = ["adaptive", "angle", "display_render_mesh", "length", "optimize", "rectangular", "renderable", "sides",
               "splines", "steps", "thickness", "width"]
-KNOT_KEYS = ["in", "mid", "out", "pos", "segment", "type"]
+KNOT_KEYS = ["in", "material", "mid", "out", "pos", "segment", "type"]
 KNOT_TYPES = ("corner", "smooth", "bezier", "bezierCorner")
 GRAPH_KEYS = ["blocks", "class_id", "class_name", "index", "name", "parts", "subs", "superclass"]
 BLOCK_KEYS = ["block_id", "controllers", "kind", "params", "ref"]
@@ -121,7 +122,7 @@ class OracleFiles(unittest.TestCase):
             with self.subTest(name):
                 o = _oracle(name)
                 self.assertEqual(list(o), TOP_KEYS)
-                self.assertEqual(o["oracle_version"], 10)
+                self.assertEqual(o["oracle_version"], 13)
                 self.assertEqual(list(o["render"]), RENDER_KEYS)
                 self.assertTrue(o["render"]["width"] > 0 and o["render"]["height"] > 0)
                 self.assertEqual(o["file"], name + ".max")
@@ -158,7 +159,8 @@ class OracleFiles(unittest.TestCase):
                     made = bool(n["modifiers"]) and n["eval_faces"] is not None
                     self.assertEqual(n["eval_mesh"] is not None, made, n["name"])
                     if n["eval_mesh"] is not None:
-                        self._check_eval_mesh(n["eval_mesh"], n["eval_faces"])
+                        extruded = any(m["class_name"] == "Extrude" for m in n["modifiers"])
+                        self._check_eval_mesh(n["eval_mesh"], n["eval_faces"], extruded)
                     self.assertEqual(n["index"], i)
                     self.assertEqual(len(n["transform"]), 12)
                     self.assertEqual(len(n["object_transform"]), 12)
@@ -190,6 +192,9 @@ class OracleFiles(unittest.TestCase):
                 self.assertEqual(knot["segment"] is None, last)
                 self.assertEqual(knot["mid"] is None, last)
                 self.assertIn(knot["segment"], (None, "curve", "line"))
+                # the segment's material ID, 1-based as 3ds Max shows it
+                self.assertEqual(knot["material"] is None, last)
+                self.assertTrue(last or (type(knot["material"]) is int and knot["material"] >= 1), knot["material"])
 
     def _check_maps(self, maps, faces):
         """Per channel a UVW Map writes, ascending: per triangle corner position, normal and map vertex."""
@@ -199,9 +204,9 @@ class OracleFiles(unittest.TestCase):
             self.assertEqual(len(m["corners"]), 3 * faces)
             self.assertTrue(all(len(c) == 9 and all(isinstance(v, (int, float)) for v in c) for c in m["corners"]))
 
-    def _check_eval_mesh(self, mesh, faces):
-        """Per material ID, ascending, the triangles facing up, down and sideways; map channel 1's count and range;
-        the shading by smoothing groups."""
+    def _check_eval_mesh(self, mesh, faces, extruded):
+        """Per material ID, ascending, the triangles facing up, down and sideways; map channel 1's count and range,
+        and under an Extrude its corners; the shading by smoothing groups."""
         self.assertEqual(list(mesh), ["map_channel_1", "material_ids", "smoothing"])
         sm = mesh["smoothing"]  # flat triangles, hard edges, smooth regions of the smoothed triangles
         self.assertEqual(list(sm), ["flat", "hard_edges", "regions"])
@@ -220,8 +225,16 @@ class OracleFiles(unittest.TestCase):
         self.assertEqual(sum(sum(h[1:]) for h in hist), faces)
         m = mesh["map_channel_1"]
         if m is not None:
-            self.assertEqual(list(m), ["count", "max", "min"])
+            self.assertEqual(list(m), ["corners", "count", "max", "min"])
             self.assertGreaterEqual(m["count"], 0)
+            self.assertEqual(m["corners"] is not None, extruded)
+            if m["corners"] is not None:  # per triangle corner: object-space position, face normal, map vertex
+                self.assertEqual(len(m["corners"]), 3 * faces)
+                self.assertTrue(all(len(c) == 9 and all(isinstance(v, (int, float)) for v in c)
+                                    for c in m["corners"]))
+                for c in m["corners"]:  # a unit normal, or none for a degenerate triangle
+                    length = sum(x * x for x in c[3:6]) ** 0.5
+                    self.assertTrue(abs(length - 1) < 1e-4 or c[3:6] == [0, 0, 0], c)
             if m["min"] is None:  # no face uses a map vertex: no range
                 self.assertIsNone(m["max"])
             else:
@@ -452,10 +465,31 @@ class OracleFiles(unittest.TestCase):
         self.assertEqual(flags["FixtureHidden"][:2], (True, True))
         self.assertEqual(flags["FixtureNoRender"][:2], (False, False))
         self.assertEqual(flags["FixtureVisible"][:2], (False, True))
+        shadows = {n["name"]: (n["cast_shadows"], n["receive_shadows"]) for n in o["nodes"]}
+        self.assertEqual({k: v for k, v in shadows.items() if v != (True, True)},
+                         {"FixtureNoCastShadow": (False, True), "FixtureNoReceiveShadow": (True, False)})
         self.assertEqual({layer["name"] for layer in o["layers"]}, {"0", "FixtureLayerA", "FixtureLayerB"})
         head = next(n for n in o["nodes"] if n["name"] == "FixtureGroup")
         self.assertEqual(sorted(n["name"] for n in o["nodes"] if n["parent"] == head["handle"]),
                          ["FixtureGroupA", "FixtureGroupB"])
+
+    def test_layers_nested(self):
+        """MAXScript answers a parent layer's hidden and frozen for every layer below it (the file keeps the bit on
+        the parent only: test_scene); the nodes' own flags stay off."""
+        o = _oracle("layers_nested")
+        self.assertEqual({la["name"]: (la["hidden"], la["frozen"], la["parent"]) for la in o["layers"]},
+                         {"0": (False, False, None), "FixtureHiddenParentLayer": (True, False, None),
+                          "FixtureHiddenChildLayer": (True, False, "FixtureHiddenParentLayer"),
+                          "FixtureFrozenParentLayer": (False, True, None),
+                          "FixtureFrozenChildLayer": (False, True, "FixtureFrozenParentLayer"),
+                          "FixtureTopLayer": (True, False, None),
+                          "FixtureMiddleLayer": (True, False, "FixtureTopLayer"),
+                          "FixtureBottomLayer": (True, False, "FixtureMiddleLayer")})
+        self.assertEqual({n["name"]: (n["hidden"], n["frozen"], n["layer"]) for n in o["nodes"]},
+                         {"FixtureUnderHiddenParent": (False, False, "FixtureHiddenChildLayer"),
+                          "FixtureUnderFrozenParent": (False, False, "FixtureFrozenChildLayer"),
+                          "FixtureDeepNested": (False, False, "FixtureBottomLayer"),
+                          "FixtureControl": (False, False, "0")})
 
     def test_no_private_strings(self):
         for path in self.oracles:

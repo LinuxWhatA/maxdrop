@@ -562,7 +562,7 @@
     {"class_id": ["0x00000200", "0x00000000"], "class_name": "Multimaterial", "index": 2, "name": "FixtureCurveMulti", "sub_count": 2}
   ],
   "max_version": [22000, 2020],
-  "node_count": 16,
+  "node_count": 18,
   "nodes": [
     {
       "base_class_id": ["0x00001050", "0x00000000"],
@@ -573,6 +573,7 @@
       "bbox_max": [11.2882, 10, 0],
       "bbox_min": [-11.2882, -10, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": null,
       "eval_maps": null,
       "eval_mesh": null,
@@ -591,6 +592,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": {
         "adaptive": false,
@@ -605,18 +607,18 @@
           {
             "closed": true,
             "knots": [
-              {"in": [10.6511, -1.55179, 0], "mid": [11.2086, 0, 0], "out": [11.2882, -0.448214, 0], "pos": [10.9697, -1, 0], "segment": "curve", "type": "bezier"},
-              {"in": [11.2882, 0.448214, 0], "mid": [8.66025, 5, 0], "out": [10.6511, 1.55179, 0], "pos": [10.9697, 1, 0], "segment": "curve", "type": "bezier"},
-              {"in": [6.66943, 8.44821, 0], "mid": [5.60429, 9.70692, 0], "out": [6.03228, 9.55179, 0], "pos": [6.35085, 9, 0], "segment": "curve", "type": "bezier"},
-              {"in": [5.25595, 10, 0], "mid": [-4.76837e-07, 10, 0], "out": [3.98165, 10, 0], "pos": [4.6188, 10, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-3.98166, 10, 0], "mid": [-5.60429, 9.70692, 0], "out": [-5.25595, 10, 0], "pos": [-4.6188, 10, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-6.03228, 9.55179, 0], "mid": [-8.66025, 5, 0], "out": [-6.66943, 8.44821, 0], "pos": [-6.35085, 9, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-10.6511, 1.55179, 0], "mid": [-11.2086, -1.01328e-06, 0], "out": [-11.2882, 0.448213, 0], "pos": [-10.9697, 0.999999, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-11.2882, -0.448215, 0], "mid": [-8.66025, -5, 0], "out": [-10.6511, -1.55179, 0], "pos": [-10.9697, -1, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-6.66943, -8.44821, 0], "mid": [-5.60429, -9.70692, 0], "out": [-6.03228, -9.55179, 0], "pos": [-6.35085, -9, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-5.25595, -10, 0], "mid": [2.86102e-06, -10, 0], "out": [-3.98165, -10, 0], "pos": [-4.6188, -10, 0], "segment": "curve", "type": "bezier"},
-              {"in": [3.98166, -10, 0], "mid": [5.6043, -9.70692, 0], "out": [5.25595, -10, 0], "pos": [4.61881, -10, 0], "segment": "curve", "type": "bezier"},
-              {"in": [6.03228, -9.55178, 0], "mid": [8.66026, -5, 0], "out": [6.66943, -8.44821, 0], "pos": [6.35086, -9, 0], "segment": "curve", "type": "bezier"}
+              {"in": [10.6511, -1.55179, 0], "material": 1, "mid": [11.2086, 0, 0], "out": [11.2882, -0.448214, 0], "pos": [10.9697, -1, 0], "segment": "curve", "type": "bezier"},
+              {"in": [11.2882, 0.448214, 0], "material": 1, "mid": [8.66025, 5, 0], "out": [10.6511, 1.55179, 0], "pos": [10.9697, 1, 0], "segment": "curve", "type": "bezier"},
+              {"in": [6.66943, 8.44821, 0], "material": 1, "mid": [5.60429, 9.70692, 0], "out": [6.03228, 9.55179, 0], "pos": [6.35085, 9, 0], "segment": "curve", "type": "bezier"},
+              {"in": [5.25595, 10, 0], "material": 1, "mid": [-4.76837e-07, 10, 0], "out": [3.98165, 10, 0], "pos": [4.6188, 10, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-3.98166, 10, 0], "material": 1, "mid": [-5.60429, 9.70692, 0], "out": [-5.25595, 10, 0], "pos": [-4.6188, 10, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-6.03228, 9.55179, 0], "material": 1, "mid": [-8.66025, 5, 0], "out": [-6.66943, 8.44821, 0], "pos": [-6.35085, 9, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-10.6511, 1.55179, 0], "material": 1, "mid": [-11.2086, -1.01328e-06, 0], "out": [-11.2882, 0.448213, 0], "pos": [-10.9697, 0.999999, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-11.2882, -0.448215, 0], "material": 1, "mid": [-8.66025, -5, 0], "out": [-10.6511, -1.55179, 0], "pos": [-10.9697, -1, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-6.66943, -8.44821, 0], "material": 1, "mid": [-5.60429, -9.70692, 0], "out": [-6.03228, -9.55179, 0], "pos": [-6.35085, -9, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-5.25595, -10, 0], "material": 1, "mid": [2.86102e-06, -10, 0], "out": [-3.98165, -10, 0], "pos": [-4.6188, -10, 0], "segment": "curve", "type": "bezier"},
+              {"in": [3.98166, -10, 0], "material": 1, "mid": [5.6043, -9.70692, 0], "out": [5.25595, -10, 0], "pos": [4.61881, -10, 0], "segment": "curve", "type": "bezier"},
+              {"in": [6.03228, -9.55178, 0], "material": 1, "mid": [8.66026, -5, 0], "out": [6.66943, -8.44821, 0], "pos": [6.35086, -9, 0], "segment": "curve", "type": "bezier"}
             ]
           }
         ],
@@ -635,6 +637,7 @@
       "bbox_max": [48.9915, 8.07801, 0],
       "bbox_min": [35, -8.07801, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": null,
       "eval_maps": null,
       "eval_mesh": null,
@@ -653,6 +656,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": {
         "adaptive": false,
@@ -667,12 +671,12 @@
           {
             "closed": true,
             "knots": [
-              {"in": [6.50848, -2.01583, 0], "mid": [8.68114, 0, 0], "out": [8.99152, -0.582247, 0], "pos": [7.75, -1.29904, 0], "segment": "curve", "type": "bezier"},
-              {"in": [8.99152, 0.582247, 0], "mid": [2.5, 4.33013, 0], "out": [6.50848, 2.01583, 0], "pos": [7.75, 1.29904, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-1.50848, 6.64442, 0], "mid": [-4.34057, 7.51809, 0], "out": [-3.99152, 8.07801, 0], "pos": [-2.75, 7.36122, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-5, 7.49576, 0], "mid": [-5, -5.36442e-07, 0], "out": [-5, 4.62859, 0], "pos": [-5, 6.06218, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-5, -4.6286, 0], "mid": [-4.34057, -7.51809, 0], "out": [-5, -7.49576, 0], "pos": [-5, -6.06218, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-3.99152, -8.07801, 0], "mid": [2.5, -4.33013, 0], "out": [-1.50848, -6.64442, 0], "pos": [-2.75, -7.36122, 0], "segment": "curve", "type": "bezier"}
+              {"in": [6.50848, -2.01583, 0], "material": 1, "mid": [8.68114, 0, 0], "out": [8.99152, -0.582247, 0], "pos": [7.75, -1.29904, 0], "segment": "curve", "type": "bezier"},
+              {"in": [8.99152, 0.582247, 0], "material": 1, "mid": [2.5, 4.33013, 0], "out": [6.50848, 2.01583, 0], "pos": [7.75, 1.29904, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-1.50848, 6.64442, 0], "material": 1, "mid": [-4.34057, 7.51809, 0], "out": [-3.99152, 8.07801, 0], "pos": [-2.75, 7.36122, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-5, 7.49576, 0], "material": 1, "mid": [-5, -5.36442e-07, 0], "out": [-5, 4.62859, 0], "pos": [-5, 6.06218, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-5, -4.6286, 0], "material": 1, "mid": [-4.34057, -7.51809, 0], "out": [-5, -7.49576, 0], "pos": [-5, -6.06218, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-3.99152, -8.07801, 0], "material": 1, "mid": [2.5, -4.33013, 0], "out": [-1.50848, -6.64442, 0], "pos": [-2.75, -7.36122, 0], "segment": "curve", "type": "bezier"}
             ]
           }
         ],
@@ -691,6 +695,7 @@
       "bbox_max": [92.3607, 13.4099, 0],
       "bbox_min": [66.8536, -13.4099, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": null,
       "eval_maps": null,
       "eval_mesh": null,
@@ -709,6 +714,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": {
         "adaptive": false,
@@ -723,11 +729,11 @@
           {
             "closed": true,
             "knots": [
-              {"in": [12.3607, -5.35303, 0], "mid": [9.99931, 7.26492, 0], "out": [12.3607, 5.35303, 0], "pos": [12.3607, 0, 0], "segment": "curve", "type": "bezier"},
-              {"in": [8.9107, 10.1015, 0], "mid": [-3.8194, 11.7549, 0], "out": [-1.27138, 13.4099, 0], "pos": [3.81966, 11.7557, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-6.85357, 11.5961, 0], "mid": [-12.3598, -1.19209e-06, 0], "out": [-13.1464, 2.93473, 0], "pos": [-10, 7.26542, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-13.1464, -2.93473, 0], "mid": [-3.8194, -11.7549, 0], "out": [-6.85356, -11.5961, 0], "pos": [-10, -7.26543, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-1.27138, -13.4099, 0], "mid": [9.99931, -7.26492, 0], "out": [8.9107, -10.1015, 0], "pos": [3.81966, -11.7557, 0], "segment": "curve", "type": "bezier"}
+              {"in": [12.3607, -5.35303, 0], "material": 1, "mid": [9.99931, 7.26492, 0], "out": [12.3607, 5.35303, 0], "pos": [12.3607, 0, 0], "segment": "curve", "type": "bezier"},
+              {"in": [8.9107, 10.1015, 0], "material": 1, "mid": [-3.8194, 11.7549, 0], "out": [-1.27138, 13.4099, 0], "pos": [3.81966, 11.7557, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-6.85357, 11.5961, 0], "material": 1, "mid": [-12.3598, -1.19209e-06, 0], "out": [-13.1464, 2.93473, 0], "pos": [-10, 7.26542, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-13.1464, -2.93473, 0], "material": 1, "mid": [-3.8194, -11.7549, 0], "out": [-6.85356, -11.5961, 0], "pos": [-10, -7.26543, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-1.27138, -13.4099, 0], "material": 1, "mid": [9.99931, -7.26492, 0], "out": [8.9107, -10.1015, 0], "pos": [3.81966, -11.7557, 0], "segment": "curve", "type": "bezier"}
             ]
           }
         ],
@@ -746,6 +752,7 @@
       "bbox_max": [172.918, 32.9184, 0],
       "bbox_min": [107.082, -32.9184, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": null,
       "eval_maps": null,
       "eval_mesh": null,
@@ -764,6 +771,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": {
         "adaptive": false,
@@ -778,14 +786,14 @@
           {
             "closed": true,
             "knots": [
-              {"in": [-18.7762, -32.9184, 0], "mid": [1.70779, -2.38419e-07, 0], "out": [4.63408, -9.50805, 0], "pos": [-7.07108, -21.2132, 0], "segment": "curve", "type": "bezier"},
-              {"in": [4.63408, 9.50805, 0], "mid": [7.07108, 7.07107, 0], "out": [-18.7762, 32.9184, 0], "pos": [-7.07108, 21.2132, 0], "segment": "curve", "type": "bezier"},
-              {"in": [32.9184, -18.7762, 0], "mid": [0, 1.7078, 0], "out": [9.50806, 4.63408, 0], "pos": [21.2132, -7.07107, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-9.50806, 4.63408, 0], "mid": [-7.07108, 7.07107, 0], "out": [-32.9184, -18.7762, 0], "pos": [-21.2132, -7.07107, 0], "segment": "curve", "type": "bezier"},
-              {"in": [18.7762, 32.9184, 0], "mid": [-1.70779, -7.15256e-07, 0], "out": [-4.63409, 9.50805, 0], "pos": [7.07106, 21.2132, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-4.63408, -9.50805, 0], "mid": [-7.07108, -7.07107, 0], "out": [18.7762, -32.9184, 0], "pos": [7.07108, -21.2132, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-32.9184, 18.7762, 0], "mid": [0, -1.7078, 0], "out": [-9.50806, -4.63408, 0], "pos": [-21.2132, 7.07107, 0], "segment": "curve", "type": "bezier"},
-              {"in": [9.50806, -4.63409, 0], "mid": [7.07108, -7.07107, 0], "out": [32.9184, 18.7762, 0], "pos": [21.2132, 7.07107, 0], "segment": "curve", "type": "bezier"}
+              {"in": [-18.7762, -32.9184, 0], "material": 1, "mid": [1.70779, -2.38419e-07, 0], "out": [4.63408, -9.50805, 0], "pos": [-7.07108, -21.2132, 0], "segment": "curve", "type": "bezier"},
+              {"in": [4.63408, 9.50805, 0], "material": 1, "mid": [7.07108, 7.07107, 0], "out": [-18.7762, 32.9184, 0], "pos": [-7.07108, 21.2132, 0], "segment": "curve", "type": "bezier"},
+              {"in": [32.9184, -18.7762, 0], "material": 1, "mid": [0, 1.7078, 0], "out": [9.50806, 4.63408, 0], "pos": [21.2132, -7.07107, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-9.50806, 4.63408, 0], "material": 1, "mid": [-7.07108, 7.07107, 0], "out": [-32.9184, -18.7762, 0], "pos": [-21.2132, -7.07107, 0], "segment": "curve", "type": "bezier"},
+              {"in": [18.7762, 32.9184, 0], "material": 1, "mid": [-1.70779, -7.15256e-07, 0], "out": [-4.63409, 9.50805, 0], "pos": [7.07106, 21.2132, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-4.63408, -9.50805, 0], "material": 1, "mid": [-7.07108, -7.07107, 0], "out": [18.7762, -32.9184, 0], "pos": [7.07108, -21.2132, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-32.9184, 18.7762, 0], "material": 1, "mid": [0, -1.7078, 0], "out": [-9.50806, -4.63408, 0], "pos": [-21.2132, 7.07107, 0], "segment": "curve", "type": "bezier"},
+              {"in": [9.50806, -4.63409, 0], "material": 1, "mid": [7.07108, -7.07107, 0], "out": [32.9184, 18.7762, 0], "pos": [21.2132, 7.07107, 0], "segment": "curve", "type": "bezier"}
             ]
           }
         ],
@@ -804,6 +812,7 @@
       "bbox_max": [23, -47, 0],
       "bbox_min": [-23, -73, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": null,
       "eval_maps": null,
       "eval_mesh": null,
@@ -822,6 +831,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": {
         "adaptive": false,
@@ -836,19 +846,19 @@
           {
             "closed": true,
             "knots": [
-              {"in": [20, -5.51786, 0], "mid": [14.1384, 7.0692, 0], "out": [20, 5.51786, 0], "pos": [20, 0, 0], "segment": "curve", "type": "bezier"},
-              {"in": [11.0357, 10, 0], "mid": [-14.1384, 7.0692, 0], "out": [-11.0357, 10, 0], "pos": [-8.74228e-07, 10, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-20, 5.51786, 0], "mid": [-14.1384, -7.0692, 0], "out": [-20, -5.51786, 0], "pos": [-20, 0, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-11.0357, -10, 0], "mid": [14.1384, -7.0692, 0], "out": [11.0357, -10, 0], "pos": [2.38498e-07, -10, 0], "segment": "curve", "type": "bezier"}
+              {"in": [20, -5.51786, 0], "material": 1, "mid": [14.1384, 7.0692, 0], "out": [20, 5.51786, 0], "pos": [20, 0, 0], "segment": "curve", "type": "bezier"},
+              {"in": [11.0357, 10, 0], "material": 1, "mid": [-14.1384, 7.0692, 0], "out": [-11.0357, 10, 0], "pos": [-8.74228e-07, 10, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-20, 5.51786, 0], "material": 1, "mid": [-14.1384, -7.0692, 0], "out": [-20, -5.51786, 0], "pos": [-20, 0, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-11.0357, -10, 0], "material": 1, "mid": [14.1384, -7.0692, 0], "out": [11.0357, -10, 0], "pos": [2.38498e-07, -10, 0], "segment": "curve", "type": "bezier"}
             ]
           },
           {
             "closed": true,
             "knots": [
-              {"in": [23, -7.17322, 0], "mid": [16.2592, 9.18996, 0], "out": [23, 7.17322, 0], "pos": [23, 0, 0], "segment": "curve", "type": "bezier"},
-              {"in": [12.6911, 13, 0], "mid": [-16.2592, 9.18996, 0], "out": [-12.6911, 13, 0], "pos": [-1.00536e-06, 13, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-23, 7.17322, 0], "mid": [-16.2592, -9.18996, 0], "out": [-23, -7.17322, 0], "pos": [-23, 0, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-12.6911, -13, 0], "mid": [16.2592, -9.18996, 0], "out": [12.6911, -13, 0], "pos": [2.74272e-07, -13, 0], "segment": "curve", "type": "bezier"}
+              {"in": [23, -7.17322, 0], "material": 1, "mid": [16.2592, 9.18996, 0], "out": [23, 7.17322, 0], "pos": [23, 0, 0], "segment": "curve", "type": "bezier"},
+              {"in": [12.6911, 13, 0], "material": 1, "mid": [-16.2592, 9.18996, 0], "out": [-12.6911, 13, 0], "pos": [-1.00536e-06, 13, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-23, 7.17322, 0], "material": 1, "mid": [-16.2592, -9.18996, 0], "out": [-23, -7.17322, 0], "pos": [-23, 0, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-12.6911, -13, 0], "material": 1, "mid": [16.2592, -9.18996, 0], "out": [12.6911, -13, 0], "pos": [2.74272e-07, -13, 0], "segment": "curve", "type": "bezier"}
             ]
           }
         ],
@@ -867,6 +877,7 @@
       "bbox_max": [80, -50, 0],
       "bbox_min": [40, -70, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": null,
       "eval_maps": null,
       "eval_mesh": null,
@@ -885,6 +896,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": {
         "adaptive": false,
@@ -899,19 +911,19 @@
           {
             "closed": true,
             "knots": [
-              {"in": [20, -5.51786, 0], "mid": [14.1384, 7.0692, 0], "out": [20, 5.51786, 0], "pos": [20, 0, 0], "segment": "curve", "type": "bezier"},
-              {"in": [11.0357, 10, 0], "mid": [-14.1384, 7.0692, 0], "out": [-11.0357, 10, 0], "pos": [0, 10, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-20, 5.51786, 0], "mid": [-14.1384, -7.0692, 0], "out": [-20, -5.51786, 0], "pos": [-20, 0, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-11.0357, -10, 0], "mid": [14.1384, -7.0692, 0], "out": [11.0357, -10, 0], "pos": [0, -10, 0], "segment": "curve", "type": "bezier"}
+              {"in": [20, -5.51786, 0], "material": 1, "mid": [14.1384, 7.0692, 0], "out": [20, 5.51786, 0], "pos": [20, 0, 0], "segment": "curve", "type": "bezier"},
+              {"in": [11.0357, 10, 0], "material": 1, "mid": [-14.1384, 7.0692, 0], "out": [-11.0357, 10, 0], "pos": [0, 10, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-20, 5.51786, 0], "material": 1, "mid": [-14.1384, -7.0692, 0], "out": [-20, -5.51786, 0], "pos": [-20, 0, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-11.0357, -10, 0], "material": 1, "mid": [14.1384, -7.0692, 0], "out": [11.0357, -10, 0], "pos": [0, -10, 0], "segment": "curve", "type": "bezier"}
             ]
           },
           {
             "closed": true,
             "knots": [
-              {"in": [5, 0, 0], "mid": [3.5346, 0, 0], "out": [5, 0, 0], "pos": [5, 0, 0], "segment": "curve", "type": "bezier"},
-              {"in": [2.75893, 0, 0], "mid": [-3.5346, 0, 0], "out": [-2.75893, 0, 0], "pos": [0, 0, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-5, 0, 0], "mid": [-3.5346, 0, 0], "out": [-5, 0, 0], "pos": [-5, 0, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-2.75893, 0, 0], "mid": [3.5346, 0, 0], "out": [2.75893, 0, 0], "pos": [0, 0, 0], "segment": "curve", "type": "bezier"}
+              {"in": [5, 0, 0], "material": 1, "mid": [3.5346, 0, 0], "out": [5, 0, 0], "pos": [5, 0, 0], "segment": "curve", "type": "bezier"},
+              {"in": [2.75893, 0, 0], "material": 1, "mid": [-3.5346, 0, 0], "out": [-2.75893, 0, 0], "pos": [0, 0, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-5, 0, 0], "material": 1, "mid": [-3.5346, 0, 0], "out": [-5, 0, 0], "pos": [-5, 0, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-2.75893, 0, 0], "material": 1, "mid": [3.5346, 0, 0], "out": [2.75893, 0, 0], "pos": [0, 0, 0], "segment": "curve", "type": "bezier"}
             ]
           }
         ],
@@ -930,6 +942,7 @@
       "bbox_max": [135, -52.5857, 0],
       "bbox_min": [105, -67.4143, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": null,
       "eval_maps": null,
       "eval_mesh": null,
@@ -948,6 +961,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": {
         "adaptive": false,
@@ -962,14 +976,14 @@
           {
             "closed": true,
             "knots": [
-              {"in": [15, -7.41429, 0], "mid": [12.6554, 2.65536, 0], "out": [15, 1.41429, 0], "pos": [15, -3, 0], "segment": "curve", "type": "bezierCorner"},
-              {"in": [11.4143, 5, 0], "mid": [0, 5, 0], "out": [2.58571, 5, 0], "pos": [7, 5, 0], "segment": "curve", "type": "bezierCorner"},
-              {"in": [-2.58571, 5, 0], "mid": [-12.6554, 2.65536, 0], "out": [-11.4143, 5, 0], "pos": [-7, 5, 0], "segment": "curve", "type": "bezierCorner"},
-              {"in": [-15, 1.41429, 0], "mid": [-15, 0, 0], "out": [-15, -7.41429, 0], "pos": [-15, -3, 0], "segment": "curve", "type": "bezierCorner"},
-              {"in": [-15, 7.41429, 0], "mid": [-12.6554, -2.65536, 0], "out": [-15, -1.41429, 0], "pos": [-15, 3, 0], "segment": "curve", "type": "bezierCorner"},
-              {"in": [-11.4143, -5, 0], "mid": [0, -5, 0], "out": [-2.58571, -5, 0], "pos": [-7, -5, 0], "segment": "curve", "type": "bezierCorner"},
-              {"in": [2.58571, -5, 0], "mid": [12.6554, -2.65536, 0], "out": [11.4143, -5, 0], "pos": [7, -5, 0], "segment": "curve", "type": "bezierCorner"},
-              {"in": [15, -1.41429, 0], "mid": [15, 0, 0], "out": [15, 7.41429, 0], "pos": [15, 3, 0], "segment": "curve", "type": "bezierCorner"}
+              {"in": [15, -7.41429, 0], "material": 1, "mid": [12.6554, 2.65536, 0], "out": [15, 1.41429, 0], "pos": [15, -3, 0], "segment": "curve", "type": "bezierCorner"},
+              {"in": [11.4143, 5, 0], "material": 1, "mid": [0, 5, 0], "out": [2.58571, 5, 0], "pos": [7, 5, 0], "segment": "curve", "type": "bezierCorner"},
+              {"in": [-2.58571, 5, 0], "material": 1, "mid": [-12.6554, 2.65536, 0], "out": [-11.4143, 5, 0], "pos": [-7, 5, 0], "segment": "curve", "type": "bezierCorner"},
+              {"in": [-15, 1.41429, 0], "material": 1, "mid": [-15, 0, 0], "out": [-15, -7.41429, 0], "pos": [-15, -3, 0], "segment": "curve", "type": "bezierCorner"},
+              {"in": [-15, 7.41429, 0], "material": 1, "mid": [-12.6554, -2.65536, 0], "out": [-15, -1.41429, 0], "pos": [-15, 3, 0], "segment": "curve", "type": "bezierCorner"},
+              {"in": [-11.4143, -5, 0], "material": 1, "mid": [0, -5, 0], "out": [-2.58571, -5, 0], "pos": [-7, -5, 0], "segment": "curve", "type": "bezierCorner"},
+              {"in": [2.58571, -5, 0], "material": 1, "mid": [12.6554, -2.65536, 0], "out": [11.4143, -5, 0], "pos": [7, -5, 0], "segment": "curve", "type": "bezierCorner"},
+              {"in": [15, -1.41429, 0], "material": 1, "mid": [15, 0, 0], "out": [15, 7.41429, 0], "pos": [15, 3, 0], "segment": "curve", "type": "bezierCorner"}
             ]
           }
         ],
@@ -988,6 +1002,7 @@
       "bbox_max": [7.66986, -93.5609, 0],
       "bbox_min": [7.65103, -93.5833, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": null,
       "eval_maps": null,
       "eval_mesh": null,
@@ -1006,6 +1021,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": {
         "adaptive": false,
@@ -1020,10 +1036,10 @@
           {
             "closed": false,
             "knots": [
-              {"in": [7.66044, 6.42787, 0], "mid": [7.66044, 6.42787, 0], "out": [7.65103, 6.43909, 0], "pos": [7.66044, 6.42787, 0], "segment": "curve", "type": "bezier"},
-              {"in": [7.66986, 6.41666, 0], "mid": [7.66044, 6.42787, 0], "out": [7.65103, 6.43909, 0], "pos": [7.66044, 6.42787, 0], "segment": "curve", "type": "bezier"},
-              {"in": [7.66986, 6.41666, 0], "mid": [7.66044, 6.42787, 0], "out": [7.65103, 6.43909, 0], "pos": [7.66044, 6.42787, 0], "segment": "curve", "type": "bezier"},
-              {"in": [7.66986, 6.41666, 0], "mid": null, "out": [7.66044, 6.42787, 0], "pos": [7.66044, 6.42787, 0], "segment": null, "type": "bezier"}
+              {"in": [7.66044, 6.42787, 0], "material": 1, "mid": [7.66044, 6.42787, 0], "out": [7.65103, 6.43909, 0], "pos": [7.66044, 6.42787, 0], "segment": "curve", "type": "bezier"},
+              {"in": [7.66986, 6.41666, 0], "material": 1, "mid": [7.66044, 6.42787, 0], "out": [7.65103, 6.43909, 0], "pos": [7.66044, 6.42787, 0], "segment": "curve", "type": "bezier"},
+              {"in": [7.66986, 6.41666, 0], "material": 1, "mid": [7.66044, 6.42787, 0], "out": [7.65103, 6.43909, 0], "pos": [7.66044, 6.42787, 0], "segment": "curve", "type": "bezier"},
+              {"in": [7.66986, 6.41666, 0], "material": null, "mid": null, "out": [7.66044, 6.42787, 0], "pos": [7.66044, 6.42787, 0], "segment": null, "type": "bezier"}
             ]
           }
         ],
@@ -1042,6 +1058,7 @@
       "bbox_max": [50, -87.5468, 0],
       "bbox_min": [28.0753, -112.267, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": null,
       "eval_maps": null,
       "eval_mesh": null,
@@ -1060,6 +1077,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": {
         "adaptive": false,
@@ -1074,10 +1092,10 @@
           {
             "closed": false,
             "knots": [
-              {"in": [9.84808, 1.73648, 0], "mid": [3.68738, 9.28169, 0], "out": [8.55931, 9.04544, 0], "pos": [9.84808, 1.73648, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-0.0184593, 12.4532, 0], "mid": [-9.94931, -0.870453, 0], "out": [-11.9247, 3.58929, 0], "pos": [-5.97158, 8.02123, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-11.1203, -5.60547, 0], "mid": [5.24311, -8.50037, 0], "out": [2.14429, -12.2672, 0], "pos": [-4.48799, -8.93633, 0], "segment": "curve", "type": "bezier"},
-              {"in": [10, -7.42171, 0], "mid": null, "out": [10, 0, 0], "pos": [10, 0, 0], "segment": null, "type": "bezier"}
+              {"in": [9.84808, 1.73648, 0], "material": 1, "mid": [3.68738, 9.28169, 0], "out": [8.55931, 9.04544, 0], "pos": [9.84808, 1.73648, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-0.0184593, 12.4532, 0], "material": 1, "mid": [-9.94931, -0.870453, 0], "out": [-11.9247, 3.58929, 0], "pos": [-5.97158, 8.02123, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-11.1203, -5.60547, 0], "material": 1, "mid": [5.24311, -8.50037, 0], "out": [2.14429, -12.2672, 0], "pos": [-4.48799, -8.93633, 0], "segment": "curve", "type": "bezier"},
+              {"in": [10, -7.42171, 0], "material": null, "mid": null, "out": [10, 0, 0], "pos": [10, 0, 0], "segment": null, "type": "bezier"}
             ]
           }
         ],
@@ -1096,6 +1114,7 @@
       "bbox_max": [90, -91.3397, 0],
       "bbox_min": [85, -100, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": null,
       "eval_maps": null,
       "eval_mesh": null,
@@ -1114,6 +1133,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": {
         "adaptive": false,
@@ -1128,10 +1148,10 @@
           {
             "closed": false,
             "knots": [
-              {"in": [10, 0, 0], "mid": [9.84808, 1.73648, 0], "out": [10, 1.16653, 0], "pos": [10, 0, 0], "segment": "curve", "type": "bezier"},
-              {"in": [9.7959, 2.32403, 0], "mid": [8.66026, 5, 0], "out": [8.99795, 4.51637, 0], "pos": [9.39693, 3.4202, 0], "segment": "curve", "type": "bezier"},
-              {"in": [8.41027, 5.53426, 0], "mid": [6.42788, 7.66045, 0], "out": [6.91061, 7.32149, 0], "pos": [7.66045, 6.42788, 0], "segment": "curve", "type": "bezier"},
-              {"in": [6.01024, 8.077, 0], "mid": null, "out": [5, 8.66026, 0], "pos": [5, 8.66026, 0], "segment": null, "type": "bezier"}
+              {"in": [10, 0, 0], "material": 1, "mid": [9.84808, 1.73648, 0], "out": [10, 1.16653, 0], "pos": [10, 0, 0], "segment": "curve", "type": "bezier"},
+              {"in": [9.7959, 2.32403, 0], "material": 1, "mid": [8.66026, 5, 0], "out": [8.99795, 4.51637, 0], "pos": [9.39693, 3.4202, 0], "segment": "curve", "type": "bezier"},
+              {"in": [8.41027, 5.53426, 0], "material": 1, "mid": [6.42788, 7.66045, 0], "out": [6.91061, 7.32149, 0], "pos": [7.66045, 6.42788, 0], "segment": "curve", "type": "bezier"},
+              {"in": [6.01024, 8.077, 0], "material": null, "mid": null, "out": [5, 8.66026, 0], "pos": [5, 8.66026, 0], "segment": null, "type": "bezier"}
             ]
           }
         ],
@@ -1150,6 +1170,7 @@
       "bbox_max": [131.365, -90.1519, 0],
       "bbox_min": [108.265, -111.87, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": null,
       "eval_maps": null,
       "eval_mesh": null,
@@ -1168,6 +1189,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": {
         "adaptive": false,
@@ -1182,10 +1204,10 @@
           {
             "closed": false,
             "knots": [
-              {"in": [-1.73648, 9.84808, 0], "mid": [-8.79665, 4.74311, 0], "out": [-8.08337, 8.72895, 0], "pos": [-1.73648, 9.84808, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-11.7348, 1.95692, 0], "mid": [-2.58662, -9.65337, 0], "out": [-6.6295, -9.87852, 0], "pos": [-9.18216, -3.9608, 0], "segment": "curve", "type": "bezier"},
-              {"in": [0.802055, -11.8698, 0], "mid": [9.98969, -0.290672, 0], "out": [11.1411, -4.17266, 0], "pos": [5.97159, -8.02123, 0], "segment": "curve", "type": "bezier"},
-              {"in": [11.3649, 3.5178, 0], "mid": null, "out": [6.42788, 7.66045, 0], "pos": [6.42788, 7.66045, 0], "segment": null, "type": "bezier"}
+              {"in": [-1.73648, 9.84808, 0], "material": 1, "mid": [-8.79665, 4.74311, 0], "out": [-8.08337, 8.72895, 0], "pos": [-1.73648, 9.84808, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-11.7348, 1.95692, 0], "material": 1, "mid": [-2.58662, -9.65337, 0], "out": [-6.6295, -9.87852, 0], "pos": [-9.18216, -3.9608, 0], "segment": "curve", "type": "bezier"},
+              {"in": [0.802055, -11.8698, 0], "material": 1, "mid": [9.98969, -0.290672, 0], "out": [11.1411, -4.17266, 0], "pos": [5.97159, -8.02123, 0], "segment": "curve", "type": "bezier"},
+              {"in": [11.3649, 3.5178, 0], "material": null, "mid": null, "out": [6.42788, 7.66045, 0], "pos": [6.42788, 7.66045, 0], "segment": null, "type": "bezier"}
             ]
           }
         ],
@@ -1204,6 +1226,7 @@
       "bbox_max": [10, -140, 0],
       "bbox_min": [0, -140, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": null,
       "eval_maps": null,
       "eval_mesh": null,
@@ -1222,6 +1245,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": {
         "adaptive": false,
@@ -1236,8 +1260,8 @@
           {
             "closed": false,
             "knots": [
-              {"in": [0, 0, 0], "mid": [5, 0, 0], "out": [3.33333, 0, 0], "pos": [0, 0, 0], "segment": "line", "type": "corner"},
-              {"in": [6.66667, 0, 0], "mid": null, "out": [10, 0, 0], "pos": [10, 0, 0], "segment": null, "type": "corner"}
+              {"in": [0, 0, 0], "material": 1, "mid": [5, 0, 0], "out": [3.33333, 0, 0], "pos": [0, 0, 0], "segment": "line", "type": "corner"},
+              {"in": [6.66667, 0, 0], "material": null, "mid": null, "out": [10, 0, 0], "pos": [10, 0, 0], "segment": null, "type": "corner"}
             ]
           }
         ],
@@ -1256,6 +1280,7 @@
       "bbox_max": [50, -130, 0],
       "bbox_min": [30, -150, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": null,
       "eval_maps": null,
       "eval_mesh": null,
@@ -1274,6 +1299,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": {
         "adaptive": false,
@@ -1288,10 +1314,10 @@
           {
             "closed": true,
             "knots": [
-              {"in": [10, -5.51787, 0], "mid": [7.0692, 7.0692, 0], "out": [10, 5.51787, 0], "pos": [10, 0, 0], "segment": "curve", "type": "bezier"},
-              {"in": [5.51786, 10, 0], "mid": [-7.0692, 7.0692, 0], "out": [-5.51786, 10, 0], "pos": [0, 10, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-10, 5.51787, 0], "mid": [-7.0692, -7.0692, 0], "out": [-10, -5.51787, 0], "pos": [-10, 0, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-5.51786, -10, 0], "mid": [7.0692, -7.0692, 0], "out": [5.51786, -10, 0], "pos": [0, -10, 0], "segment": "curve", "type": "bezier"}
+              {"in": [10, -5.51787, 0], "material": 1, "mid": [7.0692, 7.0692, 0], "out": [10, 5.51787, 0], "pos": [10, 0, 0], "segment": "curve", "type": "bezier"},
+              {"in": [5.51786, 10, 0], "material": 1, "mid": [-7.0692, 7.0692, 0], "out": [-5.51786, 10, 0], "pos": [0, 10, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-10, 5.51787, 0], "material": 1, "mid": [-7.0692, -7.0692, 0], "out": [-10, -5.51787, 0], "pos": [-10, 0, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-5.51786, -10, 0], "material": 1, "mid": [7.0692, -7.0692, 0], "out": [5.51786, -10, 0], "pos": [0, -10, 0], "segment": "curve", "type": "bezier"}
             ]
           }
         ],
@@ -1310,6 +1336,7 @@
       "bbox_max": [5, 45, 2],
       "bbox_min": [-5, 35, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": 12,
       "eval_maps": null,
       "eval_mesh": null,
@@ -1328,6 +1355,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": null,
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 40, 0]
@@ -1341,6 +1369,7 @@
       "bbox_max": [85, -135, 0],
       "bbox_min": [75, -145, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": null,
       "eval_maps": null,
       "eval_mesh": null,
@@ -1359,6 +1388,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": {
         "adaptive": false,
@@ -1373,10 +1403,10 @@
           {
             "closed": true,
             "knots": [
-              {"in": [5, -2.75893, 0], "mid": [3.5346, 3.53459, 0], "out": [5, 2.75893, 0], "pos": [5, 0, 0], "segment": "curve", "type": "bezier"},
-              {"in": [2.75893, 5, 0], "mid": [-3.5346, 3.53459, 0], "out": [-2.75893, 5, 0], "pos": [0, 5, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-5, 2.75893, 0], "mid": [-3.5346, -3.53461, 0], "out": [-5, -2.75893, 0], "pos": [-5, 0, 0], "segment": "curve", "type": "bezier"},
-              {"in": [-2.75893, -5, 0], "mid": [3.5346, -3.53459, 0], "out": [2.75893, -5, 0], "pos": [0, -5, 0], "segment": "curve", "type": "bezier"}
+              {"in": [5, -2.75893, 0], "material": 1, "mid": [3.5346, 3.53459, 0], "out": [5, 2.75893, 0], "pos": [5, 0, 0], "segment": "curve", "type": "bezier"},
+              {"in": [2.75893, 5, 0], "material": 1, "mid": [-3.5346, 3.53459, 0], "out": [-2.75893, 5, 0], "pos": [0, 5, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-5, 2.75893, 0], "material": 1, "mid": [-3.5346, -3.53461, 0], "out": [-5, -2.75893, 0], "pos": [-5, 0, 0], "segment": "curve", "type": "bezier"},
+              {"in": [-2.75893, -5, 0], "material": 1, "mid": [3.5346, -3.53459, 0], "out": [2.75893, -5, 0], "pos": [0, -5, 0], "segment": "curve", "type": "bezier"}
             ]
           }
         ],
@@ -1395,6 +1425,7 @@
       "bbox_max": [130, -130, 0],
       "bbox_min": [120, -140, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": null,
       "eval_maps": null,
       "eval_mesh": null,
@@ -1413,6 +1444,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": {
         "adaptive": false,
@@ -1427,9 +1459,9 @@
           {
             "closed": false,
             "knots": [
-              {"in": [0, 0, 0], "mid": [5, 0, 0], "out": [3.33334, 0, 0], "pos": [0, 0, 0], "segment": "line", "type": "corner"},
-              {"in": [6.66666, 0, 0], "mid": [10, 5, 0], "out": [10, 3.33333, 0], "pos": [10, 0, 0], "segment": "line", "type": "corner"},
-              {"in": [10, 6.66667, 0], "mid": null, "out": [10, 10, 0], "pos": [10, 10, 0], "segment": null, "type": "corner"}
+              {"in": [0, 0, 0], "material": 1, "mid": [5, 0, 0], "out": [3.33334, 0, 0], "pos": [0, 0, 0], "segment": "line", "type": "corner"},
+              {"in": [6.66666, 0, 0], "material": 1, "mid": [10, 5, 0], "out": [10, 3.33333, 0], "pos": [10, 0, 0], "segment": "line", "type": "corner"},
+              {"in": [10, 6.66667, 0], "material": null, "mid": null, "out": [10, 10, 0], "pos": [10, 10, 0], "segment": null, "type": "corner"}
             ]
           }
         ],
@@ -1438,9 +1470,128 @@
         "width": 2
       },
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 120, -140, 0]
+    },
+    {
+      "base_class_id": ["0x00001040", "0x00000000"],
+      "base_class_name": "line",
+      "base_faces": null,
+      "base_superclass": 64,
+      "base_verts": null,
+      "bbox_max": [170, -130, 0],
+      "bbox_min": [160, -140, 0],
+      "camera": null,
+      "cast_shadows": true,
+      "eval_faces": null,
+      "eval_maps": null,
+      "eval_mesh": null,
+      "eval_verts": null,
+      "frozen": false,
+      "handle": 17,
+      "hidden": false,
+      "index": 16,
+      "instances": [17],
+      "layer": "0",
+      "material": 2,
+      "modifiers": [],
+      "name": "FixtureCurveIds",
+      "object_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 160, -140, 0],
+      "offset_pos": [0, 0, 0],
+      "offset_rot": [0, 0, 0, 1],
+      "offset_scale": [1, 1, 1],
+      "parent": null,
+      "receive_shadows": true,
+      "renderable": true,
+      "shape": {
+        "adaptive": false,
+        "angle": 0,
+        "display_render_mesh": false,
+        "length": 6,
+        "optimize": true,
+        "rectangular": false,
+        "renderable": true,
+        "sides": 12,
+        "splines": [
+          {
+            "closed": false,
+            "knots": [
+              {"in": [0, 0, 0], "material": 2, "mid": [5, 0, 0], "out": [3.33333, 0, 0], "pos": [0, 0, 0], "segment": "line", "type": "corner"},
+              {"in": [6.66667, 0, 0], "material": 2, "mid": [10, 5, 0], "out": [10, 3.33333, 0], "pos": [10, 0, 0], "segment": "line", "type": "corner"},
+              {"in": [10, 6.66667, 0], "material": null, "mid": null, "out": [10, 10, 0], "pos": [10, 10, 0], "segment": null, "type": "corner"}
+            ]
+          },
+          {
+            "closed": false,
+            "knots": [
+              {"in": [0, 4, 0], "material": 1, "mid": [3, 4, 0], "out": [2, 4, 0], "pos": [0, 4, 0], "segment": "line", "type": "corner"},
+              {"in": [4, 4, 0], "material": 1, "mid": [6, 7, 0], "out": [6, 6, 0], "pos": [6, 4, 0], "segment": "line", "type": "corner"},
+              {"in": [6, 8, 0], "material": null, "mid": null, "out": [6, 10, 0], "pos": [6, 10, 0], "segment": null, "type": "corner"}
+            ]
+          }
+        ],
+        "steps": 6,
+        "thickness": 1,
+        "width": 2
+      },
+      "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 160, -140, 0]
+    },
+    {
+      "base_class_id": ["0x00001040", "0x00000000"],
+      "base_class_name": "line",
+      "base_faces": null,
+      "base_superclass": 64,
+      "base_verts": null,
+      "bbox_max": [210, -130, 0],
+      "bbox_min": [200, -140, 0],
+      "camera": null,
+      "cast_shadows": true,
+      "eval_faces": null,
+      "eval_maps": null,
+      "eval_mesh": null,
+      "eval_verts": null,
+      "frozen": false,
+      "handle": 18,
+      "hidden": false,
+      "index": 17,
+      "instances": [18],
+      "layer": "0",
+      "material": 2,
+      "modifiers": [],
+      "name": "FixtureCurveMixed",
+      "object_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 200, -140, 0],
+      "offset_pos": [0, 0, 0],
+      "offset_rot": [0, 0, 0, 1],
+      "offset_scale": [1, 1, 1],
+      "parent": null,
+      "receive_shadows": true,
+      "renderable": true,
+      "shape": {
+        "adaptive": false,
+        "angle": 0,
+        "display_render_mesh": false,
+        "length": 6,
+        "optimize": true,
+        "rectangular": false,
+        "renderable": true,
+        "sides": 12,
+        "splines": [
+          {
+            "closed": false,
+            "knots": [
+              {"in": [0, 0, 0], "material": 2, "mid": [5, 0, 0], "out": [3.33333, 0, 0], "pos": [0, 0, 0], "segment": "line", "type": "corner"},
+              {"in": [6.66667, 0, 0], "material": 1, "mid": [10, 5, 0], "out": [10, 3.33333, 0], "pos": [10, 0, 0], "segment": "line", "type": "corner"},
+              {"in": [10, 6.66667, 0], "material": 1, "mid": [5, 10, 0], "out": [6.66667, 10, 0], "pos": [10, 10, 0], "segment": "line", "type": "corner"},
+              {"in": [3.33333, 10, 0], "material": null, "mid": null, "out": [0, 10, 0], "pos": [0, 10, 0], "segment": null, "type": "corner"}
+            ]
+          }
+        ],
+        "steps": 6,
+        "thickness": 1,
+        "width": 2
+      },
+      "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 200, -140, 0]
     }
   ],
-  "oracle_version": 10,
+  "oracle_version": 13,
   "render": {"camera": null, "height": 480, "pixel_aspect": 1, "width": 640},
   "renderer": {"class_id": ["0x00000001", "0x00000000"], "class_name": "Default_Scanline_Renderer"},
   "time": 0,

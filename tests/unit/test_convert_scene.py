@@ -65,6 +65,7 @@ UV_LAYERS = {
     "instances": ["UVMap"],
     "layers_flags": [],
     "layers_more": [],
+    "layers_nested": [],
     "lookat": [],  # boxes without Generate Mapping Coords
     "modifier_pivot": ["UVMap"],  # FixtureBent's UVW Map writes channel 1 (applied, the Bend above it is not)
     "multi_uv": ["UVMap", "UVChannel_2", "UVChannel_3"],
@@ -96,6 +97,7 @@ UV_LAYERS = {
     "lights_photometric": [],
     "cameras": [],  # its box, without Generate Mapping Coords; the cameras are no mesh
     "controllers": [],  # boxes without Generate Mapping Coords
+    "controllers_tangents": [],  # boxes without Generate Mapping Coords
     "vray_wrappers": ["UVMap"],
     # per mesh: every box, the cylinder and the sphere have channel 1; two UVW Maps write channels 2 and 3
     "uvwmap": collections.defaultdict(lambda: ["UVMap"], {"FixtureUVWGizmo": ["UVMap", "UVChannel_2"],
@@ -106,16 +108,23 @@ UV_LAYERS = {
 SHARP_EDGES_POLY_BOX = 12  # one smoothing group per side: every edge of the box
 SHARP_EDGES_EDITABLE_MESH = 8  # group 1 on top and bottom, 2 on the sides: the rims of top and bottom
 SHARP_EDGES_TALL_BOX = 24  # modifier_pivot's four height segments: 4 x 4 vertical side edges and both rims
-SHARP_EDGES_OPEN_BOX = 8  # stack_shell's boxes without their top: the 4 vertical and the 4 bottom edges
+# stack_shell's boxes without their top: the 4 vertical and the 4 bottom edges, and the 4 open edges a hardened Shell
+# rim makes sharp
+SHARP_EDGES_OPEN_BOX = 12
+# stack_shell's other meshes: the plane's open edges; a TurboSmooth below the Shell clears the box's groups but its open
+# edges stay sharp; above the Shell it smooths the rim too (no sharp edge)
+SHARP_EDGES_SHELL = {"FixtureShellPlane": 4, "FixtureShellTurbo": 4, "FixtureShellSmoothed": 0}
 # extrude: the vertical edges at corner knots (one per level) and both rims of every capped outline
 SHARP_EDGES_EXTRUDE = {"FixtureExtRect": 4 * 2 + 8, "FixtureExtL": 6 + 12, "FixtureExtHole": 4 + 8 + 56,
                        "FixtureExtIsland": 12 + 24, "FixtureExtOpen": 0, "FixtureExtMirror": 8 + 64,
                        "FixtureExtAdaptive": 256, "FixtureExtShapeIDs": 11 + 30, "FixtureExtShapeIDsRect": 4 + 8,
                        "FixtureUVWExtrude": 4 + 8,
-                       # arc_pie_reverse: both rims of a pie's 23 columns (3ds Max also breaks the side at from,
-                       # the center and to: 6 more, maxdrop-em3.111); the open arc none; the clockwise Line and
+                       # grid caps: as above (the circle smooth, one rim: Cap End off)
+                       "FixtureExtGrid": 10 + 8 + 18, "FixtureExtGridCircle": 16,
+                       # arc_pie_reverse: both rims of a pie's 23 columns and the side broken at from, the
+                       # center and to in 2 segments (maxdrop-em3.111); the open arc none; the clockwise Line and
                        # the holed cap as above
-                       "FixturePieRevExt": 46, "FixturePieRevWrapExt": 46, "FixturePieExt": 46,
+                       "FixturePieRevExt": 46 + 6, "FixturePieRevWrapExt": 46 + 6, "FixturePieExt": 46 + 6,
                        "FixtureArcRevExt": 0, "FixtureClockwiseExt": 4 * 2 + 8, "FixtureHoleExt": 4 * 2 + 8 + 56}
 # uvwmap: boxes of 3 x 2 x 2 segments, a group per side: 28 edges; the cylinder's two rims; the sphere is smooth
 SHARP_EDGES_UVWMAP = {"FixtureUVWCyl": 32, "FixtureUVWSphere": 0, "FixtureUVWSharedB": SHARP_EDGES_POLY_BOX,
@@ -125,7 +134,10 @@ SHARP_EDGES_UVWMAP = {"FixtureUVWCyl": 32, "FixtureUVWSphere": 0, "FixtureUVWSha
                       # uvwmap_pole: the rims of 10-sided cylinders, smooth spheres
                       "FixtureUVWPoleCylinder": 20, "FixtureUVWPoleNear": 20, "FixtureUVWPoleOff": 20,
                       "FixtureUVWPoleDiagonal": 20, "FixtureUVWPoleSphere": 0, "FixtureUVWPoleSphereCyl": 0,
-                      "FixtureUVWPoleSphereNear": 0, "FixtureUVWPoleSphereOff": 0}
+                      "FixtureUVWPoleSphereNear": 0, "FixtureUVWPoleSphereOff": 0,
+                      "FixtureUVWPoleCone": 10,  # its base rim
+                      "FixtureUVWPoleSphereTall": 0, "FixtureUVWPoleTile": 20, "FixtureUVWPoleSphereTile": 0,
+                      "FixtureUVWPoleCenter": 20}
 # primitives: a group per side of a box (FixtureBox's edges in segments: 4 x 3 + 4 x 2 + 4 x 4), the rims of
 # cylinders, cones and tubes, the pyramid's four ridges of 2 segments and its base outline of 10, the torus's
 # alternating groups (every edge between two sides; on the odd one every edge between two segments), every edge of
@@ -156,6 +168,14 @@ NO_DECAY = "light: no decay: Blender's light falls off with the square of the di
 ISSUES = {"uvwmap": ["uvw map: a UVW Map above Bend is not evaluated",
                      "uvw map: shrink-wrap mapping is not evaluated: the stored channel stays"],
           "stack_convert": ["modifiers: TurboSmooth above Bend is not converted"],
+          # FixtureNoReceiveShadow (FixtureNoCastShadow is an object flag, no issue)
+          "layers_flags": ["shadows: Receive Shadows is off: Blender has no such switch per object, it receives "
+                           "shadows"],
+          # the plane's rim corners (auto smooth), the open box's override group (auto smooth off)
+          "stack_shell": ["modifiers: Shell: auto smooth: 4 corners of the rim sharper than 45 degrees shade smooth "
+                          "(3ds Max splits the rim there)",
+                          "modifiers: Shell: smoothing group override (group 4) not converted: 3ds Max merges the rim "
+                          "into the faces along it of that group"],
           "lookat": [NO_DECAY],  # its target spot (its Perspective viewport is a note of the report, no issue)
           "cameras": ["camera: depth of field is not imported"] * 2 + [
               "camera: its exposure is not imported: Blender renders as if the camera had none"] * 3 + [
@@ -480,8 +500,9 @@ class DamagedInput(unittest.TestCase):
         self.assertEqual([la.name for la in desc.layers], ["FixtureLayerA"])
         lost = [n.name for n in desc.nodes if n.layer is None]
         self.assertEqual(sorted(lost), ["FixtureHidden", "FixtureNoRender"])
-        self.assertEqual(len(desc.issues), 2)
-        self.assertTrue(all(r.startswith("layer: ") for _n, r in desc.issues))
+        layer_issues = [r for _n, r in desc.issues if r != conv.NO_RECEIVE]
+        self.assertEqual(len(layer_issues), 2)
+        self.assertTrue(all(r.startswith("layer: ") for r in layer_issues))
 
     def test_unknown_controllers_are_counted_by_class(self):
         sc = self.scene("hierarchy")
@@ -524,6 +545,20 @@ class Curves(unittest.TestCase):
         self.assertEqual(sp.right[1], (5, -1.5, 1.5))  # a curve segment keeps its vector
         self.assertEqual(sp.right[2], (5, 5.5, 1.5))  # open: no segment after the last knot
         self.assertEqual((cd.resolution, cd.bevel_depth), (7, 0.0))
+
+    def test_segment_material_ids(self):
+        """A spline's material IDs are its segments': the last knot of an open spline starts none, a closed one's
+        does; distinct, in segment order, the first one the spline's; a spline without a segment its knot's."""
+        def knots(*ids):
+            return [shapes.Knot(shapes.CORNER, shapes.LINE, (float(i), 0, 0), (float(i), 0, 0), (float(i), 0, 0), m)
+                    for i, m in enumerate(ids)]
+        self.assertEqual(conv.segment_ids(knots(1, 1, 5), False), (1,))
+        self.assertEqual(conv.segment_ids(knots(1, 1, 5), True), (1, 5))
+        self.assertEqual(conv.segment_ids(knots(2, 0, 0, 2, 3), False), (2, 0))
+        self.assertEqual(conv.segment_ids(knots(4), False), (4,))
+        self.assertEqual(conv.segment_ids(knots(4), True), (4,))
+        cd, _issues = conv.curve_description("k", "n", self._shape(knots(3, 1, 3, 9)), None, 1.0)
+        self.assertEqual((cd.splines[0].material, cd.splines[0].material_ids), (3, (3, 1)))
 
     def test_closing_straight_segment_and_bevel(self):
         k = shapes.Knot
@@ -976,6 +1011,8 @@ class Fixtures(unittest.TestCase):
                     want = SHARP_EDGES_PRIMITIVES[md.name]
                 want_here = SHARP_EDGES_SMOOTHED.get(md.name, SHARP_EDGES_EXTRUDE.get(
                     md.name, SHARP_EDGES_UVWMAP.get(md.name, want)))
+                if name == "stack_shell":
+                    want_here = SHARP_EDGES_SHELL.get(md.name, want_here)
                 self.assertEqual(len(md.sharp_edges), want_here, "%s %s" % (name, md.name))
                 # an unsmoothed GeoSphere has no smoothing group: every face flat
                 self.assertEqual(bool(md.sharp_faces.any()), md.name in FLAT_MESHES, "%s %s" % (name, md.name))
@@ -999,6 +1036,8 @@ class Fixtures(unittest.TestCase):
             for node, o in zip(desc.nodes, oracle["nodes"]):
                 self.assertEqual((node.hidden, node.frozen, node.renderable, names[node.layer]),
                                  (o["hidden"], o["frozen"], o["renderable"], o["layer"]), o["name"])
+                self.assertEqual((node.cast_shadows, node.receive_shadows), (o["cast_shadows"], o["receive_shadows"]),
+                                 o["name"])
                 if o["layer"] not in used:
                     used.append(o["layer"])
             parents = {la["name"]: la["parent"] for la in oracle["layers"]}
@@ -1012,9 +1051,18 @@ class Fixtures(unittest.TestCase):
             self.assertEqual([la.name for la in desc.layers], sorted(used, key=order.index), name)
             flags = {la["name"]: (la["hidden"], la["frozen"], la["renderable"], la["parent"])
                      for la in oracle["layers"]}
+            by_index = {la.index: la for la in desc.layers}
+
+            def inherited(la, flag):  # the oracle's hidden and frozen hold for the layers below too (layers_nested)
+                while la is not None:
+                    if getattr(la, flag):
+                        return True
+                    la = by_index.get(la.parent)
+                return False
             for la in desc.layers:
                 parent = None if la.parent is None else names[la.parent]
-                self.assertEqual((la.hidden, la.frozen, la.renderable, parent), flags[la.name], la.name)
+                self.assertEqual((inherited(la, "hidden"), inherited(la, "frozen"), la.renderable, parent),
+                                 flags[la.name], la.name)
 
     def test_layers_flags_organisation(self):
         desc = dict((n, d) for n, d, _o in self.cases)["layers_flags"]
@@ -1022,6 +1070,9 @@ class Fixtures(unittest.TestCase):
         by_name = {n.name: n for n in desc.nodes}
         self.assertEqual([k for k, n in by_name.items() if n.hidden], ["FixtureHidden"])
         self.assertEqual([k for k, n in by_name.items() if not n.renderable], ["FixtureNoRender"])
+        self.assertEqual([k for k, n in by_name.items() if not n.cast_shadows], ["FixtureNoCastShadow"])
+        self.assertEqual([k for k, n in by_name.items() if not n.receive_shadows], ["FixtureNoReceiveShadow"])
+        self.assertEqual(desc.issues, [(by_name["FixtureNoReceiveShadow"].index, conv.NO_RECEIVE)])
         self.assertEqual([k for k, n in by_name.items() if n.group_head], ["FixtureGroup"])
         head = by_name["FixtureGroup"].index
         self.assertEqual(sorted(k for k, n in by_name.items() if n.group_member),
@@ -1106,6 +1157,18 @@ class Fixtures(unittest.TestCase):
         numpy.testing.assert_allclose(loop, numpy.array([(1.5, 0.75), (-1.5, 0.75), (-1.5, -0.75), (1.5, -0.75)]) * m,
                                       atol=1e-12)
         self.assertEqual(sum(1 for cd in desc.curves.values() if cd.section is not None), 2)
+
+    def test_fixture_spline_material_ids(self):
+        """shapes_more: FixtureCurveIds' splines at IDs 2 and 1, FixtureCurveMixed's at 2, 1, 1 (zero-based 1 and 0);
+        every other curve at ID 1."""
+        desc = dict((n, d) for n, d, _o in self.cases)["shapes_more"]
+        got = {n.name: [(sd.material, sd.material_ids) for sd in desc.curves[n.curve].splines]
+               for n in desc.nodes if n.kind == conv.CURVE}
+        self.assertEqual(got.pop("FixtureCurveIds"), [(1, (1,)), (0, (0,))])
+        self.assertEqual(got.pop("FixtureCurveMixed"), [(1, (1, 0))])
+        names = {n.index: n.name for n in desc.nodes}  # the mixed spline's issue comes from convert.materials
+        self.assertEqual([r for i, r in desc.issues if names.get(i, "").startswith("FixtureCurve")], [])
+        self.assertEqual({sp for v in got.values() for sp in v}, {(0, (0,))})
 
     def test_material_indices_from_the_reader(self):
         desc = dict((n, d) for n, d, _o in self.cases)["box_poly_standard"]

@@ -425,6 +425,16 @@ class TestLayers(unittest.TestCase):
         self.assertEqual((la.name, la.hidden, la.frozen, la.renderable, la.parent), ("", False, False, True, None))
         n = s.node(1)
         self.assertEqual((n.renderable, n.hidden, n.layer), (True, False, None))
+        self.assertEqual((n.cast_shadows, n.receive_shadows), (True, True))  # a new node's state
+
+    def test_shadow_flags(self):
+        """0x099C as 3ds Max 2020 saved a Box with one change each (maxdiff): Receive Shadows off clears 0x400,
+        Cast Shadows off 0x200; renderable stays."""
+        for render, want in ((0x0F00D600, (True, True, True)), (0x0F00D200, (True, True, False)),
+                             (0x0F00D400, (True, False, True)), (0x0F00D000, (True, False, False)),
+                             (0x0F005600, (False, True, True))):
+            n = self.make(layer_obj("0"), layer_node("n", 0, render=render)).node(1)
+            self.assertEqual((n.renderable, n.cast_shadows, n.receive_shadows), want, hex(render))
 
     def test_damaged_records(self):
         s = self.make(node(L_LAYER, leaf(0x1020, b"\1")), node(L_LAYER, leaf(0x1050, b"")), leaf(L_LAYER),
@@ -446,6 +456,15 @@ class TestLayers(unittest.TestCase):
 
 def _scene(cf):
     return scene.Scene.from_file(cf)
+
+
+def _inherited(s, layer, flag):
+    """The layer's flag or that of a layer above it."""
+    while layer is not None:
+        if getattr(layer, flag):
+            return True
+        layer = None if layer.parent is None else s.layer(layer.parent)
+    return False
 
 
 @unittest.skipUnless(FIXTURES, "no fixtures")
@@ -494,7 +513,11 @@ class TestFixtures(unittest.TestCase):
                                     s.is_a(n.tm, classids.SC_CTRL_MATRIX3, classids.LOOK_AT), e["name"])
                     flags = (n.hidden, n.frozen, n.renderable, s.layer(n.layer).name)
                     self.assertEqual(flags, (e["hidden"], e["frozen"], e["renderable"], e["layer"]), e["name"])
-                layers = [(la.name, la.hidden, la.frozen, la.renderable,
+                    self.assertEqual((n.cast_shadows, n.receive_shadows), (e["cast_shadows"], e["receive_shadows"]),
+                                     e["name"])
+                # the file keeps hidden and frozen on the layer they were set on; MAXScript, and so the oracle,
+                # answers them for the layers below too (layers_nested)
+                layers = [(la.name, _inherited(s, la, "hidden"), _inherited(s, la, "frozen"), la.renderable,
                            None if la.parent is None else s.layer(la.parent).name) for la in s.layers()]
                 self.assertEqual(layers, [(e["name"], e["hidden"], e["frozen"], e["renderable"], e["parent"])
                                           for e in oracle["layers"]])
@@ -529,6 +552,33 @@ class TestFixtures(unittest.TestCase):
                                 for la in layers.values() if la is not child))
             self.assertEqual(bytes(s.chunk(layers["FixtureLäyer中"].index).first(0x1010).tobytes()),
                              b"FixtureL\xc3\xa4yer\xe4\xb8\xad")
+
+    def test_layers_nested_records(self):
+        """A parent layer's hidden or frozen bit stays on that layer: the layers below keep 0x1020 0 and the usual
+        0x1050, their nodes no layer bit; the 0x1090 / 0x10B0 chain of a three-level nest."""
+        with cfb.CompoundFile(os.path.join(ROOT, "tests", "fixtures", "layers_nested.max")) as cf:
+            s = _scene(cf)
+            layers = {la.name: la for la in s.layers()}
+            parents = {k: None if la.parent is None else s.layer(la.parent).name for k, la in layers.items()}
+            self.assertEqual(parents, {"0": None, "FixtureHiddenParentLayer": None,
+                                       "FixtureHiddenChildLayer": "FixtureHiddenParentLayer",
+                                       "FixtureFrozenParentLayer": None,
+                                       "FixtureFrozenChildLayer": "FixtureFrozenParentLayer",
+                                       "FixtureTopLayer": None, "FixtureMiddleLayer": "FixtureTopLayer",
+                                       "FixtureBottomLayer": "FixtureMiddleLayer"})
+            own = {"FixtureHiddenParentLayer": 0x100000, "FixtureFrozenParentLayer": 0x200000,
+                   "FixtureTopLayer": 0x100000}
+            self.assertEqual({k: (la.flags, la.render_flags) for k, la in layers.items()},
+                             {k: (own.get(k, 0), 0x0B00D600) for k in layers})
+            for k, la in layers.items():
+                body = s.chunk(la.index)
+                self.assertEqual(bytes(body.first(0x1090).tobytes()), b"\x00" if parents[k] is None else b"\x01", k)
+                if parents[k] is not None:
+                    self.assertEqual(struct.unpack("<i", body.first(0x10B0).tobytes()), (layers[parents[k]].index,), k)
+            self.assertEqual({n.name: (n.flags, s.layer(n.layer).name) for n in s.nodes()},
+                             {"FixtureUnderHiddenParent": (0x800, "FixtureHiddenChildLayer"),
+                              "FixtureUnderFrozenParent": (0x800, "FixtureFrozenChildLayer"),
+                              "FixtureDeepNested": (0x800, "FixtureBottomLayer"), "FixtureControl": (0x800, "0")})
 
     def test_groups(self):
         with cfb.CompoundFile(os.path.join(ROOT, "tests", "fixtures", "layers_flags.max")) as cf:

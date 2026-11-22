@@ -41,8 +41,10 @@ vertex used twice, the vertex set of an earlier face) are left out and reported.
 
 A shape (reader.shapes: Line, Editable Spline, Rectangle, Circle, Ellipse, Arc, NGon) becomes a CURVE, keyed and
 shared like a mesh, its offset baked into the knots: one Bezier spline per spline, Max's in and out vectors as the
-left and right handles. A segment 3ds Max draws straight (segment type line) gets handles a third of the way along
-its chord, whatever the stored vectors. Resolution: 3ds Max's steps + 1 segments per Bezier segment, ADAPTIVE for
+left and right handles, each spline with its segments' material IDs (SplineDescription.material_ids: the first
+one is the spline's, convert.materials gives it its slot). A segment 3ds Max draws straight (segment type line)
+gets handles a third of the way along its chord, whatever the stored vectors.
+Resolution: 3ds Max's steps + 1 segments per Bezier segment, ADAPTIVE for
 an adaptive shape. A shape that renders (Enable In Renderer) gets a round bevel of its thickness (Max's thickness
 is the diameter) with about as many sides, or with a rectangular section a section: the rectangle width x length
 turned by its angle, which build.curves makes a bevel object of, capped at the ends of an open spline as 3ds Max
@@ -109,7 +111,11 @@ one left unapplied changes no geometry), the run of TurboSmooth, MeshSmooth, She
 node.converted (convert.modifiers ModifierDescriptions, bottom first), built as Subdivision Surface, Solidify and
 Mirror; the first other modifier, or one the rules refuse, ends the run, and each of the four above it is an issue.
 The lowest converted smoother that changes the shading sets the mesh's, which adds ("shading", SMOOTH or CREASE) to the mesh key: SMOOTH
-leaves no sharp edge or flat face, CREASE keeps them and sets md.creases. Viewport levels that would give an
+leaves no sharp edge or flat face, CREASE keeps them and sets md.creases. A converted Shell gives its rim smoothing
+groups of its own in 3ds Max, hard against both surfaces: unless a Mirror is below it or a smoother with Smooth
+Result above it, the mesh's open edges join its sharp edges (after a SMOOTH smoother cleared them) and ("rim", True)
+the mesh key; what Solidify still cannot do (auto smooth splitting the rim's sharper corners, the override group) is
+an issue, named once per Shell and mesh, only when the mesh has open edges. Viewport levels that would give an
 object more than convert.modifiers.MAX_VIEWPORT_CORNERS face corners are lowered (an issue).
 describe(..., convert_modifiers=False) converts nothing.
 
@@ -117,6 +123,8 @@ Layers: each node names its layer's object index (None without one, or when the 
 is an issue); desc.layers holds the layers that hold a node and their parent layers, in the Layer Manager's order
 with every parent before its children. A node's hidden, frozen and renderable flags are its own: a hidden layer
 hides its nodes in 3ds Max without setting their flag, so build/ applies the layer's flags to its collection.
+Cast Shadows and Receive Shadows are the node's own too; Blender has no per-object Receive Shadows, so a mesh or
+curve node with it off is an issue (NO_RECEIVE).
 
 A local matrix with shear (a scale along a rotated axis) sets node.sheared: Blender's matrix_basis cannot hold
 it, so build/ puts the rest into matrix_parent_inverse. A base object's reader arrays (an extruded shape's too) are
@@ -144,6 +152,7 @@ MAX_BUILT_CORNERS = 1 << 24
 _SPENT = "the primitives and extrusions before it reach %d face corners, the budget for one scene"
 SHEAR_TOLERANCE = 1e-5  # |cos| between two rows of a local matrix
 OFFSET = "its object is offset from its pivot: the camera looks from the pivot, 3ds Max from the object"
+NO_RECEIVE = "shadows: Receive Shadows is off: Blender has no such switch per object, it receives shadows"
 ENVIRONMENT = "environment"  # the label of an issue of the environment map (no node holds it)
 
 ChunkError = chunks.ChunkError
@@ -171,17 +180,18 @@ class NodeDescription:
     key into SceneDescription.lights, camera the key into SceneDescription.cameras (None when not one);
     class_name the base object's class ("" without one); modifiers the class names of its modifier stack not applied,
     top first, applied those evaluated into its mesh (an Extrude); layer the layer's object index (None without
-    one); hidden, frozen, renderable, group_head and group_member the node's own flags; sheared whether matrix has
-    shear (see sheared()); converted the modifiers that become Blender modifiers (convert.modifiers
-    ModifierDescriptions, bottom first); look_at the LookAtDescription of a Look At controller aimed at a node, else
-    None."""
+    one); hidden, frozen, renderable, cast_shadows, receive_shadows, group_head and group_member the node's own
+    flags; sheared whether matrix has shear (see sheared()); converted the modifiers that become Blender
+    modifiers (convert.modifiers ModifierDescriptions, bottom first); look_at the LookAtDescription of a Look At
+    controller aimed at a node, else None."""
     __slots__ = ("index", "name", "parent", "matrix", "world", "kind", "mesh", "class_name", "mirrored",
                  "modifiers", "layer", "hidden", "frozen", "renderable", "group_head", "group_member", "sheared",
-                 "curve", "applied", "converted", "look_at", "light", "camera")
+                 "curve", "applied", "converted", "look_at", "light", "camera", "cast_shadows", "receive_shadows")
 
     def __init__(self, index, name, parent, matrix, world, kind, mesh, class_name, mirrored, modifiers, layer=None,
                  hidden=False, frozen=False, renderable=True, group_head=False, group_member=False, sheared=False,
-                 curve=None, applied=(), converted=(), look_at=None, light=None, camera=None):
+                 curve=None, applied=(), converted=(), look_at=None, light=None, camera=None, cast_shadows=True,
+                 receive_shadows=True):
         self.index, self.name, self.parent, self.matrix, self.world = index, name, parent, matrix, world
         self.kind, self.mesh, self.class_name, self.mirrored, self.modifiers = kind, mesh, class_name, mirrored, \
             modifiers
@@ -189,6 +199,7 @@ class NodeDescription:
         self.group_head, self.group_member, self.sheared = group_head, group_member, sheared
         self.curve, self.applied, self.converted, self.look_at = curve, applied, converted, look_at
         self.light, self.camera = light, camera
+        self.cast_shadows, self.receive_shadows = cast_shadows, receive_shadows
 
     def __repr__(self):
         return "NodeDescription(%d, %r, %s, parent=%r)" % (self.index, self.name, self.kind, self.parent)
@@ -246,11 +257,15 @@ class MeshDescription:
 
 class SplineDescription:
     """One Bezier spline in meters: points, left and right handles, each [(x, y, z)] (Blender's handle_left is Max's
-    in vector, handle_right its out vector), cyclic for a closed spline."""
-    __slots__ = ("points", "left", "right", "cyclic")
+    in vector, handle_right its out vector), cyclic for a closed spline; material_ids the distinct zero-based
+    material IDs of its segments in segment order (segment_ids), material the first of them, the one the spline
+    is drawn with (Blender has one material per spline)."""
+    __slots__ = ("points", "left", "right", "cyclic", "material", "material_ids")
 
-    def __init__(self, points, left, right, cyclic):
+    def __init__(self, points, left, right, cyclic, material_ids=(0,)):
         self.points, self.left, self.right, self.cyclic = points, left, right, cyclic
+        self.material_ids = tuple(material_ids) or (0,)
+        self.material = self.material_ids[0]
 
     def __repr__(self):
         return "SplineDescription(%d points%s)" % (len(self.points), ", cyclic" if self.cyclic else "")
@@ -356,6 +371,113 @@ def sharp_edges(loop_vertices, loop_starts, loop_totals, groups):
         sharp = numpy.sort(numpy.concatenate((sharp, numpy.asarray(more, dtype=sharp.dtype))))
     src = order[sharp]
     return numpy.stack((lo[src], hi[src]), axis=1).astype(numpy.int32)
+
+
+def open_edges(loop_vertices, loop_starts, loop_totals, check=None):
+    """The edges only one face uses (the mesh's boundary), as sorted vertex pairs int32 (E, 2) in sharp_edges()'s
+    order. check() between the passes."""
+    import numpy
+    loops, following = _open_loops(loop_vertices, loop_starts, loop_totals, check)
+    lv = numpy.asarray(loop_vertices, dtype=numpy.int32)
+    a, b = lv[loops], lv[following]
+    return _merged_edges(numpy.stack((numpy.minimum(a, b), numpy.maximum(a, b)), axis=1), numpy.zeros((0, 2)))
+
+
+def _open_loops(loop_vertices, loop_starts, loop_totals, check=None):
+    """(loops, following): the loops whose edge to the next loop of their face no other loop has (the open edges, in
+    their face's winding) and those next loops, int64 arrays as long as the boundary. Per loop only an int32 and the
+    int64 edge key, as in sharp_edges(): the arrays per loop are the peak of a mesh's conversion."""
+    import numpy
+    lv = numpy.asarray(loop_vertices, dtype=numpy.int32)
+    empty = numpy.zeros(0, dtype=numpy.int64)
+    if not len(lv):
+        return empty, empty
+    starts = numpy.asarray(loop_starts, dtype=numpy.int64)
+    totals = numpy.asarray(loop_totals, dtype=numpy.int64)
+    following = numpy.arange(1, len(lv) + 1, dtype=numpy.int32)
+    following[starts + totals - 1] = starts  # the last loop of a face closes it
+    b = lv[following]
+    del following
+    key = numpy.minimum(lv, b).astype(numpy.int64)
+    key *= int(lv.max()) + 1
+    key += numpy.maximum(lv, b)
+    del b
+    order = numpy.argsort(key, kind="stable")
+    key = key[order]
+    if check is not None:
+        check()
+    first = numpy.flatnonzero(numpy.concatenate(([True], key[1:] != key[:-1])))
+    counts = numpy.diff(numpy.append(first, len(key)))
+    del key
+    loops = numpy.sort(order[first[counts == 1]]).astype(numpy.int64)
+    face = numpy.searchsorted(starts, loops, side="right") - 1
+    nxt = loops + 1
+    wrap = nxt == starts[face] + totals[face]
+    nxt[wrap] = starts[face[wrap]]
+    return loops, nxt
+
+
+def _merged_edges(a, b):
+    """The union of two arrays of sorted vertex pairs (E, 2), sorted and without repeats."""
+    import numpy
+    pairs = numpy.concatenate((numpy.asarray(a, dtype=numpy.int64).reshape(-1, 2),
+                               numpy.asarray(b, dtype=numpy.int64).reshape(-1, 2)))
+    if not len(pairs):
+        return numpy.zeros((0, 2), dtype=numpy.int32)
+    n = int(pairs.max()) + 1
+    keys = numpy.unique(pairs[:, 0] * n + pairs[:, 1])
+    return numpy.stack((keys // n, keys % n), axis=1).astype(numpy.int32)
+
+
+def rim_corners(positions, loop_vertices, loop_starts, loop_totals, angle, check=None):
+    """How many corners of the rim a Shell builds on this mesh turn by more than angle degrees: at each boundary
+    vertex two rim faces meet, each along an open edge a -> b (its face's winding) and the shell's offset direction
+    at its ends, so its normal is (pb - pa) x (na + nb), n the sum of the unit face normals at a vertex. 3ds Max's
+    auto smooth splits the rim there; with the open edges sharp, Blender's Solidify keeps it smooth. Only the faces
+    at the boundary are measured; check() between the passes."""
+    import numpy
+    loops, nxt = _open_loops(loop_vertices, loop_starts, loop_totals, check)
+    if not len(loops):
+        return 0
+    lv = numpy.asarray(loop_vertices, dtype=numpy.int32)
+    starts = numpy.asarray(loop_starts, dtype=numpy.int64)
+    totals = numpy.asarray(loop_totals, dtype=numpy.int64)
+    p = numpy.asarray(positions, dtype=numpy.float64)
+    oa, ob = lv[loops].astype(numpy.int64), lv[nxt].astype(numpy.int64)
+    boundary = numpy.unique(numpy.concatenate((oa, ob)))
+    slot = numpy.full(len(p), -1, dtype=numpy.int64)  # vertex -> its place in boundary, -1 off the boundary
+    slot[boundary] = numpy.arange(len(boundary))
+    if check is not None:
+        check()
+    touching = numpy.flatnonzero(slot[lv] >= 0)
+    faces = numpy.unique(numpy.searchsorted(starts, touching, side="right") - 1)
+    del touching
+    sizes = totals[faces]
+    own = numpy.repeat(numpy.arange(len(faces)), sizes)  # each loop of those faces: its face among them
+    first = numpy.repeat(starts[faces], sizes)
+    fl = first + numpy.arange(int(sizes.sum())) - numpy.repeat(numpy.cumsum(sizes) - sizes, sizes)
+    fn = fl + 1
+    wrap = fn == first + sizes[own]
+    fn[wrap] = first[wrap]
+    normals = numpy.zeros((len(faces), 3))
+    numpy.add.at(normals, own, numpy.cross(p[lv[fl]], p[lv[fn]]))  # Newell: twice the area along the normal
+    length = numpy.linalg.norm(normals, axis=1)
+    normals = numpy.divide(normals, length[:, None], out=numpy.zeros_like(normals), where=length[:, None] > 0)
+    at = slot[lv[fl]]
+    hit = at >= 0
+    at_vertex = numpy.zeros((len(boundary), 3))
+    numpy.add.at(at_vertex, at[hit], normals[own[hit]])
+    rim = numpy.cross(p[ob] - p[oa], at_vertex[slot[oa]] + at_vertex[slot[ob]])
+    length = numpy.linalg.norm(rim, axis=1)
+    good = length > 0
+    rim = numpy.divide(rim, length[:, None], out=numpy.zeros_like(rim), where=good[:, None])
+    order = numpy.argsort(oa, kind="stable")
+    at = numpy.minimum(numpy.searchsorted(oa[order], ob), len(oa) - 1)
+    found = oa[order][at] == ob  # the open edge leaving the vertex this one ends at
+    following = order[at]
+    turn = numpy.einsum("ij,ij->i", rim, rim[following])
+    sharp = found & good & good[following] & (turn < math.cos(math.radians(angle)))
+    return int(sharp.sum())
 
 
 def _disjoint(masks):
@@ -464,6 +586,15 @@ def _straight(knots, closed):
     return left, right
 
 
+def segment_ids(knots, closed):
+    """The distinct material IDs of a spline's segments (reader knots) in segment order: the segment from a knot to
+    the next carries the knot's; the last knot of an open spline starts none (its ID is left out), a spline without
+    a segment has its first knot's."""
+    count = len(knots) if closed else len(knots) - 1
+    ids = [k.material for k in knots[:max(count, 1)]]
+    return tuple(dict.fromkeys(ids))
+
+
 def curve_description(key, name, shape, offset, meters):
     """(a CurveDescription of a reader Shape, issues): straight segments as straight handles, the offset (a reader
     matrix) applied, then meters; issues name what this drawing changes (the reader's own are the Shape's)."""
@@ -481,7 +612,7 @@ def curve_description(key, name, shape, offset, meters):
             continue
         left, right = _straight(sp.knots, sp.closed)
         splines.append(SplineDescription([place(k.point) for k in sp.knots], [place(p) for p in left],
-                                         [place(p) for p in right], sp.closed))
+                                         [place(p) for p in right], sp.closed, segment_ids(sp.knots, sp.closed)))
     resolution = ADAPTIVE if shape.adaptive else shape.steps + 1
     depth, profile, section = 0.0, 0, None
     r = shape.render
@@ -566,6 +697,7 @@ def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, 
     built = [0]  # face corners the primitives and extrusions made so far
     mapped = {}  # UVW Map modifier index -> (Params, gizmo matrix), or None when it is not evaluated
     told = set()  # modifier indices whose conversion issues were named (on the first node only)
+    rims = set()  # (Shell modifier index, mesh key) whose rim issues were named
     layers = {}  # layer object index -> reader Layer, or None when its record cannot be read
     unlit = {}  # light base object index -> why it is not built
     light_params = {}  # light base object index -> its values (convert.lights.read_params)
@@ -596,14 +728,16 @@ def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, 
                 if ext is not None:
                     fresh = {m.index for m in rest} - told  # named on this node only if its Extrude is made
                     conv, conv_issues = _converted(scene, rest, meters, _offset(t, i), told, convert_modifiers)
+                    shell = _rim(conv)
                     key, done = _extruded(scene, desc, shape_of, extruded, mapped, base, ext, maps, i, name,
-                                          t.offset(i), meters, built, _shading(conv), check)
+                                          t.offset(i), meters, built, _shading(conv), check, shell is not None)
                     if key is None:
                         told.difference_update(fresh)
                 if key is not None:
                     kind = MESH
                     converted, more = rules.budget(conv, len(desc.meshes[key].loop_vertices))
                     desc.issues.extend((i, x) for x in conv_issues + more)
+                    _name_rim(desc, rims, shell, key, i, check)
                     applied, modifiers = _split(scene, stack.modifiers, (ext,) + done, conv)
                 else:
                     kind, curve = _curve(scene, desc, shape_of, base, i, name, t.offset(i), meters)
@@ -639,10 +773,12 @@ def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, 
                     offset = _offset(t, i)
                     converted, conv_issues = _converted(scene, rest, meters, offset, told, convert_modifiers)
                     desc.issues.extend((i, x) for x in conv_issues)
+                    shell = _rim(converted)
                     key, done = _mapped_mesh(scene, desc, mapped, (base, offset), data, maps, i, name, offset,
-                                             meters, _shading(converted), check)
+                                             meters, _shading(converted), check, shell is not None)
                     converted, more = rules.budget(converted, len(desc.meshes[key].loop_vertices))
                     desc.issues.extend((i, x) for x in more)
+                    _name_rim(desc, rims, shell, key, i, check)
                     if done or converted:
                         applied, modifiers = _split(scene, stack.modifiers, done, converted)
                     kind = MESH
@@ -655,7 +791,10 @@ def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, 
                                                         or base in light_params or base in unseen)):
             desc.placeholders[class_name] += 1
         flags = {} if node is None else dict(hidden=node.hidden, frozen=node.frozen, renderable=node.renderable,
-                                             group_head=node.group_head, group_member=node.group_member)
+                                             group_head=node.group_head, group_member=node.group_member,
+                                             cast_shadows=node.cast_shadows, receive_shadows=node.receive_shadows)
+        if node is not None and not node.receive_shadows and kind in (MESH, CURVE):
+            desc.issues.append((i, NO_RECEIVE))
         desc.nodes.append(NodeDescription(i, name, scene.parent(i), blender_matrix(local, meters),
                                           blender_matrix(world, meters), kind, key, class_name,
                                           determinant3(world) < 0, modifiers, layer, sheared=sheared(local),
@@ -890,6 +1029,54 @@ def _shading(converted):
     return next((m.shading for m in converted if m.kind == rules.SUBSURF and m.shading), None)
 
 
+def _rim(converted):
+    """The lowest converted Shell (a ModifierDescription) whose rim MaxDrop hardens as 3ds Max does (the mesh's open
+    edges sharp): one without a Mirror below it (its weld would turn open edges on the plane into a seam; not
+    measured) or a smoother with Smooth Result above it (which smooths the rim too). None otherwise. A Shell above
+    another meets a closed mesh: only the lowest makes a rim."""
+    for k, m in enumerate(converted):
+        if m.kind == rules.MIRROR:
+            return None
+        if m.kind == rules.SOLIDIFY:
+            above = converted[k + 1:]
+            return None if any(x.kind == rules.SUBSURF and x.shading == rules.SMOOTH for x in above) else m
+    return None
+
+
+def rim_issues(md, rim, check=None):
+    """What Blender's Solidify does not do of a Shell's RimRule on MeshDescription md (none when md has no open
+    edge): auto smooth splitting the rim's sharper corners (rim_corners, on the mesh below the modifiers: a
+    TurboSmooth below the Shell keeps a plane's four corners, 1 to 3 iterations in 3ds Max 2020), the override group
+    with auto smooth off (3ds Max merges the rim into faces along it of that group; named whatever the groups of
+    those faces). check() between the passes."""
+    if rim is None:
+        return []
+    if rim.auto_smooth:
+        n = rim_corners(md.positions, md.loop_vertices, md.loop_starts, md.loop_totals, rim.angle, check)
+        return ["auto smooth: %d corners of the rim sharper than %g degrees shade smooth (3ds Max splits the rim "
+                "there)" % (n, rim.angle)] if n else []
+    if rim.override is None or not len(_open_loops(md.loop_vertices, md.loop_starts, md.loop_totals, check)[0]):
+        return []
+    return ["smoothing group override (group %d) not converted: 3ds Max merges the rim into the faces along it of "
+            "that group" % rim.override]
+
+
+def _name_rim(desc, rims, shell, key, node, check=None):
+    """The rim issues of Shell shell (a ModifierDescription or None) on mesh key, on node: once per Shell and mesh."""
+    if shell is None or (shell.index, key) in rims:
+        return
+    rims.add((shell.index, key))
+    md = desc.meshes[key]
+    desc.issues.extend((node, "modifiers: %s: %s" % (shell.class_name or "Shell", x))
+                       for x in rim_issues(md, shell.rim, _large(md, check)))
+
+
+def _large(md, check):
+    """check for the passes over md when it has more than reader.geometry.CHECK_EVERY face corners, else None (the
+    call counts of a small mesh stay once per node, as in mesh_description)."""
+    return check if check is not None and len(md.loop_vertices) > geometry.CHECK_EVERY else None
+
+
 def _split(scene, stack_modifiers, done, converted=()):
     """(applied, rest): the class names of the modifiers done (reader Modifiers, bottom first) and of the rest of the
     stack (object indices, top first) without them and without those converted (ModifierDescriptions)."""
@@ -922,10 +1109,12 @@ def _mapping(scene, mapped, m, issues, node):
     return mapped[m.index]
 
 
-def _mapped_mesh(scene, desc, mapped, key, data, maps, node, name, offset, meters, shading=None, check=None):
+def _mapped_mesh(scene, desc, mapped, key, data, maps, node, name, offset, meters, shading=None, check=None,
+                 rim=False):
     """(the key in desc.meshes of reader MeshData data under the UVW Maps maps, the maps applied), made on first use:
     key extended by (modifier index, context matrix) per UVW Map evaluated, then by ("shading", shading) when a
-    converted smoother changes the shading (SMOOTH: no sharp edge or flat face; CREASE: the sharp edges creased).
+    converted smoother changes the shading (SMOOTH: no sharp edge or flat face; CREASE: the sharp edges creased),
+    then by ("rim", True) when a converted Shell's rim is hardened (_rim): the open edges join the sharp ones.
     check goes to mesh_description."""
     usable = []
     for m in maps:
@@ -939,6 +1128,8 @@ def _mapped_mesh(scene, desc, mapped, key, data, maps, node, name, offset, meter
     key = key + tuple((m.index, m.context.tm) for m, _found in usable)
     if shading is not None:
         key = key + (("shading", shading),)
+    if rim:
+        key = key + (("rim", True),)
     md = desc.meshes.get(key)
     if md is None:
         done = []
@@ -953,6 +1144,9 @@ def _mapped_mesh(scene, desc, mapped, key, data, maps, node, name, offset, meter
         if shading == rules.SMOOTH:
             md.sharp_faces[:] = False
             md.sharp_edges = md.sharp_edges[:0]
+        if rim:
+            md.sharp_edges = _merged_edges(md.sharp_edges, open_edges(md.loop_vertices, md.loop_starts,
+                                                                      md.loop_totals, _large(md, check)))
         md.creases = shading == rules.CREASE
         if md.dropped_faces:
             desc.issues.append((node, "geometry: %d faces with a repeated vertex or doubled, left out"
@@ -962,7 +1156,7 @@ def _mapped_mesh(scene, desc, mapped, key, data, maps, node, name, offset, meter
 
 
 def _extruded(scene, desc, shape_of, extruded, mapped, base, ext, maps, node, name, offset, meters, built,
-              shading=None, check=None):
+              shading=None, check=None, rim=False):
     """(the key in desc.meshes of shape base under the Extrude ext and the UVW Maps maps, the maps applied), made on
     first use; (None, ()) when the shape or the Extrude cannot be read or the scene's MAX_BUILT_CORNERS are spent (an
     issue, once per base object and Extrude). extruded caches the MeshData per base object, built counts the face
@@ -987,7 +1181,7 @@ def _extruded(scene, desc, shape_of, extruded, mapped, base, ext, maps, node, na
         return None, ()
     offset = None if offset == controllers.IDENTITY else offset
     return _mapped_mesh(scene, desc, mapped, (base, offset, ext.index), data, maps, node, name, offset, meters,
-                        shading, check)
+                        shading, check, rim)
 
 
 def _layer(scene, i, layers, issues, node):

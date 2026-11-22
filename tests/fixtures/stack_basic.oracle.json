@@ -152,6 +152,7 @@
       "bbox_max": [8.78472, 8.78472, 18.7847],
       "bbox_min": [-8.78472, -8.78472, 1.21528],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": 192,
       "eval_maps": [
         {
@@ -737,7 +738,7 @@
         }
       ],
       "eval_mesh": {
-        "map_channel_1": {"count": 150, "max": [0.833333, 0.833333, 0.833333], "min": [0.166667, 0.166667, 0.166667]},
+        "map_channel_1": {"corners": null, "count": 150, "max": [0.833333, 0.833333, 0.833333], "min": [0.166667, 0.166667, 0.166667]},
         "material_ids": [[1, 32, 0, 0], [2, 0, 32, 0], [3, 16, 16, 0], [4, 16, 16, 0], [5, 16, 16, 0], [6, 16, 16, 0]],
         "smoothing": {"flat": 0, "hard_edges": 0, "regions": 1}
       },
@@ -756,6 +757,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": null,
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]
@@ -769,10 +771,11 @@
       "bbox_max": [45, 5, 40],
       "bbox_min": [35, -5, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": 12,
       "eval_maps": null,
       "eval_mesh": {
-        "map_channel_1": {"count": 24, "max": [1, 1, 0], "min": [0, 0, 0]},
+        "map_channel_1": {"corners": null, "count": 24, "max": [1, 1, 0], "min": [0, 0, 0]},
         "material_ids": [[1, 2, 0, 0], [2, 0, 2, 0], [3, 0, 0, 2], [4, 0, 0, 2], [5, 0, 0, 2], [6, 0, 0, 2]],
         "smoothing": {"flat": 0, "hard_edges": 12, "regions": 6}
       },
@@ -791,6 +794,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": null,
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 40, 0, 0]
@@ -804,10 +808,11 @@
       "bbox_max": [84.8722, 4.83272, 9.77378],
       "bbox_min": [74.7139, -5.29202, -0.345847],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": 12,
       "eval_maps": null,
       "eval_mesh": {
-        "map_channel_1": {"count": 24, "max": [1, 1, 0], "min": [0, 0, 0]},
+        "map_channel_1": {"corners": null, "count": 24, "max": [1, 1, 0], "min": [0, 0, 0]},
         "material_ids": [[1, 2, 0, 0], [2, 0, 2, 0], [3, 0, 2, 0], [4, 2, 0, 0], [5, 0, 2, 0], [6, 2, 0, 0]],
         "smoothing": {"flat": 0, "hard_edges": 12, "regions": 6}
       },
@@ -826,6 +831,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": null,
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 80, 0, 0]
@@ -839,10 +845,11 @@
       "bbox_max": [104.872, 4.93373, 19.885],
       "bbox_min": [94.5955, -5.37262, -0.308817],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": 12,
       "eval_maps": null,
       "eval_mesh": {
-        "map_channel_1": {"count": 24, "max": [1, 1, 0], "min": [0, 0, 0]},
+        "map_channel_1": {"corners": null, "count": 24, "max": [1, 1, 0], "min": [0, 0, 0]},
         "material_ids": [[1, 2, 0, 0], [2, 0, 2, 0], [3, 0, 2, 0], [4, 2, 0, 0], [5, 0, 2, 0], [6, 2, 0, 0]],
         "smoothing": {"flat": 0, "hard_edges": 12, "regions": 6}
       },
@@ -861,6 +868,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": null,
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 100, 0, 0]
@@ -874,10 +882,11 @@
       "bbox_max": [145, 5, 30],
       "bbox_min": [135, -5, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": 12,
       "eval_maps": null,
       "eval_mesh": {
-        "map_channel_1": {"count": 24, "max": [1, 1, 0], "min": [0, 0, 0]},
+        "map_channel_1": {"corners": null, "count": 24, "max": [1, 1, 0], "min": [0, 0, 0]},
         "material_ids": [[1, 2, 0, 0], [2, 0, 2, 0], [3, 2, 0, 0], [4, 2, 0, 0], [5, 2, 0, 0], [6, 2, 0, 0]],
         "smoothing": {"flat": 0, "hard_edges": 12, "regions": 6}
       },
@@ -896,6 +905,7 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": null,
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 140, 0, 0]
@@ -909,10 +919,11 @@
       "bbox_max": [165, 5, 30],
       "bbox_min": [155, -5, 0],
       "camera": null,
+      "cast_shadows": true,
       "eval_faces": 12,
       "eval_maps": null,
       "eval_mesh": {
-        "map_channel_1": {"count": 24, "max": [1, 1, 0], "min": [0, 0, 0]},
+        "map_channel_1": {"corners": null, "count": 24, "max": [1, 1, 0], "min": [0, 0, 0]},
         "material_ids": [[1, 2, 0, 0], [2, 0, 2, 0], [3, 2, 0, 0], [4, 2, 0, 0], [5, 2, 0, 0], [6, 2, 0, 0]],
         "smoothing": {"flat": 0, "hard_edges": 12, "regions": 6}
       },
@@ -931,12 +942,13 @@
       "offset_rot": [0, 0, 0, 1],
       "offset_scale": [1, 1, 1],
       "parent": null,
+      "receive_shadows": true,
       "renderable": true,
       "shape": null,
       "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 160, 0, 0]
     }
   ],
-  "oracle_version": 10,
+  "oracle_version": 13,
   "render": {"camera": null, "height": 480, "pixel_aspect": 1, "width": 640},
   "renderer": {"class_id": ["0x00000001", "0x00000000"], "class_name": "Default_Scanline_Renderer"},
   "time": 0,

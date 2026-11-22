@@ -19,20 +19,24 @@ oracle's instances), outward normals as rendered (the inverse transpose of the w
 points away from the oracle's bounding box center, also on the mirrored object) and the class of each placeholder. The
 oracle has no map channels or smoothing groups of a base mesh: those expectations come from the fixture scripts
 (tools/fixtures/*.ms).
+Each mesh and curve object casts shadows (visible_shadow) as the oracle's cast_shadows says; layers_flags:
+FixtureNoCastShadow is the one that casts none.
 shapes: each shape node a curve object (3D, FREE handles) with the oracle's splines, point counts and cyclic flags,
 its points where 3ds Max has its knots, each segment's middle (mathutils.geometry.interpolate_bezier) where 3ds Max
 interpolates it (the straight segment included), the resolution from the steps, a bevel and faces only on the
 renderable FixtureLine. shapes_more: the same for its NGon corners, Ellipse outlines and Arcs; a rectangular section
 a hidden bevel object in the import's collection, its corners where 3ds Max's render mesh has them; FixtureCurveStd's
-Standard material and FixtureCurveMulti's Multi/Sub-Object entry for ID 1 in one slot on their curves, no slot on the
-other curves.
+Standard material and FixtureCurveMulti's Multi/Sub-Object entry for ID 1 in one slot on their curves,
+FixtureCurveIds' two splines (IDs 2 and 1) each on the slot of its entry, FixtureCurveMixed (IDs 2, 1, 1) on ID 2's,
+no slot on the other curves; on every fixture each spline's material index is its slot.
 Converted modifiers (TurboSmooth, MeshSmooth, Shell, Symmetry): each object's Blender modifiers in 3ds Max's order with
-the description's settings and mirror empties, creases where a smoother separates by smoothing groups, and the
-evaluated mesh with 3ds Max's vertex and triangle counts, world box and shading (flat faces, smooth regions and hard
-edges, the oracle's eval_mesh.smoothing; SMOOTHING_DIFFERS pins Blender's where it differs: a Shell's rim, a weld);
-under a Solidify its triangles facing up, down and sideways in object space as 3ds Max's (stack_shell: Shells on
-one side of the original and inside out) (stack_convert, stack_shell, stack_basic, modifier_pivot; not FixtureOrder,
-whose seam 3ds Max leaves unwelded: EVAL_COUNT_DIFFERS); stack_convert imported with Modifiers: Ignore gets none.
+the description's settings and mirror empties, creases where a smoother separates by smoothing groups (none on open
+edges), and the evaluated mesh with 3ds Max's vertex and triangle counts, world box and shading (flat faces, smooth
+regions and hard edges, the oracle's eval_mesh.smoothing; SMOOTHING_DIFFERS pins Blender's where it differs: two
+Shell rims, a weld); under a Solidify its triangles facing up, down and sideways in object space as 3ds Max's
+(stack_shell: Shells on one side of the original and inside out, their rims) (stack_convert, stack_shell,
+stack_basic, modifier_pivot; not FixtureOrder, whose seam 3ds Max leaves unwelded: EVAL_COUNT_DIFFERS); stack_convert
+imported with Modifiers: Ignore gets none.
 primitives (convert/primitives.py): each node a mesh with 3ds Max's vertex and triangle counts (eval_verts, eval_faces)
 and world box, its UV layer (none without Generate Mapping Coords), sharp edges, the unsmoothed GeoSphere flat, normals
 outward but for the Planes (up, or down for the one of negative width) and the Box of negative width (in, as 3ds Max
@@ -67,8 +71,10 @@ oracle's, and scene.camera the oracle's render camera (cameras: CamTarget, the l
 camera (lookat: FixtureCam); cameras holds eleven camera objects with a Camera each. Without a camera the scene's render
 size and camera stay as they were.
 Each fixture's import report is published (build.report) and must say nothing was left out; the one the
-operator published for vray_wrappers lists its three peeled wrappers by class. A changed layers_more description
-checks a hidden parent layer, which no fixture has: its child layer is out of the view layer with it. A hand-made
+operator published for vray_wrappers lists its three peeled wrappers by class. layers_nested: the objects below a
+hidden parent layer (one and two levels down) are out of the view layer, the one below a frozen parent layer cannot
+be selected, as the oracle's inherited layer flags say; only the flagged layers' own collections carry a flag.
+A hand-made
 description with sheared local matrices (top-level and parented, hidden, a zero scale) checks that Blender's world
 matrices equal the products of the locals, through the helper empty for top-level ones; controllers' FixtureScaleAxis
 (a scale along a turned axis) is such a top-level node in a fixture. Material
@@ -135,6 +141,7 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
     "instances": ["UVMap"],
     "layers_flags": [],
     "layers_more": [],
+    "layers_nested": [],
     "lookat": [],  # boxes without Generate Mapping Coords
     "modifier_pivot": ["UVMap"],  # FixtureBent's UVW Map writes channel 1 (applied, the Bend above it is not)
     "multi_uv": ["UVMap", "UVChannel_2", "UVChannel_3"],
@@ -166,6 +173,7 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
     "lights_photometric": [],
     "cameras": [],  # its box, without Generate Mapping Coords
     "controllers": [],  # boxes without Generate Mapping Coords
+    "controllers_tangents": [],  # boxes without Generate Mapping Coords
     "vray_wrappers": ["UVMap"],
     "uvwmap": {"FixtureUVWGizmo": ["UVMap", "UVChannel_2"], "FixtureUVWTwo": ["UVMap", "UVChannel_3"]},  # else UVMap
     "uvwmap_oblique": ["UVMap"],
@@ -177,14 +185,19 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
 SHARP_EDGES = {"editable_mesh": 8, "modifier_pivot": {"FixtureSmooth": 0, None: 24},
                "stack_basic": {"FixtureTurbo": 0, None: 12},
                "stack_convert": {"FixtureTurboOne": 0, "FixtureMeshSmooth": 0, "FixtureOrder": 0, None: 12},
-               "stack_shell": 8,  # boxes without their top: the 4 vertical and the 4 bottom edges
+               # boxes without their top: the 4 vertical and the 4 bottom edges, and the 4 open edges a hardened Shell
+               # rim makes sharp; the plane's open edges; a TurboSmooth below the Shell clears the groups, not the
+               # open edges; one above it smooths the rim too
+               "stack_shell": {"FixtureShellPlane": 4, "FixtureShellTurbo": 4, "FixtureShellSmoothed": 0, None: 12},
                # boxes of 3 x 2 x 2 segments: 28; the cylinder's rims 2 x 16; the sphere is smooth
                "uvwmap": {"FixtureUVWCyl": 32, "FixtureUVWSphere": 0, "FixtureUVWSharedB": 12, None: 28},
                # smooth spheres, the rims of a 10-sided cylinder
                "uvwmap_oblique": {"FixtureUVWObliqueCap": 20, None: 0},
                # the rims of 10-sided cylinders, smooth spheres
                "uvwmap_pole": {"FixtureUVWPoleCylinder": 20, "FixtureUVWPoleNear": 20, "FixtureUVWPoleOff": 20,
-                               "FixtureUVWPoleDiagonal": 20, None: 0},
+                               "FixtureUVWPoleDiagonal": 20,
+                               "FixtureUVWPoleCone": 10,  # its base rim
+                               "FixtureUVWPoleTile": 20, "FixtureUVWPoleCenter": 20, None: 0},
                # primitives (tests/unit/test_convert_scene.py, SHARP_EDGES_PRIMITIVES); the TurboSmooth smooths
                "primitives": {"FixtureBox": 36, "FixtureBoxCopy": 36, "FixtureBoxDown": 12, "FixtureBoxNoMap": 12,
                               "FixtureBoxSmooth": 0, "FixturePyramid": 18, "FixtureGeoOcta": 48,
@@ -202,7 +215,8 @@ CLASS_NAMES = {"Targetobject": "Target", "Targetcamera": "Target"}
 FLAT_SHADED = {"FixtureGeoOcta"}  # a GeoSphere not smoothed: no smoothing group, every face flat
 # primitives whose normals are not "away from the box center": a Plane's point up or down (by its sizes' signs), and
 # a Box of width -12 keeps 3ds Max's faces, which point in
-PLANE_NORMALS = {"FixturePlane": 1.0, "FixturePlaneDown": -1.0, "FixturePlaneReal": 1.0}
+PLANE_NORMALS = {"FixturePlane": 1.0, "FixturePlaneDown": -1.0, "FixturePlaneReal": 1.0,
+                 "FixtureShellPlane": 1.0}  # stack_shell's base plane (its Shell is a Solidify)
 INSIDE_OUT = {"FixtureBoxInside"}
 # vray_lights (tools/fixtures/vray_lights.ms): watts of the rules source's ocbaby_exsVrayLightWatts, run in 3ds Max
 # on each light; the factor MaxDrop changes them by (the disc in lm/m2/sr, measured against V-Ray; the double-sided
@@ -308,11 +322,13 @@ EXTRUDE_UV_LAYERS = {"FixtureExtRect": ["UVMap"], "FixtureExtAdaptive": ["UVMap"
 EXTRUDE_SHARP_EDGES = {"FixtureExtRect": 16, "FixtureExtL": 18, "FixtureExtHole": 68, "FixtureExtIsland": 36,
                        "FixtureExtOpen": 0, "FixtureExtMirror": 72, "FixtureExtAdaptive": 256,
                        "FixtureExtShapeIDs": 41, "FixtureExtShapeIDsRect": 12, "FixtureUVWExtrude": 12,
-                       "FixturePieRevExt": 46, "FixturePieRevWrapExt": 46, "FixturePieExt": 46,
+                       "FixtureExtGrid": 36, "FixtureExtGridCircle": 16,
+                       "FixturePieRevExt": 52, "FixturePieRevWrapExt": 52, "FixturePieExt": 52,
                        "FixtureArcRevExt": 0, "FixtureClockwiseExt": 16, "FixtureHoleExt": 72}
 EXTRUDE_EULER = {"FixtureExtRect": 2, "FixtureExtL": 2, "FixtureExtHole": 0, "FixtureExtIsland": 2,
                  "FixtureExtOpen": None, "FixtureExtMirror": 2, "FixtureExtAdaptive": 2, "FixtureExtShapeIDs": 0,
                  "FixtureExtShapeIDsRect": 2, "FixtureUVWExtrude": 2, "FixturePieRevExt": 2,
+                 "FixtureExtGrid": 0, "FixtureExtGridCircle": None,  # grid caps: a holed solid; one cap
                  "FixturePieRevWrapExt": 2, "FixturePieExt": 2, "FixtureArcRevExt": None, "FixtureClockwiseExt": 2,
                  "FixtureHoleExt": 0}
 VALUE_TOLERANCE = 1e-4
@@ -361,10 +377,11 @@ def close(a, b, tolerance):
 
 
 def world_of(ob):
-    """ob's world matrix: matrix_world, or for an object hidden in the viewport (left out of the evaluated scene,
-    so its matrix_world is never updated) the same product Blender evaluates, up the parent chain. A visible child
-    of a hidden parent is read from matrix_world: Blender must place it."""
-    if not ob.hide_viewport:
+    """ob's world matrix: matrix_world, or for an object hidden in the viewport or out of the view layer (an excluded
+    collection's, layers_nested) the same product Blender evaluates, up the parent chain: such an object is left out
+    of the evaluated scene, so its matrix_world is never updated. A visible child of a hidden parent is read from
+    matrix_world: Blender must place it."""
+    if not ob.hide_viewport and ob.name in bpy.context.view_layer.objects:
         return ob.matrix_world
     m = ob.matrix_basis.copy()
     while ob.parent is not None:
@@ -453,6 +470,9 @@ def run_fixture(path, modules):
         if node.kind == convert_scene.LIGHT and not desc.lights[node.light].on:  # a light switched off
             want = (True, o["hidden"], True, o["frozen"])
         check(label + ": hidden, renderable and frozen flags", flags == want, str(flags))
+        if node.kind in (convert_scene.MESH, convert_scene.CURVE):
+            check(label + ": casts shadows as in 3ds Max", ob.visible_shadow == o["cast_shadows"],
+                  str(ob.visible_shadow))
         if node.kind == convert_scene.LIGHT:
             check_light(label, ob, desc.lights[node.light], o)
             continue
@@ -551,8 +571,8 @@ def run_fixture(path, modules):
         check_modifier_pivot(obs, meters)
     if name == "extrude":
         kinds = [ob.type for ob in obs]
-        check("extrude: nine meshes, the switched-off Extrude a curve",
-              kinds == ['MESH'] * 7 + ['CURVE'] + ['MESH'] * 2, str(kinds))
+        check("extrude: eleven meshes, the switched-off Extrude a curve",
+              kinds == ['MESH'] * 7 + ['CURVE'] + ['MESH'] * 4, str(kinds))
     if name == "shapes":
         curves = sorted(c.name for c in bpy.data.curves)
         shaped = sum(1 for o in nodes if o["shape"] is not None)
@@ -587,6 +607,8 @@ def run_fixture(path, modules):
         check("layers_flags: one hidden object", hidden == ["FixtureHidden"], str(hidden))
         no_render = [ob.name for ob in obs if ob.hide_render]
         check("layers_flags: one object with hide_render", no_render == ["FixtureNoRender"], str(no_render))
+        no_shadow = [ob.name for ob in obs if not ob.visible_shadow]
+        check("layers_flags: one object that casts no shadows", no_shadow == ["FixtureNoCastShadow"], str(no_shadow))
         group = bpy.data.objects["FixtureGroup"]
         members = sorted(ob.name for ob in group.children)
         check("layers_flags: the group head is an empty with its members as children",
@@ -595,6 +617,8 @@ def run_fixture(path, modules):
         check("layers_flags: no layer excluded (none is hidden in 3ds Max)", excluded == [], str(excluded))
     if name == "layers_more":
         check_layers_more(root, obs, view_layer)
+    if name == "layers_nested":
+        check_layers_nested(root, obs, view_layer, oracle)
     bare = sorted(ob.name for ob in obs if ob.type == 'MESH' and not any(sl.material for sl in ob.material_slots)
                   and ob.name not in BARE_MESHES)
     check("%s: a material on every mesh" % name, bare == [], str(bare))
@@ -1002,14 +1026,15 @@ def check_extruded(label, ob, node, o, meters, plan):
 # Blender's Mirror welds it (84): the same surface, so only the box is compared there
 EVAL_COUNT_DIFFERS = {"FixtureOrder"}
 # Blender's evaluated (flat, regions, hard edges) where it is not 3ds Max's, pinned so that a change shows. 3ds Max
-# gives a Shell's rim smoothing groups of its own, hard against both surfaces (every stack_shell box: 11 regions, 24
-# hard edges); Blender's Solidify smooths the rim into both surfaces, until the rim is converted (maxdrop-em3.101).
+# gives a Shell's rim smoothing groups of its own, hard against both surfaces, which the open edges marked sharp give
+# Blender too, but for two cases the report names: auto smooth also splits the rim where its faces turn by more than
+# 45 degrees (FixtureShellPlane: 3ds Max 6 regions and 12 hard edges), and the override group with auto smooth off
+# merges the rim into the side of that group (FixtureShellOverride: 3ds Max 9 and 22).
 # FixtureSymmetryTurned: Blender's Mirror welds the corner 0.062 off the plane onto it, where 3ds Max slices beside
 # it: 3ds Max keeps a sliver of the side beyond the box's sharp vertical corner edge, smooth with its mirror copy;
 # in Blender that corner edge lands on the plane as the seam between the other side and its copy, a hard edge that
 # splits one more region (the vertex and triangle counts agree).
-SMOOTHING_DIFFERS = {"FixtureShellOut": (0, 3, 16), "FixtureShellIn": (0, 3, 16), "FixtureShellCrossed": (0, 3, 16),
-                     "FixtureShellNegative": (0, 3, 16), "FixtureShellRim": (0, 3, 16),
+SMOOTHING_DIFFERS = {"FixtureShellPlane": (0, 3, 8), "FixtureShellOverride": (0, 11, 24),
                      "FixtureSymmetryTurned": (0, 7, 17)}
 FACING_TOLERANCE = 1e-4  # the oracle's: a winding normal's z within it faces sideways
 
@@ -1078,12 +1103,14 @@ def _setting_ok(got, want):
 def check_converted(label, ob, node, o, meters, desc):
     """The Blender modifiers of a node (node.converted, convert.modifiers): types, order, names, settings and mirror
     objects; when MaxDrop evaluates the rest of the stack, the evaluated mesh has 3ds Max's vertex and triangle
-    counts (eval_verts, eval_faces) and world box. Creases on the sharp edges of a mesh that asks for them."""
+    counts (eval_verts, eval_faces) and world box. Creases on the sharp edges of a mesh that asks for them, but its
+    open edges (a hardened Shell rim's)."""
     md = desc.meshes[node.mesh]
     crease = ob.data.attributes.get("crease_edge")
     sharp = ob.data.attributes.get("sharp_edge")
     if md.creases:
-        flags = [d.value for d in sharp.data] if sharp else []
+        faces = collections.Counter(lp.edge_index for lp in ob.data.loops)
+        flags = [d.value and faces[k] != 1 for k, d in enumerate(sharp.data)] if sharp else []
         check(label + ": sharp edges creased", crease is not None and len(flags) == len(crease.data)
               and all((c.value == 1.0) == f for c, f in zip(crease.data, flags)) and any(flags))
     else:
@@ -1279,9 +1306,16 @@ def check_shapes_more(obs, meters):
     slots = {ob.name: [(s.link, s.material and s.material.name) for s in ob.material_slots]
              for ob in obs if ob.type == 'CURVE'}
     want = dict.fromkeys(slots, [])
-    want.update(FixtureCurveStd=[('DATA', "FixtureCurveRed")], FixtureCurveMulti=[('DATA', "FixtureCurveSubOne")])
-    check("shapes_more: a curve's 3ds Max material in one slot on the curve (a Multi/Sub-Object's ID 1), none on "
-          "the others", slots == want and len(slots) == 15, str(slots))
+    want.update(FixtureCurveStd=[('DATA', "FixtureCurveRed")], FixtureCurveMulti=[('DATA', "FixtureCurveSubOne")],
+                FixtureCurveIds=[('DATA', "FixtureCurveSubOne"), ('DATA', "FixtureCurveSubTwo")],
+                FixtureCurveMixed=[('DATA', "FixtureCurveSubTwo")])
+    check("shapes_more: a curve's 3ds Max materials in slots on the curve (a Multi/Sub-Object's entries for its "
+          "splines' IDs), none on the others", slots == want and len(slots) == 17, str(slots))
+    indices = {name: [sp.material_index for sp in by_name[name].data.splines]
+               for name in ("FixtureCurveIds", "FixtureCurveMixed", "FixtureCurveMulti")}
+    check("shapes_more: each spline on the slot of its segments' material ID (FixtureCurveIds: ID 2 then ID 1; "
+          "FixtureCurveMixed: its first segment's)",
+          indices == {"FixtureCurveIds": [1, 0], "FixtureCurveMixed": [0], "FixtureCurveMulti": [0]}, str(indices))
 
 
 def check_modifier_pivot(obs, meters):
@@ -1704,6 +1738,13 @@ def check_fixture_materials(name, plan, desc, obs):
         levels = [(name, s.is_linked, round(s.default_value, 6)) for name, s in sockets]
         check("corona_physical: every CoronaPhysicalMtl reflects the IOR's own Fresnel (Specular IOR Level 0.5)",
               len(levels) >= 3 and all(not linked and v == 0.5 for _n, linked, v in levels), str(levels))
+    for key, cd in desc.curves.items():  # each spline on its slot; without a plan, 0
+        ob = next((by_index[u] for u in cd.users if u in by_index), None)
+        if ob is None:
+            continue
+        got = [sp.material_index for sp in ob.data.splines]
+        want = plan.curves[key].indices.tolist() if key in plan.curves else [0] * len(cd.splines)
+        check("%s/%s: each spline on its material's slot" % (name, ob.name), got == want, "%s vs %s" % (got, want))
     if name == "falloff_curve":
         check_falloff_curve(textured=False)
     if name == "vray_maps":
@@ -3989,23 +4030,38 @@ def check_layers_more(root, obs, view_layer):
           child.parent is bpy.data.objects["FixtureHiddenParent"] and child.visible_get(view_layer=view_layer))
 
 
-def check_hidden_parent_layer(modules):
-    """layers_more with its description changed: FixtureParentLayer hidden in 3ds Max, so its child layer
-    (FixtureChildLayer, holding FixtureNested) is out of the view layer with it. No fixture has a hidden parent
-    layer."""
-    convert_scene = modules[0]
-    empty_scene()
-    desc = convert_scene.read(os.path.join(ROOT, "tests", "fixtures", "layers_more.max"))
-    by_name = {la.name: la for la in desc.layers}
-    parent, child = by_name["FixtureParentLayer"], by_name["FixtureChildLayer"]
-    parent.hidden = True
-    cols, _built, view_layer = build_scene(desc, "hidden_parent_layer", modules)
-    lcs = view_layer.layer_collection.children["hidden_parent_layer"].children
-    check("hidden parent layer: excluded in the view layer, its child layer nested below it",
-          lcs[parent.name].exclude and [c.name for c in cols.layers[parent.index].children] == [child.name])
+def check_layers_nested(root, obs, view_layer, oracle):
+    """layers_nested as 3ds Max saved it: the flag sits on the parent layer only, and the layers below (one and two
+    levels down) are hidden or frozen with it, as the oracle's layer flags (MAXScript's) say. Excluding a parent's
+    collection leaves out the collections below it; hide_select on a parent's reaches them too."""
+    flags = {la["name"]: la for la in oracle["layers"]}
+    by_layer = {o["name"]: flags[o["layer"]] for o in oracle["nodes"]}
+    want_out = {k for k, la in by_layer.items() if la["hidden"]}
+    want_frozen = {k for k, la in by_layer.items() if la["frozen"]}
+    check("layers_nested: the oracle calls the layers below a hidden or frozen parent hidden or frozen",
+          want_out == {"FixtureUnderHiddenParent", "FixtureDeepNested"} and want_frozen == {"FixtureUnderFrozenParent"},
+          "%s %s" % (sorted(want_out), sorted(want_frozen)))
+    lcs = view_layer.layer_collection.children[root.name].children
+    excluded = [lc.name for lc in lcs if lc.exclude]
+    check("layers_nested: the hidden parent layers' collections excluded",
+          excluded == ["FixtureHiddenParentLayer", "FixtureTopLayer"], str(excluded))
+    check("layers_nested: hide_select on the frozen parent layer's collection only",
+          [c.name for c in root.children_recursive if c.hide_select] == ["FixtureFrozenParentLayer"]
+          and not any(c.hide_render for c in root.children_recursive))
     visible = {ob.name for ob in view_layer.objects}
-    check("hidden parent layer: its child layer's object is out of the view layer",
-          "FixtureNested" not in visible and "FixtureOnTextLayer" in visible, str(sorted(visible)))
+    names = {ob.name for ob in obs}
+    check("layers_nested: the objects below a hidden parent layer are out of the view layer",
+          names - visible == want_out, str(sorted(names - visible)))
+    shown = [ob for ob in obs if ob.name in visible]
+    check("layers_nested: no object carries a flag of its own",
+          not any(ob.hide_get(view_layer=view_layer) or ob.hide_select or ob.hide_render for ob in shown))
+    for ob in shown:
+        ob.select_set(True, view_layer=view_layer)
+    picked = {ob.name for ob in shown if ob.select_get(view_layer=view_layer)}
+    for ob in shown:
+        ob.select_set(False, view_layer=view_layer)
+    check("layers_nested: the object below the frozen parent layer cannot be selected, FixtureControl can",
+          picked == {ob.name for ob in shown} - want_frozen and "FixtureControl" in picked, str(sorted(picked)))
 
 
 def _local(a, t):
@@ -4184,8 +4240,8 @@ def check_curve_slots(modules, make):
             break
     total = build_objects.steps_of(desc, slots)
     check("curve slots: build_steps ends at steps_of, which counts the curve plans",
-          counts[-1] == (total, total) and len(slots.curves) == 1
-          and total == build_objects.steps_of(desc, dict(slots)) + 1, "%s %d" % (counts[-1:], total))
+          counts[-1] == (total, total) and len(slots.curves) == 3
+          and total == build_objects.steps_of(desc, dict(slots)) + 3, "%s %d" % (counts[-1:], total))
     obs = {n.name: built.objects[n.index] for n in desc.nodes}
     std, multi, box = obs["FixtureCurveStd"], obs["FixtureCurveMulti"], obs["FixtureBox"]
     got = [(s.link, s.material and s.material.name) for ob in (std, multi) for s in ob.material_slots]
@@ -4197,7 +4253,8 @@ def check_curve_slots(modules, make):
           reds == ["FixtureCurveRed"] and box.data.materials[0] is std.material_slots[0].material, str(reds))
     with_slots = sorted(ob.name for ob in obs.values() if ob.type == 'CURVE' and len(ob.data.materials))
     check("curve slots: curves without a material get no slot",
-          with_slots == ["FixtureCurveMulti", "FixtureCurveStd"], str(with_slots))
+          with_slots == ["FixtureCurveIds", "FixtureCurveMixed", "FixtureCurveMulti", "FixtureCurveStd"],
+          str(with_slots))
 
     def curves_only(desc):
         share(desc)
@@ -4218,7 +4275,7 @@ def check_curve_slots(modules, make):
     total = build_objects.steps_of(desc, slots)
     std = built.objects[nodes_of["FixtureCurveStd"].index]
     check("curve slots: a scene without meshes (a Slots that is empty as a dict) still gets its curve slots",
-          not slots and len(slots.curves) == 1 and counts[-1] == (total, total)
+          not slots and len(slots.curves) == 3 and counts[-1] == (total, total)
           and [s.material and s.material.name for s in std.material_slots] == ["FixtureCurveRed"],
           "%s %s" % (counts[-1:], [s.material for s in std.material_slots]))
 
@@ -4229,6 +4286,24 @@ def _bench():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def check_crease_open_edges():
+    """build.modifiers: a mesh that asks for creases gets none on its open edges (sharp for a Shell's rim), its other
+    sharp edges creased."""
+    from maxdrop.build import modifiers as build_modifiers
+    mesh = bpy.data.meshes.new("maxdrop crease test")
+    try:
+        mesh.from_pydata([(0, 0, 0), (1, 0, 0), (2, 0, 0), (0, 1, 0), (1, 1, 0), (2, 1, 0)], [],
+                         [(0, 1, 4, 3), (1, 2, 5, 4)])
+        sharp = mesh.attributes.get("sharp_edge") or mesh.attributes.new("sharp_edge", 'BOOLEAN', 'EDGE')
+        sharp.data.foreach_set("value", [True] * len(mesh.edges))
+        build_modifiers._crease(mesh)
+        crease = [d.value for d in mesh.attributes["crease_edge"].data]
+        want = [1.0 if tuple(sorted(e.vertices)) == (1, 4) else 0.0 for e in mesh.edges]
+        check("crease: the sharp edge between two faces creased, the open ones not", crease == want, str(crease))
+    finally:
+        bpy.data.meshes.remove(mesh)
 
 
 def main():
@@ -4254,11 +4329,6 @@ def main():
             check("%s: no exception" % os.path.basename(path), False)
     if not argv:
         try:
-            check_hidden_parent_layer(modules)
-        except Exception:
-            traceback.print_exc()
-            check("layer flags: no exception", False)
-        try:
             check_shear(modules)
         except Exception:
             traceback.print_exc()
@@ -4275,6 +4345,7 @@ def main():
                                  ("builder weight", check_builder_weight),
                                  ("builder clip mask", check_builder_clip_mask),
                                  ("curve step", check_curve_step),
+                                 ("crease open edges", check_crease_open_edges),
                                  ("linear fallback", check_linear_fallback),
                                  ("image reuse", check_image_reuse), ("double import", check_double_import),
                                  ("worker errors", check_worker_errors),

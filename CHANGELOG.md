@@ -8,6 +8,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
 
 ## [Unreleased]
 
+### Added
+
+- Extrude: grid caps (Cap Type Grid) are made as 3ds Max makes them, with the grid of points 3ds Max puts inside
+  each cap, so an extruded shape gets 3ds Max's vertex and triangle counts, instead of morph caps and a line in the
+  report.
+- Objects: a mesh or curve with Cast Shadows off in 3ds Max (Object Properties) casts no shadows in Blender. Receive
+  Shadows off, which Blender cannot set per object, is a line in the report.
+
 ### Fixed
 
 - Materials: a CoronaPhysicalMtl, a Standard material with the Strauss shader and the grey material of an
@@ -36,6 +44,26 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
   the file (a relative-photometry file whose rated lumens exceed its luminaire's flux no longer arrives too bright).
   A file not found, or one MaxDrop does not read (photometric type A or B, damaged), keeps the power as the flux,
   a line in the report.
+- Extrude: a shape extruded downwards (a negative amount) with only one of its caps on gets that cap facing the way
+  3ds Max faces it (into the solid, as for an upward extrusion) and its material ID, instead of turned out.
+- Extrude: the sides of an extruded pie Arc shade sharp at its corners (the arc's ends and the center), as in
+  3ds Max, instead of round across the arc and both straight sides: the smoothing also breaks at a Bezier knot with
+  a handle on its point.
+- Modifiers: the rim a Shell builds on an open mesh (a panel, a wall, a box without its top) shades hard against both
+  surfaces, as in 3ds Max, instead of smooth into them: the mesh's open edges are marked sharp before the Solidify.
+  Where Blender still differs, the report says so: auto smooth splitting the rim's sharper corners (a plane's), or
+  the smoothing-group override with auto smooth off.
+- Shapes: a Multi/Sub-Object on a shape built as a curve gives each spline the entry for its segments' material ID,
+  instead of ID 1's on every spline. A spline whose segments have different IDs takes its first segment's (a curve
+  has one material per spline); the report says so when that changes its material.
+- UVW Map: on a cylindrical or spherical map with a U tile that is not a whole number (2.5, say), the faces across
+  the seam show the part of the image 3ds Max shows, instead of one half an image off; a vertex at a spherical
+  map's center gets 3ds Max's coordinates (V 0.5, U of its face), instead of arbitrary ones from a rounding error.
+- Animation: an object animated through frame 0 with Bezier, TCB or Smooth Rotation keys, in a file saved with the
+  time slider elsewhere, is placed where 3ds Max places it at frame 0: between two keys the value follows their
+  tangents (Bezier handles, step keys, tension, continuity, bias and ease), instead of a straight line and a line in
+  the report. A Linear Rotation turning more than half a revolution between two keys turns the long way round, as in
+  3ds Max. A key with a free handle, and a few rarer cases, still interpolate linearly with a line in the report.
 
 ## [1.0.1] - 2026-11-22
 

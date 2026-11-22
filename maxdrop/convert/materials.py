@@ -13,7 +13,8 @@
     conv.material_for(index, mat_id)    # the MaterialIR a face with that zero-based material ID renders with
                                         # (Multi/Sub-Objects resolved), None for an empty slot
     slots = assign(desc, node_materials(scene, desc), conv)   # Slots {mesh key: MeshSlots}, for build/objects.py
-    slots.curves                        # {curve key: MeshSlots}: the slot of each curve with a material
+    slots.curves                        # {curve key: MeshSlots}: the slots of each curve with a material, indices
+                                        # per spline
     conv.peel(index)                    # (object index of the renderable material or None, reason)
     conv.stats.peeled, conv.stats.unknown, conv.stats.issues
 
@@ -95,8 +96,10 @@ Rules (the decisions of an earlier 3ds Max -> FBX exporter, without its FBX work
 The slots of a mesh (assign): its distinct face IDs, each keyed by the materials its users (the nodes sharing the
 mesh) get for that ID; one slot per key, in ID order, faces remapped to their slot. A material that is not a
 Multi/Sub-Object gives one slot; an empty key (no material) is a slot only beside others. A curve (a shape node
-built as a curve) has one slot, keyed by the materials its users get for material ID 1, none when no user has one:
-the shape reader does not read the segments' material IDs.
+built as a curve) gets its slots the same way from its splines' material IDs (one per spline: its first segment's,
+convert.scene.SplineDescription.material), each spline remapped to its slot; none when no user has a material. A
+spline whose segments have other IDs too is drawn with its first segment's material: an issue on the curve's first
+user (SceneDescription.issues) when a user gets another material for one of those IDs.
 
 Colors are 3ds Max swatches, clamped to 0..1 and made linear by the scene's swatch rule (convert/colors.py): the
 value itself when the scene was saved with the gamma on (or does not say), the sRGB curve when it was off.
@@ -604,6 +607,21 @@ class MaterialConverter:
         self._for[key] = out
         return out
 
+    def source_for(self, index, material_id):
+        """The material object index material_for(index, material_id) converts, None where it gives none, found
+        without converting or counting anything: Multi/Sub-Objects looked up by the ID (through the wrappers peel()
+        has already walked; a wrapper not yet peeled is its own answer). To compare IDs that get no slot."""
+        seen, i = [], index
+        while isinstance(i, int) and not isinstance(i, bool) and i not in seen and len(seen) <= MAX_PEEL:
+            if self.graph.superclass(i) != classids.SC_MATERIAL:
+                return None
+            seen.append(i)
+            base = self._peels.get(i, (i, None))[0]
+            if base is None or not self.is_class(base, classids.SC_MATERIAL, classids.MULTI_SUB_MTL):
+                return i if base is None else base
+            i = self._entry(base, material_id)
+        return None
+
     def _grey(self, index, reason):
         """The grey material for an object no rule converts, named after it."""
         try:
@@ -1088,7 +1106,7 @@ RULES = {
 class MeshSlots:
     """The material slots of one mesh or curve: users the object indices of the nodes sharing it
     (MeshDescription.users, CurveDescription.users); slots [[MaterialIR or None per user]] per slot (None: an empty
-    slot); indices int32 per face, its slot (empty for a curve: every spline is on slot 0)."""
+    slot); indices int32 per face (per spline for a curve), its slot."""
     __slots__ = ("users", "slots", "indices")
 
     def __init__(self, users, slots, indices):
@@ -1120,34 +1138,63 @@ def node_materials(scene, desc):
     return out
 
 
+def _group(users, ids, materials, conv):
+    """(slots, slot of each id) for material IDs ids (distinct, ascending): each id keyed by the materials users get
+    for it (material_for, by identity), one slot per key in order of first appearance. A single key without any
+    material gives no slot."""
+    groups, slots, slot_of_id = {}, [], []
+    for mid in ids:
+        irs = [conv.material_for(materials.get(u), mid) for u in users]
+        k = tuple(id(ir) for ir in irs)  # the IRs stay referenced by slots: their ids are not reused
+        if k not in groups:
+            groups[k] = len(slots)
+            slots.append(irs)
+        slot_of_id.append(groups[k])
+    if len(slots) == 1 and all(ir is None for ir in slots[0]):
+        return [], [0] * len(slot_of_id)
+    return slots, slot_of_id
+
+
+def _mixed(cd, materials, conv):
+    """The issue (node, text) of a curve whose spline mixes material IDs that some user gets different materials for
+    (conv.source_for: the IDs without a slot are not converted), named once on its first user; None without one."""
+    for n, sd in enumerate(cd.splines):
+        ids = sd.material_ids
+        if len(ids) < 2:
+            continue
+        for u in cd.users:
+            first = conv.source_for(materials.get(u), ids[0])
+            if any(conv.source_for(materials.get(u), mid) != first for mid in ids[1:]):
+                return (cd.users[0], "shape: spline %d mixes material IDs %s: drawn with ID %d's material (its first "
+                        "segment's)" % (n + 1, ", ".join(str(m + 1) for m in ids), ids[0] + 1))
+    return None
+
+
 def assign(desc, materials, conv):
     """Slots {mesh key: MeshSlots} for the meshes of desc, its curves {curve key: MeshSlots} for the curves of desc.
     materials: {node object index: material object index or None} (node_materials). A mesh's distinct face IDs,
     ascending, are grouped by the materials its users get for them (material_for, by identity): one slot per group
-    in order of first appearance. A mesh whose only group has no material gets no slot. A curve's one slot holds
-    what its users get for material ID 1 (zero-based 0); a curve none of whose users gets a material is left out."""
+    in order of first appearance. A mesh whose only group has no material gets no slot. A curve's splines the same
+    by their material IDs (SplineDescription.material), indices per spline; a curve none of whose users gets a
+    material is left out. A spline mixing IDs that render differently adds an issue to desc.issues."""
     import numpy
-    out = Slots()
+    out, mixed = Slots(), []
     for key, cd in desc.curves.items():
         users = list(cd.users)
-        irs = [conv.material_for(materials.get(u), 0) for u in users]
-        if any(ir is not None for ir in irs):
-            out.curves[key] = MeshSlots(users, [irs], numpy.zeros(0, dtype=numpy.int32))
+        per_spline = [sd.material for sd in cd.splines]
+        ids = sorted(set(per_spline)) or [0]
+        slots, slot_of_id = _group(users, ids, materials, conv)
+        if slots:
+            where = dict(zip(ids, slot_of_id))
+            out.curves[key] = MeshSlots(users, slots, numpy.asarray([where[m] for m in per_spline], dtype=numpy.int32))
+            mixed.append(_mixed(cd, materials, conv))
     for key, md in desc.meshes.items():
         users = list(md.users)
         faces = numpy.asarray(md.material_indices, dtype=numpy.int64).ravel()
         ids, inverse = numpy.unique(faces, return_inverse=True)
-        groups, slots, slot_of_id = {}, [], []
-        for mid in ids.tolist():
-            irs = [conv.material_for(materials.get(u), mid) for u in users]
-            k = tuple(id(ir) for ir in irs)  # the IRs stay referenced by slots: their ids are not reused
-            if k not in groups:
-                groups[k] = len(slots)
-                slots.append(irs)
-            slot_of_id.append(groups[k])
-        if len(slots) == 1 and all(ir is None for ir in slots[0]):
-            slots, slot_of_id = [], [0] * len(slot_of_id)
+        slots, slot_of_id = _group(users, ids.tolist(), materials, conv)
         indices = numpy.asarray(slot_of_id, dtype=numpy.int32)[inverse.ravel()] if len(faces) else \
             numpy.zeros(0, dtype=numpy.int32)
         out[key] = MeshSlots(users, slots, numpy.ascontiguousarray(indices, dtype=numpy.int32))
+    desc.issues.extend(x for x in mixed if x is not None)  # once every material converted: none if one raises
     return out

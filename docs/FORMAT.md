@@ -65,7 +65,7 @@ fixture.
 |---|---|---|
 | `0x0962` | node name | every fixture; hierarchy has two nodes named `FixtureTwin` |
 | `0x0960` | `i32` parent object index, `u32` flags | every fixture; a top-level node's parent is the RootNode |
-| `0x099C` | `u32`, bit `0x8000` = renderable | layers_flags, below |
+| `0x099C` | `u32`, bit `0x8000` = renderable, `0x200` = Cast Shadows, `0x400` = Receive Shadows | layers_flags, below |
 | `0x096A` | 3 x `f32` object offset position | hierarchy: `[5, 5, 0]` for FixtureRoot and FixtureChild = oracle `offset_pos` |
 | `0x096B` | 4 x `f32` object offset rotation | modifier_pivot: FixtureBent `[0, 0, 0.258819, 0.965926]` = oracle `offset_rot` (stored as MAXScript prints it); every other node `[0, 0, 0, 1]` |
 | `0x096C` | 7 x `f32`: object offset scale (3), then a scale axis rotation (4) | every fixture: `[1, 1, 1]`, `[0, 0, 0, 1]` |
@@ -102,11 +102,18 @@ layers_flags, layers_more and lookat:
 | `0x4000` | the target of a Look At controller (the five Target objects and FixtureAim; not on a node only a LookAt Constraint aims at). Not read: the controller names its target |
 
 `0x800` is not decoded. Renderable is not in `0x0960` (FixtureNoRender has `0x800`) but in `0x099C`, a `u32` on
-every node of every fixture: `0x0F00D600` on each node, `0x0F005600` on FixtureNoRender, so bit `0x8000` is
+every node of every fixture: `0x0F00D600` on each node, `0x0F005600` on FixtureNoRender (and the two shadow
+values below), so bit `0x8000` is
 renderable. A layer's flags stay on the layer: the nodes of layers_more's hidden, frozen and non-rendering layers
 have `0x800` and `0x0F00D600`, no `0x0975` or `0x0976` (MAXScript's `isHidden` and `isFrozen` still answer true
 for them; the oracle writes the node's own flags, see [ORACLE.md](ORACLE.md)). `test_scene.py` checks every node's
 hidden, frozen and renderable flags against the oracle.
+Cast Shadows and Receive Shadows (Object Properties, Rendering Control) are bits of the same `u32`: saves of a Box
+with one change each (maxdiff) give `0x0F00D400` with Cast Shadows off, `0x0F00D200` with Receive Shadows off and
+`0x0F00D000` with both (layers_flags: FixtureNoCastShadow, FixtureNoReceiveShadow; `test_scene.py` checks both
+flags of every node against the oracle). On a light node the bit `0x200` is the node's `castShadows` in MAXScript,
+not the light's shadow switch `baseObject.castShadows` (Lights, below). A layer's `0x1050` has the same two bits, used only by a node set to By
+Layer, which is not read.
 
 ## Modifiers
 
@@ -168,20 +175,30 @@ a world-space modifier). Its references: `[-1, -1, a Map Scaler object]`. Neithe
 
 A layer is an object of class Base Layer `(0x7E9858FE, 0x1DBA1DF0)`, superclass `0x10F0`; a node's slot 6 points
 to it. layers_flags has three (`0`, FixtureLayerA, FixtureLayerB), layers_more seven (`0`, FixtureHiddenLayer,
-FixtureFrozenLayer, FixtureNoRenderLayer, FixtureParentLayer, FixtureChildLayer, `FixtureLäyer中`), the saved_as
+FixtureFrozenLayer, FixtureNoRenderLayer, FixtureParentLayer, FixtureChildLayer, `FixtureLäyer中`), layers_nested
+eight (`0`, FixtureHiddenParentLayer, FixtureHiddenChildLayer, FixtureFrozenParentLayer, FixtureFrozenChildLayer,
+FixtureTopLayer, FixtureMiddleLayer, FixtureBottomLayer), the saved_as
 fixtures two (`0`, `FixtureLäyer中`), the other fixtures one (`0`):
 
 | Chunk | Content | Shown by |
 |---|---|---|
 | `0x1010` | the layer name, no terminator: UTF-8 in every file 3ds Max 2020 saves (saved_as included), unlike the UTF-16 node names | layers_flags: `46 69 78 ...` (`FixtureLayerA`), `30` (`0`); layers_more: `46 69 78 74 75 72 65 4c c3 a4 79 65 72 e4 b8 ad` (`FixtureLäyer中`) |
-| `0x1020` | `u32` flags: `0x100000` hidden, `0x200000` frozen (the node's bits) | layers_more: `0x100000` on FixtureHiddenLayer, `0x200000` on FixtureFrozenLayer; `0` on every other layer of every fixture |
+| `0x1020` | `u32` flags: `0x100000` hidden, `0x200000` frozen (the node's bits) | layers_more: `0x100000` on FixtureHiddenLayer, `0x200000` on FixtureFrozenLayer; layers_nested: `0x100000` on FixtureHiddenParentLayer and FixtureTopLayer, `0x200000` on FixtureFrozenParentLayer, `0` on the layers below them; `0` on every other layer of every fixture |
 | `0x1050` | `u32`, bit `0x8000` = renderable: the layout of a node's `0x099C` | `0x0B00D600` on every layer but layers_more's FixtureNoRenderLayer, `0x0B005600` |
-| `0x1090` | `u8`, not `0` = the layer has a parent layer | layers_more: `1` on FixtureChildLayer, `0` on every other layer of every fixture |
-| `0x10A0` | the parent layer's name, UTF-16LE (not read: `0x10B0` names it) | layers_more: `FixtureParentLayer` on FixtureChildLayer |
-| `0x10B0` | `i32` the parent layer's object index | layers_more: FixtureChildLayer's is FixtureParentLayer's (`0x236`), a higher index than its own |
+| `0x1090` | `u8`, not `0` = the layer has a parent layer | layers_more: `1` on FixtureChildLayer; layers_nested: `1` on FixtureHiddenChildLayer, FixtureFrozenChildLayer, FixtureMiddleLayer and FixtureBottomLayer; `0` on every other layer of every fixture |
+| `0x10A0` | the parent layer's name, UTF-16LE (not read: `0x10B0` names it) | layers_more: `FixtureParentLayer` on FixtureChildLayer; layers_nested: `FixtureMiddleLayer` on FixtureBottomLayer, `FixtureTopLayer` on FixtureMiddleLayer |
+| `0x10B0` | `i32` the parent layer's object index | layers_more: FixtureChildLayer's is FixtureParentLayer's (`0x236`), a higher index than its own; layers_nested: FixtureBottomLayer's is FixtureMiddleLayer's, whose is FixtureTopLayer's |
 
 A layer's flags are not copied to its nodes (see [Nodes](#nodes)); a parent layer may hold no node
-(FixtureParentLayer). The one Layer Manager `(0x0D7374FC, 0x51FF028E)`, superclass `0x200`, references the layers
+(FixtureParentLayer).
+Nor are they copied to the layers below: layers_nested's hidden and frozen parent layers carry the bit, their child
+layers (and the middle and bottom layers of its three-level nest) have `0x1020` = `0` and `0x0B00D600`, their
+nodes `0x800`. 3ds Max still treats them as hidden or frozen: MAXScript's `isHidden` / `isFrozen` of those layers
+and of their nodes answer true (the oracle's layer flags; .NET `ILayer.IsHidden(true)`, while `IsHidden(false)`
+is the layer's own bit), and in a probe's scanline render a node below a hidden parent layer shows nothing. The
+importer follows that: a hidden layer's collection is excluded, which leaves out the collections below it, and a
+frozen layer's `hide_select` reaches the objects of the collections below.
+The one Layer Manager `(0x0D7374FC, 0x51FF028E)`, superclass `0x200`, references the layers
 in `0x2034`: slot 0 is layer `0`, then the others in the order the fixture scripts made them, the order of the
 oracle's `layers` (`test_scene.py` checks names, order, flags and parent of every fixture's layers against the
 oracle).
@@ -248,7 +265,39 @@ Keyframe controllers (controllers fixture; every class read here is a 3ds Max 20
 - At time 0: a key at 0 gives its value (FixtureBezierKeys, the keyed nodes, the lists' animated entries); before
   the first key, the first key's value (FixtureTCBBefore, keys at frames 10 and 50); between two Linear keys, linear
   (FixtureLinearBetween, keys at -10 and 40: position `[-56, 93, 11]`, scale rows of length 1.1, 1.0, 1.4) and the
-  rotation by slerp.
+  rotation by slerp, the way the stored signs give (controllers_tangents' FixtureLinearRotationWide: 270 degrees about
+  Z between keys at -10 and 40 is 54 degrees on at frame 0, not -18; the later key is stored as `[0, 0, -0.707107,
+  -0.707107]`); between two Bezier, TCB or Smooth Rotation keys, the curve below.
+- Between two Bezier, TCB or Smooth Rotation keys (controllers_tangents, every node within the oracle's 6 digits;
+  three probes sampled every 2.5 frames, outside the repo), the record after time and flags (n = the value's
+  floats; a step key's value saved at frame 30 holds for its whole segment, so its `0x2500` can hold time 0, a
+  probe):
+
+  | Class | Record after the flags |
+  |---|---|
+  | Bezier Float, Position, Scale | value, in tangent, out tangent, in length, out length, n floats each (Position: 3 more, zero) |
+  | TCB Float, Position, Scale | value, tension, continuity, bias, ease to, ease from (the UI's (x - 25) / 25 and x / 50), in tangent, out tangent |
+  | TCB Rotation | quaternion, the five TCB values, the axis and angle turned from the previous key, the in and the out control quaternion |
+  | Smooth Rotation | quaternion, the in and the out control quaternion (equal), two identity quaternions |
+
+  - Bezier: tangents in value per tick (MAXScript shows them times 30, a scale's times 3000), the in tangent pointing
+    back; every tangent type (smooth, linear, fast, slow, auto, custom) stores the tangent it computed. Flags: the in
+    tangent's type in bits 7-9, the out tangent's in bits 10-12 (0 smooth, 1 linear, 2 step, 3 fast, 4 slow, 5 custom
+    and auto), `0x8000` constant velocity, `0x100000` free handle. A length is a fraction of the segment, -1 a third.
+    The segment is the cubic through `(t0, v0)`, `(t0 + lo dt, v0 + out lo dt)`, `(t1 - li dt, v1 + in li dt)`,
+    `(t1, v1)`, its time curve solved for the time (FixtureBezierFloats, FixtureBezierCustom with lengths 0.6 and
+    0.15, FixtureBezierPosition and FixtureBezierScale with a length per axis); in the probes this curve and
+    3ds Max's differ by up to 8.5e-4 next to a steep key and by ~1e-4 between auto keys, cause not known. A step
+    out of the earlier key or into the later holds the earlier key's value
+    (FixtureBezierFloats' Z). Constant velocity changes nothing on a Bezier Float (a probe).
+  - TCB: the Hermite cubic of the stored tangents (value per segment; with two keys `(p1 - p0) (1 - tension)`) at
+    the fraction of the segment eased by the earlier key's ease from and the later key's ease to (3D Studio's ease:
+    both scaled to a sum of 1 when larger), per component (FixtureTCBFloats, FixtureTCBPosition, FixtureTCBScale).
+    The stored tangents and control quaternions already allow for segments of unequal length (a probe with keys at
+    frames -30, 10, 20 and 50, TCB and Smooth Rotation alike).
+  - TCB Rotation: squad of the two quaternions with the earlier key's out control and the later key's in control,
+    at the eased fraction (FixtureTCBRotation, a turn of 200 degrees); Smooth Rotation the same without ease
+    (FixtureSmoothRotation). Their slerps keep the stored signs, unlike the shorter arc.
 - Linear and TCB Float hold `0x2501` directly in the object; Bezier Float in `0x7127` in every fixture.
 
 List controllers: Float List `(0x4B4B1000, 0)`, Position List `(0x4B4B1002, 0)`, Rotation List `(0x4B4B1003, 0)`,
@@ -466,6 +515,11 @@ Corpus scene A (format 14000): the same layout on all 255 splines of its 18 Edit
 segments of type line; every shape node of the scene (29, with Rectangles) equals its oracle within 1e-5 of the
 knot's magnitude.
 
+The segments' material IDs equal the oracle's (`getMaterialID`, oracle layout 12) on every shape node of the
+fixtures: the parametric shapes give every segment ID 1 (zero-based 0, as the reader makes them), the extrude
+fixture's FixtureExtShapeIDs and shapes_more's FixtureCurveIds and FixtureCurveMixed the IDs their scripts set. A
+Blender curve has one material per spline: the importer draws a spline with its first segment's ID.
+
 The parametric shapes are made by the reader the way 3ds Max makes them, fitted to the oracle:
 
 - a circular arc of angle *a* gets vectors of radius times `veccalc(a)` along its tangents, where `veccalc` is the
@@ -507,8 +561,8 @@ against the extrude fixture's oracle) keeps its parameters in an old ParamBlock 
 |---|---|---|
 | 0 | amount (`f32`) | FixtureExtRect 10, FixtureExtL -15 |
 | 1 | segments | FixtureExtRect 2, the others 1 |
-| 2, 3 | cap start, cap end | 1 everywhere |
-| 4 | cap type: 0 morph, 1 grid | 0 |
+| 2, 3 | cap start, cap end | 1 everywhere but FixtureExtGridCircle's cap end 0 |
+| 4 | cap type: 0 morph, 1 grid | FixtureExtGrid and FixtureExtGridCircle 1, the others 0 |
 | 5 | output: 0 patch, 1 mesh, 2 NURBS | 1 |
 | 6 | generate mapping coordinates | FixtureExtRect and FixtureExtAdaptive 1 |
 | 7 | generate material IDs | FixtureExtAdaptive 0, the others 1 |
@@ -534,20 +588,48 @@ What 3ds Max 2020 makes of it (`snapshotAsMesh`, probed on scratch scenes and ch
 - **Faces**: the sides two triangles per segment and level; a cap of n points with h holes n + 2h - 2 triangles,
   without extra vertices (FixtureExtHole: 32 + 2 - 2 = 32 per cap). Nested closed splines alternate solid / hole
   (FixtureExtIsland: a square, a hole, an island in it). An open spline gets no cap (FixtureExtOpen).
-- **Normals**: outward whatever the splines' direction and the sign of the amount; the side faces of an open spline
-  look to the right of it.
+- **Normals**: outward whatever the splines' direction and the sign of the amount (but a lone cap of a downward
+  extrusion, below); the side faces of an open spline look to the right of it.
 - **Material IDs**: the cap facing +Z gets ID 1, the one facing -Z ID 2, the sides ID 3 (FixtureExtRect: the cap at
   the shape faces down and is ID 2; FixtureExtL, amount -15: the cap at the shape faces up and is ID 1); without
   Generate Material IDs every face is ID 1. Use Shape IDs (with Generate Material IDs; without it every face is still
   ID 1): each side face takes the material ID of the spline segment it comes from, its interpolated steps too, on a
   clockwise outline and a hole alike; the caps keep 1 and 2 (FixtureExtShapeIDs: side triangles 2, 6, 10, 4, 8 on IDs
-  4, 5, 7, 11, 12). A parametric shape's segments are ID 1 (FixtureExtShapeIDsRect). Grid caps (cap type 1) are made
-  as morph caps: no local scene has one (443 scenes, 95 Extrudes, the corpus included, 2026-11-21).
+  4, 5, 7, 11, 12). A parametric shape's segments are ID 1 (FixtureExtShapeIDsRect). Downwards (a negative amount)
+  the caps are turned out only when both are on: a lone cap faces as upwards, into the solid (Cap Start -Z and ID 2,
+  Cap End +Z and ID 1; FixtureExtGridCircle, amount -4, Cap End off: its cap faces -Z, ID 2); the sides face out
+  in every case.
+- **Grid caps** (cap type 1; probed on about 60 shapes, `tests/unit/test_extrude.py` GRID_PROBES holds their counts;
+  FixtureExtGrid, FixtureExtGridCircle): each solid (an outline with its holes; an island and an overlapping outline
+  are solids of their own) gets a grid over the box of its outline's interpolated points, W x H. Divisions per axis:
+  20, raised by each hole of the solid to floor(0.95 x W / (s / 2)), s the hole's extent on that axis, at most 50 (a
+  3-wide hole in a 40-wide square: 25; a hole 10 x 0.7: 20 across, 50 up; 60 x 20 with a 3 x 3 hole: 38 x 20); on
+  the points' float32 values, so an exact ratio falls by its float noise (2.3f .. 4.3f in 40: 37; 18.8f .. 21.8f in
+  60: 38). The grid points: x0 + 0.025 W + (0.95 W / N)(i + 0.001), i = 0 .. N, the same for y, whatever the size. A
+  cell is filled when it lies wholly inside the solid (its corners inside, no outline or hole edge across it, no
+  hole within it); the cap's interior vertices are exactly the corners of the filled cells (a grid point in no
+  filled cell is dropped), each filled cell two triangles (top-left to bottom-right; MaxDrop: a quad), and the band
+  to the outline is triangulated without more points: n + 2k + 2h - 2 triangles per cap of n outline and hole
+  points, k grid points and h holes (Rect 30 x 20: 890 vertices, 1776 faces). A solid without a filled cell gets the
+  morph cap. MaxDrop joins band holes whose cells touch only at a corner into one at that point (a four-point Line
+  whose cells touch so: 254 vertices, 504 faces, as 3ds Max) and makes a band whose triangles do not tile its area,
+  or a grid past a guard, a morph cap with a line in the report. Only the caps that are on get grid points. The grid
+  points lie at z 0 and the levels' heights whatever the shape's z (a rectangle at z 3: its outline at 3 and 5, its
+  grid at 0 and 2); their map is the cap's box mapping. Every interior edge is hidden: 3ds Max shows the cap as one
+  polygon. No local scene has grid caps (443 scenes, 95 Extrudes, the corpus included, 2026-11-21).
 - **Smoothing**: caps group 16; the sides change group only at a corner or Bezier-corner knot (FixtureExtMirror's
-  rounded Rectangle: sharp at its 8 Bezier-corner knots), the groups alternating 1, 2 (4 where three runs meet,
-  1, 3, 2 ... along a spline with no corner). 3ds Max also breaks the side at a pie Arc's three corners, Bezier
-  knots with a zero-length vector (arc_pie_reverse's extruded pies: 52 hard edges, MaxDrop 46): not known why, not
-  done (maxdrop-em3.111).
+  rounded Rectangle: sharp at its 8 Bezier-corner knots) or a Bezier knot with a vector on its point, the groups
+  alternating 1, 2 (4 where three runs meet, 1, 3, 2 ... along a spline with no corner). A Bezier knot breaks the
+  side when its in or out vector is exactly its point (float32 equal), such as a pie Arc's from (in), center (both)
+  and to (out): arc_pie_reverse's extruded pies, 52 hard edges. The 3ds Max 2020 probe (maxdrop-em3.111, a square
+  with a fifth knot on one side, kinked or straight): a corner or Bezier-corner knot breaks whatever the angle (also
+  on a straight side, also at a 2.3 degree kink); a smooth knot never (also where line segments kink the spline); a
+  Bezier knot with both vectors off its point never (also kinked by line segments); one with a vector on its point
+  always (kinked or straight, curve or line segments, an open spline too), a vector 1e-6 off at x 10 or 1e-9 off at
+  the origin is not on it. 3ds Max keeps a Bezier knot's vectors in line (`setInVec` / `setOutVec` out of line come
+  back in line): a Bezier knot with its vectors out of line is not made there. `tests/unit/test_extrude.py` has the
+  cases. The group bits differ (a pie's sides: MaxDrop 1, 2, 4; 3ds Max 1 to 4 or 5, overlapping along the arc), the
+  hard edges do not: `tests/unit/test_extrude.py` compares them by position with `arc_pie_reverse.maps.jsonl`.
 - **Mapping**: the sides U along each spline by length (0 to 1, the seam at its first point), V up the levels; the
   caps the shape's XY box, 0 to 1. Real-World Map Size: the lengths and sizes in file units instead. A closed spline
   that runs the other way than its role (a clockwise solid, a counter-clockwise hole) is turned whole: its U starts
@@ -603,18 +685,29 @@ within 1e-4 for planar and box, 1e-3 for the round types):
   u = 0.5 - Y / 2, v = 0.5 + X / 2, w = c / height / 2.
 - **Spherical**: Z = c / (height / 2), r = |(X, Y, Z)|; u as cylindrical, v = 0.5 + asin(Z / r) / π, w = r.
 - **Flip, tile**: per component, flipped (1 - value), then times its tile.
-- **Seam**: 3ds Max shares map vertices and may shift a face's U by a whole turn, also on faces that do not cross the
-  seam; the image is the same. MaxDrop gives +1 to the corners below 0.5 of a face with an edge across the seam
-  (X = 0, Y > 0) between two corners off the axis. A face that goes around the axis (FixtureUVWCylAxisX: 4
-  triangles; uvwmap_pole's 6 at a vertex pushed past the bound) has no single U; there the two differ.
-- **Axis**: a corner on the axis has no angle. Cylindrical: U 0.5, one map vertex shared by every face (MaxDrop: 1.5
-  on a face across the seam, whose other corners it moves up a turn). Spherical: the mean U of the face's other
-  corners. On the axis means within about 1e-4 of it, so that a turned gizmo's float residue (about 1e-7) is a
-  pole: cylindrical |(X, Y)| < 1e-4, spherical |X| and |Y| each < 1e-4 · r. Found by pushing an axis vertex off on
-  scratch scenes (9.5e-5 still a pole, 1.05e-4 not; (7.5e-5, 7.5e-5) not on a cylinder, (9.5e-5, 9.5e-5) still on a
-  sphere; a sphere's bound halves where Z at the pole is 0.5); exactly at 1e-4 3ds Max's single-precision results
-  disagree with each other. uvwmap_pole: the axis vertices of cylinders and spheres under turned gizmos, also pushed
-  just inside and past the bound; every corner equals 3ds Max's.
+- **Seam**: a face with an edge across the seam (X = 0, Y > 0) between two corners off the axis: 3ds Max moves its
+  corners above 0.5 down a turn (0.97 to -0.03), and so does MaxDrop. Another turn would show the same image only
+  with a whole-number U tile: with U tile 2.5 (uvwmap_pole's FixtureUVWPoleTile, FixtureUVWPoleSphereTile, also
+  flipped; scratch probes with -1.5) a turn is 2.5 units, half an image off; MaxDrop's earlier +1 below 0.5 was. On
+  the other fixtures, which have whole-number tiles, a face may still differ from 3ds Max's by whole units. A face
+  that goes around the axis (FixtureUVWCylAxisX: 4 triangles; uvwmap_pole's 8 at a vertex pushed past the bound)
+  has no single U; there the two differ.
+- **Axis**: a corner on the axis has no angle. Cylindrical: U 0.5 (times the tile), one map vertex shared by every
+  face, also across the seam and also with cap on (a cone's apex on its side faces: FixtureUVWPoleCone). Spherical:
+  the mean U of the face's other corners. On the axis means within about 1e-4 of it, so that a turned gizmo's float
+  residue (about 1e-7) is a pole: cylindrical |(X, Y)| < 1e-4, spherical |X| and |Y| each < 1e-4 · r. Found by
+  pushing an axis vertex off on scratch scenes (9.5e-5 still a pole, 1.05e-4 not; (7.5e-5, 7.5e-5) not on a
+  cylinder, (9.5e-5, 9.5e-5) still on a sphere; a sphere's bound halves where Z at the pole is 0.5:
+  FixtureUVWPoleSphereTall, pushed 6e-5 under a gizmo of height 32, has the angle); exactly at 1e-4 3ds Max's
+  single-precision results disagree with each other. uvwmap_pole: the axis vertices of cylinders, spheres and a cone
+  under turned gizmos, also pushed just inside and past the bound; every corner equals 3ds Max's, in its own turn.
+- **Center**: a corner at a spherical gizmo's center gets V 0.5 and the mean U of its face's other corners
+  (FixtureUVWPoleCenter: a cylinder's cap center under a turned gizmo). 3ds Max does so only where its
+  single-precision point is exactly zero: on scratch scenes a push of 1e-20 radii already gives the angle (a push
+  smaller than half a float ulp of the vertex's coordinates is lost when the vertex is stored, and is zero).
+  MaxDrop's float64 point of the same vertex is a residue of about 2e-16 radii: below 1e-9 radii it is the center.
+  Under a turned gizmo, a vertex 1e-7 to 1e-5 radii off the center gets an angle from 3ds Max's own
+  single-precision noise, which MaxDrop does not match.
 
 Evaluated: the UVW Maps that render right above the base object or above an applied Extrude (FixtureUVWExtrude;
 FixtureUVWTwo, two in a row). One above another modifier (FixtureUVWAboveBend), a switched-off one (FixtureUVWOff)
@@ -655,8 +748,16 @@ What 3ds Max 2020 makes, against Blender's evaluated meshes (`tests/blender/run.
   also splits it where two rim faces meet at a sharper angle, and with auto smooth off the rim is one group, the
   override's (ids 4, 5) when set, which merges into a surface face of that group (an open box: 11 regions and 24
   hard edges; a plane with auto smooth 6 and 12, without 3 and 8). Solidify smooths the rim into both surfaces (the
-  open box: 3 regions, 16 hard edges); marking the open edges sharp before it gives 3ds Max's open box on Blender
-  4.2 and 5.2 (not done yet: maxdrop-em3.101).
+  open box: 3 regions, 16 hard edges); MaxDrop marks the mesh's open edges sharp before it, which gives 3ds Max's
+  open box on Blender 4.2, 4.5 and 5.2, also below a TurboSmooth with Smooth Result (3 regions, 16 hard edges: the
+  Subdivision Surface keeps the sharp open edges). Not with a smoother with Smooth Result above the Shell (3ds Max
+  smooths the rim too: 1 region) or a Symmetry below it (its weld would make sharp open edges on the plane a seam;
+  not measured: maxdrop-em3.134). What stays different is a line in the report, only for a mesh with open edges:
+  auto smooth on and rim corners sharper than its angle (the rim face of open edge a -> b has the normal (pb - pa) x
+  (na + nb), n the sum of the unit face normals at a vertex, on the mesh below the modifiers: a plane keeps its 4
+  corners under 1 to 3 TurboSmooth iterations below the Shell, 6 regions; FixtureShellPlane: 4 corners), or the
+  override group with auto smooth off (the group is a number, 1 .. 32: group 4 is the side of mask 8;
+  FixtureShellOverride). A crease on an open edge (a smoother that separates by smoothing groups) is left out.
 - **Symmetry**: the mirror plane is in the gizmo's space, q = p * context * inverse(gizmo), as UVW Map's; without
   flip the side where q along the axis is positive stays, sliced at the plane; without slice the whole object is
   mirrored and both copies stay (FixtureSymmetryNoSlice: 16 vertices). Weld seam: 3ds Max slices beside a vertex
@@ -1128,7 +1229,7 @@ picker and Material Editor switches off).
   |---|---|
   | General | `3ds Max Version: 22.00`, `Uncompressed`, `Build: 22.2.0.2176`, `Saved As Version: 22.00` |
   | Mesh Totals | `Vertices: 8`, `Faces: 6` (`Vertices` = the sum of the oracle's `eval_verts`, after the modifiers: 114 in modifier_pivot, whose nodes' `base_verts` add up to 60) |
-  | Scene Totals | `Objects`, `Shapes`, `Lights`, `Cameras`, `Helpers`, `Space Warps`, `Total` (`Total` = the oracle's `node_count`: layers_flags has 5 objects and 1 helper, its group head) |
+  | Scene Totals | `Objects`, `Shapes`, `Lights`, `Cameras`, `Helpers`, `Space Warps`, `Total` (`Total` = the oracle's `node_count`: layers_flags has 7 objects and 1 helper, its group head) |
   | External Dependencies | file paths (none in the fixtures) |
   | Objects, Materials | node and material names (Materials: as many as the oracle's materials) |
   | Used Plug-Ins | DLL file names (`epoly.dlo`, `ctrl.dlc`, ...) |
@@ -1504,9 +1605,11 @@ Not shown by any fixture yet, so not stated above:
   gizmo controller combines with the context matrix; a modifier without `0x39BF` (4 of 74 modifier objects in scene
   A, 3 of 46 in scene B: read with every switch on and the class name).
 - The meaning of bit `0x800` and the other flag bits in `0x0960`.
-- Layers: a layer nested more than one level deep, a hidden or frozen parent layer (whether 3ds Max writes its
-  flags to the child layers), and the layer name's encoding in a version other than 3ds Max 2020 (the reader
-  replaces bytes that are not UTF-8).
+- Layers: the layer name's encoding in a version other than 3ds Max 2020 (the reader replaces bytes that are not
+  UTF-8); a non-rendering parent layer: a probe saved `0x0B005600` on the parent only, and MAXScript's
+  `renderable` of the child layer and of its node stayed true, but whether 3ds Max renders that node is not shown
+  (a node made by script does not render By Layer, maxdrop-em3.145), while Blender's `hide_render` on the
+  parent's collection reaches the collections below.
 - System unit types 1, 2, 5, 6 (feet, miles, meters, kilometers) and a scale other than 1: taken from the 3ds Max
   SDK, no fixture has them. A `Compressed` part in General (instead of `Uncompressed`) is assumed for a compressed
   file.
@@ -1536,10 +1639,12 @@ Not shown by any fixture yet, so not stated above:
   - Look At `(0x2006, 0)` on a camera and a light of each scene: evaluated as [Look At](#look-at) says, their
     world matrices equal the oracle's (all 662 nodes without modifiers of scene A, all 2,042 of scene B).
 - Controllers no file shows yet (`controllers.py` assumes them): a controller without `0x2500` (none in the corpus or
-  the fixtures; its value chunk is used, with an issue when several keys animate it); Bezier and TCB interpolation
-  between two keys (linear, an issue: their tangents are not read); how Linear Scale interpolates a turned scale
-  axis (slerp; the fixture's axes are the identity); whether Linear Rotation takes the shorter arc between keys more
-  than half a turn apart, as the reader's slerp does (FixtureLinearBetween's keys are 45 deg apart); the bare Euler orders 1 to 5 and 100 (read as the SDK numbers
+  the fixtures; its value chunk is used, with an issue when several keys animate it); between two Bezier keys, a
+  free handle (`0x100000`: neither a fraction of the segment nor frames fits a probe) and constant velocity on a
+  Position or Scale, between two TCB or Bezier Scale keys scale axes that differ, between two TCB Rotation keys a
+  turn of a revolution or more (linear, an issue each); between two Linear, TCB or Smooth Rotation keys opposite
+  quaternions, a whole revolution (the earlier rotation, an issue); how Linear Scale interpolates a turned scale
+  axis (slerp; the fixture's axes are the identity); the bare Euler orders 1 to 5 and 100 (read as the SDK numbers
   them: 1 = XZY ... 5 = ZYX, 100 = XYZ); the Euler orders 106 to 108 (an issue); the order of a Scale List's
   entries (the fixture's two scales are both along the axes, so they commute) and the weight of a Rotation List
   entry that turns about more than one axis (the fixture's turn about one axis each); parameter 1 of a list's
