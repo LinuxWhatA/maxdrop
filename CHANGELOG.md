@@ -35,6 +35,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
 
 ### Fixed
 
+- Glass: a grey or black reflection (or a reflection map) on refracting glass reflects that share of a white one
+  and refracts the rest, as V-Ray does, instead of reflecting as much as a white reflection.
+- Glass: a VRayMtl with reflection Fresnel off on refracting glass reflects its reflection color or map at every
+  angle and refracts the rest, as V-Ray does, instead of Blender's glass reflection (a 0.2 reflection on black glass
+  gave 0.05 facing the camera rising toward the rim; it now gives 0.2 everywhere in Cycles).
 - Materials: a CoronaPhysicalMtl, a Standard material with the Strauss shader and the grey material of an
   unsupported class reflect their IOR's full Fresnel (Specular IOR Level 0.5, Blender's default) instead of half of
   it (0.25), which made every non-metal CoronaPhysicalMtl reflect too little.
@@ -118,6 +123,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
   infinite or NaN points; a rectangular section or round thickness that large is left out, a line in the report.
 - Import: an AttributeError while reading a file (a defect in MaxDrop's reader) reports the file as not imported,
   with the traceback in the console, as a TypeError or KeyError already did, instead of ending the import.
+- Scene packs: a map whose name holds an unassigned Unicode character, or bytes the archive's encoding cannot
+  read, is skipped with a line in the report on every system, instead of failing the whole unpack on macOS (which
+  cannot store such a name) while Windows and Linux wrote it; a `.max` so named is not offered as a scene.
 
 ## [1.0.1] - 2026-11-22
 
