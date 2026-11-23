@@ -7,7 +7,8 @@ hand from its authoring script (tools/fixtures/vray_basic.ms), vray_maps' map sl
 VRayLightMtl, VRayFastSSS2, car paints and other wrappers, and each rule on synthetic parameters. standard_physical's
 Standard and Physical Material, box_poly_standard's Standard, standard_shaders' Standard shaders and Physical map slots
 against values computed by hand from their scripts (and the ids by the names the oracle gives them); vray_wrappers'
-Multi/Sub-Object by material ID and the slot plan of its box.
+Multi/Sub-Object by material ID and the slot plan of its box. standard_maps' Standard map slots per shader by the
+names of the maps its script puts in each channel.
 
     python -I -m unittest discover tests
 """
@@ -265,6 +266,21 @@ class VRayMtlRules(unittest.TestCase, Close):
         white = {**b1, 2: (1.0, 1.0, 1.0)}
         conv, ir = _convert(_vray(0, b1=white, b4={101: Ref(1), 201: 75.0}), _map(1))  # 1 x 0.25: the threshold
         self.close(ir.metallic.value, 1.0)
+
+    def test_fresnel_flag(self):
+        """reflection_fresnel reaches the IR: off, the weight is a mirror's at every angle (build/materials.py draws
+        a white metal mixed by it, maxdrop-em3.120); a dim swatch keeps its mean as the weight, no metal."""
+        conv, ir = _convert(_vray(0, b1={1: (1.0, 0.0, 0.0), 2: (0.2, 0.2, 0.2), 8: 0}))
+        self.assertFalse(ir.fresnel)
+        self.close(ir.specular.value, 0.2)
+        self.close(ir.metallic.value, 0.0)
+        self.close(ir.base_color.value, (1.0, 0.0, 0.0))
+        conv, ir = _convert(_vray(0, b1={2: (0.2, 0.2, 0.2), 8: 1}))
+        self.assertTrue(ir.fresnel)
+        conv, ir = _convert(_vray(0, b1={2: (0.8, 0.8, 0.8), 8: 0}))  # the metal rule: Metallic 1 wins in build
+        self.assertFalse(ir.fresnel)
+        self.close(ir.metallic.value, 1.0)
+        self.assertTrue(mat.MaterialIR(0, "x").fresnel, "every other rule: the IOR's Fresnel")
 
     def test_fresnel_on_or_dark_reflection_keeps_diffuse(self):
         for b1 in ({1: (1.0, 0.0, 0.0), 2: (0.8, 0.8, 0.8), 8: 1, 91: 0.2},
@@ -775,6 +791,8 @@ class Standard(unittest.TestCase, Close):
             with self.subTest(sid):
                 shader = {ids.diffuse: diffuse, ids.specular: (1.0, 1.0, 1.0), ids.level: 0.4, ids.glossiness: 0.3,
                           ids.si_amount: 0.0, ids.use_si_color: 1, ids.si_color: (0.0, 1.0, 0.0)}
+                if ids.diffuse_level is not None:
+                    shader[ids.diffuse_level] = 1.0
                 conv, ir = _convert(_standard(0, sid, shader))
                 self.close(ir.base_color.value, diffuse)
                 self.close(ir.roughness.value, 0.7)
@@ -798,27 +816,111 @@ class Standard(unittest.TestCase, Close):
                 self.assertFalse(ir.unknown)
                 self.assertIn("Standard: shader", ir.issues[0])
 
-    def test_map_slots(self):
-        maps = {
-            mat.STD_DIFFUSE: (Ref(1), 1, 0.5), mat.STD_GLOSSINESS: (Ref(2), 1, 0.8), mat.STD_LEVEL: (Ref(3), 1, 1.0),
-            mat.STD_OPACITY: (Ref(4), 1, 0.9), mat.STD_SELF_ILLUM: (Ref(5), 1, 1.0), mat.STD_BUMP: (Ref(6), 1, 0.3),
-            mat.STD_REFLECTION: (Ref(7), 1, 0.6),
+    # Diffuse Level ids (a fraction; measured in 3ds Max 2020, docs/FORMAT.md); the other shaders have none.
+    DIFFUSE_LEVEL = {classids.ANISOTROPIC_SHADER: 4, classids.MULTI_LAYER_SHADER: 4,
+                     classids.OREN_NAYAR_BLINN_SHADER: 8, classids.TRANSLUCENT_SHADER: 7}
+
+    def test_diffuse_level_scales_the_swatch(self):
+        """The level scales the swatch (clamped per channel after the product), not the self-illumination, which
+        lights with the diffuse as set (Default Scanline renders, docs/FORMAT.md)."""
+        for sid, pid in self.DIFFUSE_LEVEL.items():
+            ids = mat.SHADERS[sid]
+            for level, want in ((0.5, (0.4, 0.2, 0.1)), (1.5, (1.0, 0.6, 0.3)), (-1.0, (0.0, 0.0, 0.0))):
+                with self.subTest(sid=sid, level=level):
+                    shader = {ids.diffuse: (0.8, 0.4, 0.2), pid: level, ids.si_amount: 0.3, ids.use_si_color: 0}
+                    conv, ir = _convert(_standard(0, sid, shader))
+                    self.close(ir.base_color.value, want)
+                    self.close(ir.emission_color.value, (0.8, 0.4, 0.2), "self-illumination: the unscaled diffuse")
+                    self.close(ir.emission_strength, 0.3)
+
+    def test_diffuse_level_decoys(self):
+        """A value at another shader's Diffuse Level id scales nothing: Phong, Blinn and Metal have none, and
+        id 4, 7 or 8 is another parameter on the shaders that have one elsewhere (Multi-Layer, which reads 7 and 8:
+        5, its diffuse roughness)."""
+        for sid in (classids.PHONG_SHADER, classids.BLINN_SHADER, classids.METAL_SHADER):
+            with self.subTest(sid):
+                conv, ir = _convert(_standard(0, sid, {1: (0.8, 0.4, 0.2), 4: 0.5, 7: 0.0, 8: (0.0, 0.0, 0.0)}))
+                self.close(ir.base_color.value, (0.8, 0.4, 0.2))
+        for sid, pid in self.DIFFUSE_LEVEL.items():
+            shader = {1: (0.8, 0.4, 0.2), pid: 1.0}
+            shader.update({k: 0.5 for k in (4, 5, 7, 8) if k != pid and k not in mat.SHADERS[sid][:7]})
+            self.assertGreater(len(shader), 2, "at least one decoy")
+            with self.subTest(sid):
+                conv, ir = _convert(_standard(0, sid, shader))
+                self.close(ir.base_color.value, (0.8, 0.4, 0.2))
+
+    def test_shader_defaults(self):
+        """A shader block without its values: each shader's own defaults, as 3ds Max 2020 creates them (diffuse
+        150 / 255 or 127.5 / 255 grey, glossiness, specular level times the 0.9 specular color)."""
+        blinn = ((150 / 255,) * 3, 0.9, 0.0)
+        want = {  # base color, roughness (1 - glossiness), specular
+            classids.PHONG_SHADER: blinn, classids.BLINN_SHADER: blinn, classids.METAL_SHADER: blinn,
+            classids.ANISOTROPIC_SHADER: ((0.5,) * 3, 0.75, 0.05 * 0.9),
+            classids.MULTI_LAYER_SHADER: ((0.5,) * 3, 0.5, 0.05 * 0.9),
+            classids.OREN_NAYAR_BLINN_SHADER: ((0.5,) * 3, 0.75, 0.0),
+            classids.TRANSLUCENT_SHADER: ((0.5,) * 3, 0.7, 0.0),
+            classids.STRAUSS_SHADER: ((0.5,) * 3, 0.8, 1.0),  # no specular level: the IOR's own Fresnel
         }
-        objs = [_map(i) for i in range(1, 8)]
-        conv, ir = _convert(_standard(0, classids.BLINN_SHADER, {1: (1.0, 1.0, 1.0), 9: 0.1}, maps=maps), *objs)
-        self.assertEqual(ir.base_color.map, mat.MapRef(1, 0.5, False))
-        self.assertEqual(ir.roughness.map, mat.MapRef(2, 0.8, True))  # a glossiness map: inverted
-        self.assertEqual(ir.specular.map, mat.MapRef(3, 1.0, False))
-        self.close(ir.specular.value, 0.6, "reflection amount 0.6 over level 0.1")
-        self.assertEqual(ir.alpha.map, mat.MapRef(4, 0.9, False))
-        self.assertEqual(ir.emission_color.map, mat.MapRef(5, 1.0, False))
-        self.close(ir.emission_strength, 1.0, "a self-illumination map drives the emission")
-        self.assertEqual(ir.bump, mat.MapRef(6, 0.3, False))
-        self.assertEqual(conv.stats.issues, [])
+        self.assertEqual(set(want), set(mat.SHADER_DEFAULTS))
+        for sid, (base, rough, spec) in want.items():
+            with self.subTest(sid):
+                conv, ir = _convert(_standard(0, sid, {}))
+                self.close(ir.base_color.value, base)
+                self.close(ir.roughness.value, rough)
+                self.close(ir.specular.value, spec)
+                self.assertEqual(conv.stats.issues, [])
+
+    # Each shader's map channels (zero-based, measured in 3ds Max 2020, docs/FORMAT.md): diffuse, specular color,
+    # specular level, glossiness, self-illumination, opacity, bump, reflection, metalness; None: no such channel.
+    CHANNELS = {
+        classids.BLINN_SHADER: (1, 2, 3, 4, 5, 6, 8, 9, None),
+        classids.PHONG_SHADER: (1, 2, 3, 4, 5, 6, 8, 9, None),
+        classids.METAL_SHADER: (1, 2, 3, 4, 5, 6, 8, 9, None),
+        classids.ANISOTROPIC_SHADER: (1, 2, 4, 5, 8, 9, 11, 12, None),
+        classids.MULTI_LAYER_SHADER: (1, 4, 5, 6, 14, 15, 17, 18, None),  # the first specular layer
+        classids.OREN_NAYAR_BLINN_SHADER: (1, 2, 4, 3, 5, 6, 10, 11, None),
+        classids.TRANSLUCENT_SHADER: (1, 2, 4, 3, 5, 6, 10, 11, None),
+        classids.STRAUSS_SHADER: (0, None, None, 1, None, 3, 5, 6, 2),
+    }
+
+    def test_map_slots(self):
+        """Every shader reads its own channels: a map in each read channel (object = its field's number + 1, at
+        an amount of its own), every other channel holds a map no input may take (object 50 + the channel)."""
+        for sid, channels in self.CHANNELS.items():
+            with self.subTest(sid):
+                maps = {k: (Ref(50 + k), 1, 0.25) for k in range(21)}
+                for field, k in enumerate(channels):
+                    if k is not None:
+                        maps[k] = (Ref(field + 1), 1, 0.5 + field / 100.0)
+                objs = [_map(i) for i in range(1, 10)] + [_map(50 + k) for k in range(21)]
+                conv, ir = _convert(_standard(0, sid, {}, maps=maps), *objs)
+                diffuse, spec, level, gloss, emit, opacity, bump, refl, metal = channels
+                self.assertEqual(ir.base_color.map, mat.MapRef(1, 0.50, False))
+                self.assertEqual(ir.roughness.map, mat.MapRef(4, 0.53, True))  # a glossiness map: inverted
+                self.assertEqual(ir.specular.map, None if level is None else mat.MapRef(3, 0.52, False))
+                self.close(ir.specular.value, 1.0 if sid == classids.STRAUSS_SHADER else 0.57,
+                           "the reflection amount over level 0")
+                self.assertEqual(ir.alpha.map, mat.MapRef(6, 0.55, False))
+                if emit is None:
+                    self.assertIsNone(ir.emission_color.map)
+                    self.close(ir.emission_strength, 0.0)
+                else:
+                    self.assertEqual(ir.emission_color.map, mat.MapRef(5, 0.54, False))
+                    self.close(ir.emission_strength, 1.0, "a self-illumination map drives the emission")
+                self.assertEqual(ir.bump, mat.MapRef(7, 0.56, False))
+                self.assertEqual(ir.metallic.map, None if metal is None else mat.MapRef(9, 0.58, False))
+                self.assertEqual(conv.stats.issues, [])
+
+    def test_specular_color_map_without_a_level_map(self):
+        for sid, channels in self.CHANNELS.items():
+            if channels[1] is None:
+                continue
+            with self.subTest(sid):
+                conv, ir = _convert(_standard(0, sid, {}, maps={channels[1]: (Ref(1), 1, 0.4)}), _map(1))
+                self.assertEqual(ir.specular.map, mat.MapRef(1, 0.4, False))
 
     def test_switched_off_slots_and_the_specular_color_map(self):
-        maps = {mat.STD_DIFFUSE: (Ref(1), 0, 1.0), mat.STD_SPECULAR: (Ref(2), 1, 0.4),
-                mat.STD_REFLECTION: (Ref(3), 0, 1.0), mat.STD_BUMP: (Ref(9), 1, 1.0)}
+        maps = {1: (Ref(1), 0, 1.0), 2: (Ref(2), 1, 0.4), 9: (Ref(3), 0, 1.0), 8: (Ref(9), 1, 1.0)}
         conv, ir = _convert(_standard(0, classids.BLINN_SHADER, {9: 0.2, 2: (1.0, 1.0, 1.0)}, maps=maps),
                             _map(1), _map(2), _map(3), _vray(9))
         self.assertIsNone(ir.base_color.map)
@@ -826,6 +928,87 @@ class Standard(unittest.TestCase, Close):
         self.close(ir.specular.value, 0.2, "reflection slot off")
         self.assertIsNone(ir.bump)
         self.assertIn("map slot 8: object 9 is not a map", ir.issues[0])
+
+
+class StandardMaps(unittest.TestCase, Close):
+    """tools/fixtures/standard_maps.ms: a Standard material per shader with a Checker in every channel the rule
+    reads, named after the input it drives ("FixtureMap" + shader + field) and put into the channel 3ds Max names
+    that way on that shader; amounts 0.51 (diffuse) to 0.59 (metalness)."""
+
+    LABELS = {"Blinn": "BLINN_SHADER", "Anisotropic": "ANISOTROPIC_SHADER", "MultiLayer": "MULTI_LAYER_SHADER",
+              "OrenNayarBlinn": "OREN_NAYAR_BLINN_SHADER", "Translucent": "TRANSLUCENT_SHADER",
+              "Strauss": "STRAUSS_SHADER"}
+    FIELDS = {"diffuse": "Diffuse", "specular": "Specular", "level": "Level", "glossiness": "Glossiness",
+              "self_illum": "SelfIllum", "opacity": "Opacity", "bump": "Bump", "reflection": "Reflection",
+              "metalness": "Metalness"}
+
+    @classmethod
+    def setUpClass(cls):
+        cf, cls.graph, cls.by_name = _fixture("standard_maps")
+        with cf:
+            cls.conv = mat.MaterialConverter(cls.graph)
+            cls.irs = {n: cls.conv.convert(cls.by_name["FixtureMaps" + n])
+                       for n in list(cls.LABELS) + ["UnsetAmounts"]}
+
+    def map(self, label, field, amount, invert=False):
+        return mat.MapRef(self.by_name["FixtureMap" + label + field], amount, invert)
+
+    def same_map(self, got, want, what):
+        """The same map and invert; the amount within float precision (stored as a 32-bit float)."""
+        self.assertIsNotNone(got, what)
+        self.assertEqual((got.index, got.invert), (want.index, want.invert), what)
+        self.close(got.amount, want.amount, what + " amount")
+
+    def test_each_shader_reads_its_maps(self):
+        for label in self.LABELS:
+            with self.subTest(label):
+                ir, strauss = self.irs[label], label == "Strauss"
+                self.same_map(ir.base_color.map, self.map(label, "Diffuse", 0.51), "diffuse")
+                self.same_map(ir.roughness.map, self.map(label, "Glossiness", 0.54, invert=True), "glossiness")
+                if strauss:
+                    self.assertIsNone(ir.specular.map)
+                else:
+                    self.same_map(ir.specular.map, self.map(label, "Level", 0.53), "specular level")
+                self.close(ir.specular.value, 1.0 if strauss else 0.58, "the reflection slot's amount")
+                self.same_map(ir.alpha.map, self.map(label, "Opacity", 0.56), "opacity")
+                self.same_map(ir.bump, self.map(label, "Bump", 0.57), "bump")
+                if strauss:
+                    self.assertIsNone(ir.emission_color.map)
+                    self.close(ir.emission_strength, 0.0)
+                    self.same_map(ir.metallic.map, self.map(label, "Metalness", 0.59), "metalness")
+                    self.close(ir.metallic.value, 0.40)
+                else:
+                    self.same_map(ir.emission_color.map, self.map(label, "SelfIllum", 0.55), "self-illumination")
+                    self.close(ir.emission_strength, 1.0)
+                    self.assertIsNone(ir.metallic.map)
+
+    def test_the_slot_table_names_the_maps(self):
+        """mat.STD_SLOTS against the channel 3ds Max put each named map into (the specular color map, which
+        the level map hides, included)."""
+        for label, shader in self.LABELS.items():
+            m = self.graph.get(self.by_name["FixtureMaps" + label])
+            sid = getattr(classids, shader)
+            slots = mat.STD_SLOTS[sid]
+            with self.subTest(label):
+                for field, suffix in self.FIELDS.items():
+                    want = self.by_name.get("FixtureMap" + label + suffix)
+                    k = getattr(slots, field)
+                    self.assertEqual(want is None, k is None, field)
+                    if k is not None:
+                        self.assertEqual(m.param(1, 3, tab=k).index, want, field)
+        self.assertEqual(set(mat.STD_SLOTS), set(mat.SHADERS) | {classids.STRAUSS_SHADER})
+
+    def test_amounts_never_set_after_the_shader_switch(self):
+        """FixtureMapsUnsetAmounts (Anisotropic, created as Blinn): the maps land in their inputs, at the amounts
+        the map table keeps from the material as created (self-illumination 0.3, bump 1.0), not 3ds Max's (1.0
+        and 0.3, kept in the Texmaps object), docs/FORMAT.md: maxdrop-em3.148 makes these 1.0 and 0.3."""
+        ir = self.irs["UnsetAmounts"]
+        self.same_map(ir.emission_color.map, self.map("UnsetAmounts", "SelfIllum", 0.3), "self-illumination")
+        self.same_map(ir.bump, self.map("UnsetAmounts", "Bump", 1.0), "bump")
+        self.assertIsNone(ir.base_color.map)
+
+    def test_no_issues(self):
+        self.assertEqual((self.conv.stats.issues, dict(self.conv.stats.unknown)), ([], {}))
 
 
 class Physical(unittest.TestCase, Close):
@@ -914,13 +1097,22 @@ class StandardShaders(unittest.TestCase, Close):
     }
     FIELDS = {"diffuse": "diffuse", "specular": "specular", "level": "specularLevel", "glossiness": "glossiness",
               "si_amount": "selfIllumAmount", "si_color": "selfIllumColor", "use_si_color": "useSelfIllumColor"}
+    # material: (shader, diffuse, Diffuse Level %, self-illumination amount %); glossiness and specular level as
+    # created
+    LEVELS = {
+        "FixtureAnisotropicLevel": ("ANISOTROPIC_SHADER", (200, 120, 60), 40, 35),
+        "FixtureMultiLayerLevel": ("MULTI_LAYER_SHADER", (60, 200, 140), 150, 0),
+        "FixtureOrenNayarBlinnLevel": ("OREN_NAYAR_BLINN_SHADER", (120, 80, 220), 65, 0),
+        "FixtureTranslucentLevel": ("TRANSLUCENT_SHADER", (90, 180, 50), 80, 0),
+    }
 
     @classmethod
     def setUpClass(cls):
         cf, graph, cls.by_name = _fixture("standard_shaders")
         with cf:
             cls.conv = mat.MaterialConverter(graph)
-            cls.irs = {n: cls.conv.convert(cls.by_name[n]) for n in list(cls.VALUES) + ["FixtureStrauss"]}
+            cls.irs = {n: cls.conv.convert(cls.by_name[n])
+                       for n in list(cls.VALUES) + list(cls.LEVELS) + ["FixtureStrauss"]}
         cls.oracle = _oracle_graph("standard_shaders")
 
     def shader_block(self, name):
@@ -964,6 +1156,29 @@ class StandardShaders(unittest.TestCase, Close):
         self.assertEqual(sid, classids.STRAUSS_SHADER)
         self.assertEqual((names[0], names[1], names[2]), ("diffuse", "glossiness", "metalness"))
         self.assertEqual(set(mat.SHADERS), {getattr(classids, v[0]) for v in self.VALUES.values()})
+
+    def test_diffuse_level_by_hand(self):
+        """The swatch times the level, clamped to 255, then decoded (Multi-Layer's green 200 x 1.5 is white); the
+        self-illumination keeps the diffuse as set; glossiness and specular level are the shader's as created."""
+        for name, (shader, diffuse, level, amount) in self.LEVELS.items():
+            with self.subTest(name):
+                sid, names = self.shader_block(name)
+                self.assertEqual(sid, getattr(classids, shader))
+                ids, d = mat.SHADERS[sid], mat.SHADER_DEFAULTS[sid]
+                self.assertEqual(names[ids.diffuse_level], "diffuseLevel")
+                block = self.oracle[name]["parts"]
+                stored = [p["value"] for part in block for b in part["blocks"][:1] for p in b["params"]
+                          if p.get("name") == "diffuseLevel"]
+                self.assertEqual(len(stored), 1)
+                self.close(stored[0], level / 100.0, "stored as a fraction")
+                ir = self.irs[name]
+                self.close(ir.base_color.value, _lins(*(min(255.0, c * level / 100.0) for c in diffuse)))
+                self.close(ir.roughness.value, 1.0 - d.glossiness)
+                self.close(ir.specular.value, d.level * _lin(229.5), "level as created times the 0.9 grey specular")
+                if amount:
+                    self.close(ir.emission_color.value, _lins(*diffuse), "the unscaled diffuse")
+                self.close(ir.emission_strength, amount / 100.0)
+        self.close(self.irs["FixtureMultiLayerLevel"].base_color.value[1], 1.0, "past white: clamped")
 
     def test_no_issues(self):
         self.assertEqual((self.conv.stats.issues, dict(self.conv.stats.unknown)), ([], {}))
@@ -1176,6 +1391,20 @@ def _lins(*s):
     return tuple(_lin(c) for c in s)
 
 
+def _hair_color(melanin, redness, tint, diffuse=(0.0, 0.0, 0.0)):
+    """CoronaHairMtl's base color as Blender's Principled Hair BSDF colors a strand (Cycles 4.2, svm/closure.h and
+    closure/bsdf_util.h: melanin remapped by -ln(1 - m), the eumelanin and pheomelanin absorption, the tint's
+    absorption at Radial Roughness 0.3), plus the diffuse color."""
+    x = 0.3
+    scale = (((((0.245 * x) + 5.574) * x - 10.73) * x + 2.532) * x - 0.215) * x + 5.969
+    c = -math.log(max(1.0 - melanin, 1e-4))
+    out = []
+    for eu, pheo, t, d in zip((0.506, 0.841, 1.653), (0.343, 0.733, 1.924), tint, diffuse):
+        sigma = c * (1.0 - redness) * eu + c * redness * pheo + (math.log(min(1.0, max(1e-4, t))) / scale) ** 2
+        out.append(min(1.0, math.exp(-math.sqrt(sigma) * scale) + d))
+    return tuple(out)
+
+
 class Corona(unittest.TestCase, Close):
     """tools/fixtures/corona_physical.ms, corona_legacy.ms, corona_layered.ms and corona_light.ms, by hand."""
 
@@ -1200,7 +1429,7 @@ class Corona(unittest.TestCase, Close):
         self.close(rough.coat_color, _lins(230, 210, 190), "clearcoat absorption color")
         self.close(rough.emission_color.value, _lins(255, 128, 0))
         self.close(rough.emission_strength, 2.5)
-        self.close(rough.alpha.value, _lin(200) * 0.8, "mean opacity color x level")
+        self.close(rough.alpha.value, 200 / 255.0 * 0.8, "mean opacity color as stored x level (em3.122)")
         self.close(rough.specular.value, 1.0, "the IOR's own Fresnel: no level parameter")
         self.close(gloss.base_color.value, _lins(220, 180, 90))
         self.close(gloss.metallic.value, 1.0, "metalness mode metal")
@@ -1225,7 +1454,7 @@ class Corona(unittest.TestCase, Close):
         self.close(pbr.ior, 1.6, "Fresnel IOR without refraction")
         self.close(pbr.emission_color.value, _lins(0, 128, 255))
         self.close(pbr.emission_strength, 1.5)
-        self.close(pbr.alpha.value, _lin(230) * 0.9)
+        self.close(pbr.alpha.value, 230 / 255.0 * 0.9)  # a data input: the swatch as stored
         refract = _lins(200, 230, 255)
         t = sum(refract) / 3 * 0.75
         self.close(old.transmission.value, t, "mean refraction x level")
@@ -1418,16 +1647,91 @@ class CoronaMore(unittest.TestCase, Close):
         self.close(ir.alpha.value, 0.9)
         self.assertEqual(ir.issues, [])
 
-    def test_hair_stays_grey(self):
+    def test_hair_defaults(self):
         ir = self.ir("Hair")
-        self.assertTrue(ir.unknown)
-        self.assertEqual(self.conv.stats.unknown["CoronaHairMtl"], 1)
+        self.assertFalse(ir.unknown)
+        self.assertEqual(self.conv.stats.unknown["CoronaHairMtl"], 0)
+        self.close(ir.base_color.value, _hair_color(0.5, 0.0, (1.0, 1.0, 1.0)))
+        self.close(ir.roughness.value, 0.5)
+        self.close(ir.ior, 1.55)
+        self.close(ir.alpha.value, 1.0)
+        self.assertEqual(ir.issues, [])
 
     def test_ray_switch_and_select_peel(self):
         self.assertIs(self.ir("RaySwitch"), self.ir("RaySwitchDirect"), "what the camera sees")
         self.assertIs(self.ir("Select"), self.ir("SelectB"), "selected 1, zero-based")
         self.assertEqual(self.conv.stats.peeled["CoronaRaySwitchMtl"], 1)
         self.assertEqual(self.conv.stats.peeled["CoronaSelectMtl"], 1)
+
+
+class CoronaClasses(unittest.TestCase, Close):
+    """tools/fixtures/corona_classes.ms, by hand (millimeters, gamma off)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cf, cls.graph, cls.by_name = _fixture("corona_classes")
+        cls.conv = mat.MaterialConverter(cls.graph)
+        cls.irs = {n: cls.conv.convert(i) for n, i in cls.by_name.items()}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.cf.close()
+
+    def ir(self, name):
+        return self.irs["FixtureCorona" + name]
+
+    def test_hair(self):
+        ir = self.ir("HairSet")
+        self.assertFalse(ir.unknown)
+        self.assertEqual(ir.source, "CoronaHairMtl")
+        tint = tuple(0.9 * c for c in _lins(230, 200, 180))
+        diffuse = tuple(0.5 * c for c in _lins(40, 30, 20))
+        self.close(ir.base_color.value, _hair_color(0.3, 0.6, tint, diffuse))
+        tint_map = self.graph.get(ir.base_color.map.index)
+        self.assertEqual((tint_map.name, ir.base_color.map.amount), ("FixtureCHairTint", 0.5))
+        self.close(ir.roughness.value, 0.3, "1 - glossiness 0.7")
+        self.close(ir.ior, 1.6)
+        self.close(ir.specular.value, 1.0)
+        self.close(ir.alpha.value, 200 / 255 * 0.8, "the opacity swatch as stored times its level")
+        self.assertEqual(ir.issues, ["CoronaHairMtl 'FixtureCoronaHairSet': tint map drawn without the melanin color",
+                                     "CoronaHairMtl 'FixtureCoronaHairSet': melanin map not converted"])
+
+    def test_shadow_catchers(self):
+        plain, refl = self.ir("ShadowCatcher"), self.ir("ShadowCatcherRefl")
+        for ir in (plain, refl):
+            self.assertTrue(ir.shadow_catcher)
+            self.assertFalse(ir.unknown)
+            self.close(ir.base_color.value, GREY)
+        self.assertEqual(plain.issues, [])
+        self.assertEqual(refl.issues, ["CoronaShadowCatcherMtl 'FixtureCoronaShadowCatcherRefl': backplate map not "
+                                       "converted", "CoronaShadowCatcherMtl 'FixtureCoronaShadowCatcherRefl': "
+                                       "reflection not converted"])
+        self.assertFalse(self.ir("CatcherMixedPhys").shadow_catcher)
+        self.assertFalse(self.ir("HairSet").shadow_catcher)
+
+    def test_named_greys(self):
+        for name, cls, what in (("Volume", "CoronaVolumeMtl", "volume not converted"),
+                                ("Scanned", "CoronaScannedMtl", "scanned material (.ctf) not read"),
+                                ("Slicer", "CoronaSlicerMtl", "slicing not converted")):
+            ir = self.ir(name)
+            self.assertTrue(ir.unknown, name)
+            self.assertEqual(ir.source, cls)
+            self.close(ir.base_color.value, GREY)
+            self.assertEqual(ir.issues, ["%s 'FixtureCorona%s': %s, grey" % (cls, name, what)])
+
+    def test_no_class_without_a_rule(self):
+        self.assertEqual(dict(self.conv.stats.unknown), {})
+
+    @unittest.skipIf(numpy is None, "numpy missing")  # assign() needs it
+    def test_shadow_catcher_users(self):
+        s = reader_scene.Scene.from_file(self.cf)
+        desc = importlib.import_module(_PKG + ".convert.scene").describe(s, 0.001, None)
+        plan = mat.assign(desc, mat.node_materials(s, desc), self.conv)
+        names = {n.index: n.name for n in desc.nodes}
+        got = sorted(names[u] for ms in plan.values() for u in mat.shadow_catcher_users(ms))
+        self.assertEqual(got, ["FixtureCoronaShadowCatcherBox", "FixtureCoronaShadowCatcherReflBox"])
+        mixed = next(ms for ms in plan.values() if names[ms.users[0]] == "FixtureCoronaCatcherMixedBox")
+        self.assertEqual(len(mixed.slots), 2, "the catcher and the physical material, one slot each")
 
 
 def _corona(index, class_id, **params):
@@ -1566,6 +1870,82 @@ class CoronaSynthetic(unittest.TestCase, Close):
         self.assertTrue(ir.unknown)
         self.close(ir.base_color.value, GREY)
         self.assertTrue(any("no sub-material" in r for _i, r in conv.stats.issues))
+
+    def test_hair_defaults(self):
+        conv, ir = _convert(_corona(0, classids.CORONA_HAIR_MTL))
+        self.close(ir.base_color.value, _hair_color(0.5, 0.0, (1.0, 1.0, 1.0)))
+        self.close(ir.roughness.value, 0.5)
+        self.close(ir.ior, 1.55)
+        self.assertEqual((ir.issues, dict(conv.stats.unknown)), ([], {}))
+
+    def test_hair_color_numbers(self):
+        """Literal numbers, apart from _hair_color: Corona's default (melanin 0.5) is a dark brown."""
+        self.close(mat.HAIR_ROUGHNESS_SCALE, 5.888415, "Cycles' polynomial at 0.3")
+        got = mat.hair_color(0.5, 0.0, (1.0, 1.0, 1.0))
+        for g, want in zip(got, (0.030584, 0.011156, 0.001831)):
+            self.assertAlmostEqual(g, want, delta=2e-6)
+        self.close(mat.hair_color(0.0, 0.0, (0.5, 0.25, 1.0)), (0.5, 0.25, 1.0), "no melanin: the tint itself")
+
+    def test_hair_tint_map_without_melanin_is_no_issue(self):
+        conv, ir = _convert(_corona(0, classids.CORONA_HAIR_MTL, p141=0.0, p112=Ref(1)), _map(1))
+        self.assertEqual((ir.base_color.map, ir.issues), (mat.MapRef(1, 1.0), []))
+
+    def test_layered_over_a_shadow_catcher_is_no_shadow_catcher(self):
+        layered = _corona(0, classids.CORONA_LAYERED_MTL, p1000=Ref(1), p1001=[Ref(2)], p1004=[1])
+        conv, ir = _convert(layered, _corona(1, classids.CORONA_SHADOW_CATCHER_MTL),
+                            _corona(2, classids.CORONA_PHYSICAL_MTL))
+        self.assertEqual(len(ir.layers), 1)
+        self.assertFalse(ir.shadow_catcher)
+        self.assertTrue(conv.convert(1).shadow_catcher, "the catcher itself still is one")
+
+    def test_hair_melanin_bounds(self):
+        _conv, black = _convert(_corona(0, classids.CORONA_HAIR_MTL, p141=1.0, p142=0.5))
+        self.close(black.base_color.value, _hair_color(1.0, 0.5, (1.0, 1.0, 1.0)), "1 - melanin floored at 1e-4")
+        _conv, white = _convert(_corona(0, classids.CORONA_HAIR_MTL, p141=0.0))
+        self.close(white.base_color.value, (1.0, 1.0, 1.0), "no pigment, a white tint")
+        _conv, inked = _convert(_corona(0, classids.CORONA_HAIR_MTL, p141=0.0, p101=(0.0, 0.0, 0.0)))
+        self.close(inked.base_color.value, _hair_color(0.0, 0.0, (0.0, 0.0, 0.0)), "a black tint floored at 1e-4")
+        self.assertTrue(all(c > 0 for c in inked.base_color.value))
+
+    def test_hair_diffuse_added_and_clamped(self):
+        _conv, ir = _convert(_corona(0, classids.CORONA_HAIR_MTL, p141=0.0, p102=(1.0, 0.5, 0.0), p105=0.5))
+        self.close(ir.base_color.value, (1.0, 1.0, 1.0), "white plus the diffuse, at most 1")
+        _conv, ir = _convert(_corona(0, classids.CORONA_HAIR_MTL, p102=(1.0, 0.5, 0.0), p105=0.5))
+        self.close(ir.base_color.value, _hair_color(0.5, 0.0, (1.0, 1.0, 1.0), (0.5, 0.25, 0.0)))
+
+    def test_hair_maps(self):
+        maps = [_map(i) for i in range(1, 6)]
+        hair = _corona(0, classids.CORONA_HAIR_MTL, p114=Ref(1), p132=0.4, p116=Ref(2), p120=Ref(3), p138=0.5,
+                       p155=Ref(4), p163=Ref(5), p164=0)
+        conv, ir = _convert(hair, *maps)
+        self.assertEqual(ir.alpha.map, mat.MapRef(1, 0.4))
+        self.assertEqual(ir.roughness.map, mat.MapRef(2, 1.0, True))
+        self.assertEqual(ir.bump, mat.MapRef(3, 0.5))
+        self.assertEqual(ir.issues, ["CoronaHairMtl 'C': transmission map not converted"], "the glint map is off")
+
+    def test_volume_scanned_slicer_named(self):
+        for key, what in ((classids.CORONA_VOLUME_MTL, "volume"), (classids.CORONA_SCANNED_MTL, "scanned"),
+                          (classids.CORONA_SLICER_MTL, "slicing")):
+            conv, ir = _convert(_corona(0, key))
+            self.assertTrue(ir.unknown)
+            self.close(ir.base_color.value, GREY)
+            self.assertEqual(len(ir.issues), 1)
+            self.assertIn(what, ir.issues[0])
+            self.assertEqual(dict(conv.stats.unknown), {})
+
+    def test_shadow_catcher_defaults(self):
+        conv, ir = _convert(_corona(0, classids.CORONA_SHADOW_CATCHER_MTL))
+        self.assertTrue(ir.shadow_catcher)
+        self.assertEqual((ir.issues, dict(conv.stats.unknown)), ([], {}))
+        _conv, off = _convert(_corona(0, classids.CORONA_SHADOW_CATCHER_MTL, p302=Ref(1), p360=0),
+                              _map(1))
+        self.assertEqual(off.issues, [], "a backplate map switched off")
+
+    def test_shadow_catcher_users(self):
+        catcher, other = mat.MaterialIR(0, "a", shadow_catcher=True), mat.MaterialIR(1, "b")
+        plan = mat.MeshSlots([10, 11, 12], [[catcher, catcher, catcher], [catcher, other, None]], None)
+        self.assertEqual(mat.shadow_catcher_users(plan), [10], "every slot of the user a catcher")
+        self.assertEqual(mat.shadow_catcher_users(mat.MeshSlots([10], [], None)), [], "no slot, no catcher")
 
 
 @unittest.skipIf(numpy is None, "numpy missing")  # assign() and the mesh reader need it

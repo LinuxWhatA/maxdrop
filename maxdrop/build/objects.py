@@ -10,6 +10,7 @@
     built.curves[node.curve]            # the Curve of a shape node, one per CurveDescription (build.curves)
     built.lights[node.light]            # the Light of a light node, one per LightDescription (build.lights)
     built.cameras[node.camera]          # the Camera of a camera node, one per CameraDescription (build.cameras)
+    built.emitters[node.emitter]        # the Emission material of a mesh light's node, one per EmitterDescription
     built.roots()                       # every object without a parent, the shear helper included
     built = build(desc, collection, slots=assign(...), material=make)   # with material slots
     built.materials[ir.index]           # the Material make(ir) returned, once per Max material
@@ -38,7 +39,11 @@ are empties (placeholders) and the object's own world matrix would stay off.
 An EMPTY node becomes a plain-axes empty with the custom property maxdrop_class; a CURVE node an object of its
 Curve, with the slot of slots.curves (a rectangular section's hidden bevel object goes into collection, without a
 material: build.curves); a LIGHT node an object of its Light (build.lights, power times light_strength), with the
-light's object flags; a CAMERA node an object of its Camera (build.cameras).
+light's object flags; a CAMERA node an object of its Camera (build.cameras). A mesh light's node (node.emitter) is a
+MESH of its emitter mesh, whose every face gets the emitter's Emission material (build.emitters, strength times
+light_strength), its only slot whatever the slots say, with the emitter's object flags. An object whose every
+slot holds a shadow-catcher material (convert.materials.shadow_catcher_users: CoronaShadowCatcherMtl) gets
+is_shadow_catcher (Cycles; EEVEE has no shadow catcher and draws its grey material).
 
 With collections (build.collections.make), each object goes into its layer's collection, else into collection.
 A node hidden in 3ds Max gets hide_viewport and is hidden in view_layer (hide_set), one that does not render
@@ -54,9 +59,11 @@ target moves. The ones no Track To can aim as 3ds Max does keep the baked rotati
 import bpy
 from mathutils import Matrix
 
+from ..convert import materials as convert_materials
 from ..convert import scene as convert_scene
 from . import cameras as build_cameras
 from . import curves as build_curves
+from . import emitters as build_emitters
 from . import lights as build_lights
 
 MAX_UV_LAYERS = 8
@@ -77,12 +84,13 @@ class Built:
     """objects {node index: Object}, meshes {mesh key: Mesh}, curves {curve key: Curve}, lights {light key:
     Light}, cameras {camera key: Camera}, dropped_uv_layers
     (channels Blender had no room for), helpers (objects that are no node: the shear helper), materials {Max
-    material object index: Material}."""
-    __slots__ = ("objects", "meshes", "curves", "lights", "cameras", "dropped_uv_layers", "helpers", "materials")
+    material object index: Material}, emitters {emitter key: its Emission Material}."""
+    __slots__ = ("objects", "meshes", "curves", "lights", "cameras", "dropped_uv_layers", "helpers", "materials",
+                 "emitters")
 
     def __init__(self):
         self.objects, self.meshes, self.dropped_uv_layers, self.helpers = {}, {}, 0, []
-        self.curves, self.materials, self.lights, self.cameras = {}, {}, {}, {}
+        self.curves, self.materials, self.lights, self.cameras, self.emitters = {}, {}, {}, {}, {}
 
     def roots(self):
         """The objects without a parent, helpers included: what a change of axes turns."""
@@ -243,7 +251,8 @@ def _slots(built, slots, make):
 
 
 def _data_slots(built, data, plan, make):
-    """plan's slots on data (a Mesh or a Curve) and its users' objects."""
+    """plan's slots on data (a Mesh or a Curve) and its users' objects; the users whose every slot is a shadow
+    catcher become one."""
     for s, irs in enumerate(plan.slots):
         if all(ir is irs[0] for ir in irs):
             data.materials.append(_material(built, irs[0], make))
@@ -255,6 +264,27 @@ def _data_slots(built, data, plan, make):
                 slot = ob.material_slots[s]
                 slot.link = 'OBJECT'
                 slot.material = _material(built, ir, make)
+    for node in convert_materials.shadow_catcher_users(plan):
+        ob = built.objects.get(node)
+        if ob is not None:
+            ob.is_shadow_catcher = True
+
+
+def _emitter_slots(desc, built):
+    """The Emission material of each emitter mesh as its only slot, on every face (an emitter mesh is used by the
+    nodes of one mesh light only; convert.materials.assign gives it no slots)."""
+    import numpy
+    done = set()
+    for node in desc.nodes:
+        if node.emitter is None or node.mesh in done:
+            continue
+        done.add(node.mesh)
+        mesh = built.meshes.get(node.mesh)
+        if mesh is None:
+            continue
+        mesh.materials.clear()
+        mesh.materials.append(built.emitters[node.emitter])
+        mesh.polygons.foreach_set("material_index", numpy.zeros(len(mesh.polygons), dtype=numpy.int32))
 
 
 def build(desc, collection, collections=None, view_layer=None, slots=None, material=None, light_strength=1.0):
@@ -267,10 +297,10 @@ def build(desc, collection, collections=None, view_layer=None, slots=None, mater
 
 
 def steps_of(desc, slots=None):
-    """The number of steps build_steps() takes for desc: one per mesh, curve, light, camera, node, and mesh or
-    curve with material slots."""
-    return (len(desc.meshes) + len(desc.curves) + len(desc.lights) + len(desc.cameras) + len(desc.nodes)
-            + len(slots or {}) + len(_curve_plans(slots)))
+    """The number of steps build_steps() takes for desc: one per mesh, curve, light, emitter, camera, node, and mesh
+    or curve with material slots."""
+    return (len(desc.meshes) + len(desc.curves) + len(desc.lights) + len(desc.emitters) + len(desc.cameras)
+            + len(desc.nodes) + len(slots or {}) + len(_curve_plans(slots)))
 
 
 def build_steps(desc, collection, collections=None, view_layer=None, slots=None, material=None,
@@ -300,6 +330,10 @@ def build_steps(desc, collection, collections=None, view_layer=None, slots=None,
         yield done, total
     for key, ld in desc.lights.items():
         built.lights[key] = build_lights.make_light(ld, light_strength)
+        done += 1
+        yield done, total
+    for key, ed in desc.emitters.items():
+        built.emitters[key] = build_emitters.make_material(ed, light_strength)
         done += 1
         yield done, total
     for key, cd in desc.cameras.items():
@@ -336,12 +370,15 @@ def build_steps(desc, collection, collections=None, view_layer=None, slots=None,
             hidden.append(ob)
         if node.kind == convert_scene.LIGHT:
             build_lights.set_object(ob, desc.lights[node.light])
+        elif node.emitter is not None:
+            build_emitters.set_object(ob, desc.emitters[node.emitter])
         built.objects[node.index] = ob
         done += 1
         yield done, total
     for _ in _slots(built, slots, material):
         done += 1
         yield done, total
+    _emitter_slots(desc, built)
     for ob in hidden:
         try:
             ob.hide_set(True, view_layer=view_layer)

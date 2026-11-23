@@ -70,8 +70,13 @@ standard Omni, Spot and Direct a point, spot and sun light; a photometric light 
 distribution; a VRaySun a sun; a VRayIES a spot. It is keyed by its base object index and the factor the node's
 world scale puts on its area (lights.area_scale, 1 but for a VRayLight), so instances of one scale share it; the
 issues of its parameters are named on its first node, those of a description on the first node of that key. A
-VRayLight's mesh light or a Skylight (not built yet), or a light whose parameters cannot be read, is an EMPTY with
-the reason as an issue, on every node, not counted as a placeholder. A VRayLight dome is an EMPTY too (its children
+VRayLight's mesh light is a MESH of its emitter (node.emitter, the key into desc.emitters of its
+lights.EmitterDescription, one per light object): its mesh object's base mesh (the light's own, else the picked
+node's object; an Editable Mesh, Editable Poly or primitive built here) in object space with the light node's offset
+baked, keyed (EMITTER, light base, mesh base, offset), the light's nodes its users; its area (mesh_area, object
+space) sets the radiance in lm and W; the modifiers above the base mesh are an issue. A mesh light without such a
+mesh, a Skylight (not built yet), or a light whose parameters cannot be read, is an EMPTY with the reason as an
+issue, on every node, not counted as a placeholder. A VRayLight dome is an EMPTY too (its children
 stay placed), not a placeholder: the first dome node that is on (in walk order) gives desc.dome
 (lights.describe_dome), the World build/ makes; any other dome node, an instance of it too, and one that is off are
 an issue each (Blender has one World). A VRaySky as the environment map is an issue labelled ENVIRONMENT.
@@ -144,6 +149,7 @@ from ..reader import scene as reader_scene
 from . import cameras, colors, extrude, ies, lights, modifiers as rules, primitives, uvwmap
 
 MESH, CURVE, EMPTY, LIGHT, CAMERA = "MESH", "CURVE", "EMPTY", "LIGHT", "CAMERA"
+EMITTER = "emitter"  # an emitter mesh's key: (EMITTER, light base, mesh base object index, the light node's offset)
 ADAPTIVE = 12  # Blender's default curve resolution, for a shape 3ds Max interpolates adaptively
 UV_FIRST = "UVMap"
 UV_NAME = "UVChannel_%d"
@@ -190,15 +196,17 @@ class NodeDescription:
     one); hidden, frozen, renderable, cast_shadows, receive_shadows, group_head and group_member the node's own
     flags; sheared whether matrix has shear (see sheared()); converted the modifiers that become Blender
     modifiers (convert.modifiers ModifierDescriptions, bottom first); look_at the LookAtDescription of a Look At
-    controller aimed at a node, else None."""
+    controller aimed at a node, else None; emitter the key into SceneDescription.emitters of a mesh light's MESH
+    node (its mesh an emitter mesh), else None."""
     __slots__ = ("index", "name", "parent", "matrix", "world", "kind", "mesh", "class_name", "mirrored",
                  "modifiers", "layer", "hidden", "frozen", "renderable", "group_head", "group_member", "sheared",
-                 "curve", "applied", "converted", "look_at", "light", "camera", "cast_shadows", "receive_shadows")
+                 "curve", "applied", "converted", "look_at", "light", "camera", "cast_shadows", "receive_shadows",
+                 "emitter")
 
     def __init__(self, index, name, parent, matrix, world, kind, mesh, class_name, mirrored, modifiers, layer=None,
                  hidden=False, frozen=False, renderable=True, group_head=False, group_member=False, sheared=False,
                  curve=None, applied=(), converted=(), look_at=None, light=None, camera=None, cast_shadows=True,
-                 receive_shadows=True):
+                 receive_shadows=True, emitter=None):
         self.index, self.name, self.parent, self.matrix, self.world = index, name, parent, matrix, world
         self.kind, self.mesh, self.class_name, self.mirrored, self.modifiers = kind, mesh, class_name, mirrored, \
             modifiers
@@ -206,7 +214,7 @@ class NodeDescription:
         self.group_head, self.group_member, self.sheared = group_head, group_member, sheared
         self.curve, self.applied, self.converted, self.look_at = curve, applied, converted, look_at
         self.light, self.camera = light, camera
-        self.cast_shadows, self.receive_shadows = cast_shadows, receive_shadows
+        self.cast_shadows, self.receive_shadows, self.emitter = cast_shadows, receive_shadows, emitter
 
     def __repr__(self):
         return "NodeDescription(%d, %r, %s, parent=%r)" % (self.index, self.name, self.kind, self.parent)
@@ -310,18 +318,19 @@ class LayerDescription:
 class SceneDescription:
     """nodes in walk order, meshes {key: MeshDescription}, curves {key: CurveDescription}, lights {key:
     convert.lights.LightDescription} and cameras {key: convert.cameras.CameraDescription} in order of first use,
-    dome the convert.lights.DomeDescription of the World (None without a dome light that is on),
+    dome the convert.lights.DomeDescription of the World (None without a dome light that is on), emitters {light
+    base object index: convert.lights.EmitterDescription} of the mesh lights built as emissive meshes,
     camera the scene camera's node index, camera_note why it is the first camera when that is no issue (None: the
     view 3ds Max renders, or an issue says why), render the convert.cameras.RenderSettings (None when not stored),
     meters per file unit, unit the reader's SystemUnit (None when the file does not say), layers, placeholders,
     unknown_controllers and issues."""
     __slots__ = ("nodes", "meshes", "curves", "lights", "cameras", "camera", "camera_note", "render", "meters",
-                 "unit", "layers", "placeholders", "unknown_controllers", "issues", "dome")
+                 "unit", "layers", "placeholders", "unknown_controllers", "issues", "dome", "emitters")
 
     def __init__(self, meters, unit=None):
         self.nodes, self.meshes, self.meters, self.unit, self.layers = [], {}, meters, unit, []
         self.curves, self.lights, self.cameras, self.camera, self.render = {}, {}, {}, None, None
-        self.camera_note, self.dome = None, None
+        self.camera_note, self.dome, self.emitters = None, None, {}
         self.placeholders = collections.Counter()
         self.unknown_controllers = collections.Counter()
         self.issues = []
@@ -496,6 +505,26 @@ def _disjoint(masks):
         return True
     distinct = sorted(distinct)
     return any(x & y == 0 for k, x in enumerate(distinct) for y in distinct[k + 1:])
+
+
+def mesh_area(positions, loop_vertices, loop_starts, loop_totals, keep=None):
+    """The total area of a mesh's polygons (Newell's vector of each, so a polygon that is not flat counts its
+    projected area), in the square of the positions' unit; keep (bool (F,)): only those polygons."""
+    import numpy
+    starts = numpy.asarray(loop_starts, dtype=numpy.int64)
+    totals = numpy.asarray(loop_totals, dtype=numpy.int64)
+    some = totals > 0
+    if keep is not None:
+        keep = numpy.asarray(keep, dtype=bool)[some]
+    starts, totals = starts[some], totals[some]
+    if not len(starts):
+        return 0.0
+    p = numpy.asarray(positions, dtype=numpy.float64)[numpy.asarray(loop_vertices, dtype=numpy.int64)]
+    following = numpy.arange(1, len(p) + 1)
+    following[starts + totals - 1] = starts
+    newell = numpy.add.reduceat(numpy.cross(p, p[following]), starts, axis=0)
+    areas = numpy.sqrt((newell * newell).sum(axis=1))
+    return float((areas[keep] if keep is not None else areas).sum() / 2.0)
 
 
 def valid_faces(loop_vertices, loop_starts, loop_totals):
@@ -723,6 +752,7 @@ def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, 
     layers = {}  # layer object index -> reader Layer, or None when its record cannot be read
     unlit = {}  # light base object index -> why it is not built
     light_params = {}  # light base object index -> its values (convert.lights.read_params)
+    emitter_meshes = {}  # mesh light base -> its mesh (_emitter_mesh) or why it has none, until its last node
     ies_files = ies.Lookup(files) if files is not None else None
     swatches = None  # the scene's swatch rule, read for the first light
     unseen = {}  # camera base object index -> why it is not built
@@ -733,7 +763,7 @@ def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, 
             check()
         local, world = t.local(i), t.world(i)
         kind, key, class_name, modifiers, name, node, layer, base = EMPTY, None, "", (), "", None, None, None
-        curve, applied, converted, light, camera = None, (), (), None, None
+        curve, applied, converted, light, camera, emitter = None, (), (), None, None, None
         if isinstance(found[i], ChunkError):  # a damaged node record or object stack: an empty, children placed
             desc.issues.append((i, "node: %s" % found[i]))
         else:
@@ -773,6 +803,14 @@ def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, 
                 light = _light(scene, desc, unlit, light_params, base, i, name, meters, swatches, world, assets,
                                ies_files)
                 kind = LIGHT if light is not None else EMPTY
+                if light is None and base in light_params and lights.is_mesh_light(light_params[base]):
+                    key, emitter = _emitter(scene, t, desc, emitter_meshes, light_params[base], base, i, name,
+                                            meters, swatches, built, check)
+                    if key is not None:
+                        kind = MESH
+                remaining[base] -= 1
+                if not remaining[base]:
+                    emitter_meshes.pop(base, None)
             elif base is not None and cameras.camera_class(scene, base) is not None:
                 class_name = _class_name(scene, base)
                 camera = _camera(scene, t, desc, unseen, camera_params, base, i, name, meters, mm)
@@ -822,7 +860,7 @@ def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, 
                                           determinant3(world) < 0, modifiers, layer, sheared=sheared(local),
                                           curve=curve, applied=applied, converted=converted,
                                           look_at=look_at_description(t.look_at(i)), light=light, camera=camera,
-                                          **flags))
+                                          emitter=emitter, **flags))
     desc.render, issues = cameras.render_settings(scene)
     desc.issues.extend((None, "render: %s" % x) for x in issues)
     names = {node.index: node.name or "object %d" % node.index for node in desc.nodes}
@@ -838,17 +876,6 @@ def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, 
         for issue in t.issues if issue.reason == controllers.UNKNOWN_CLASS)
     desc.layers = _layer_descriptions(scene, layers)
     return desc
-
-
-def _node_name(scene, i):
-    """The name of node i, None when i is no node of the scene or its record cannot be read."""
-    if not 0 <= i < len(scene):
-        return None
-    try:
-        node = scene.node(i)
-    except ChunkError:  # not a node, or its record cannot be read
-        return None
-    return node.name or None
 
 
 def _dome(desc, values, node, name, swatches, world):
@@ -869,7 +896,7 @@ def _light(scene, desc, unlit, params, base, node, name, meters, swatches, world
     if base not in params and base not in unlit:
         try:
             values, issues = lights.read_params(scene, base, assets, ies_files)
-            reason = lights.not_built(values, lambda i: _node_name(scene, i))
+            reason = lights.not_built(values)
         except ChunkError as exc:
             values, issues, reason = None, [], "parameters cannot be read: %s" % exc
         desc.issues.extend((node, "light: %s" % x) for x in issues)
@@ -883,6 +910,8 @@ def _light(scene, desc, unlit, params, base, node, name, meters, swatches, world
     if lights.is_dome(params[base]):
         _dome(desc, params[base], node, name, swatches, world)
         return None
+    if lights.is_mesh_light(params[base]):  # an emitter (_emitter)
+        return None
     scale = lights.area_scale(params[base], world)
     key = (base, scale)
     if key not in desc.lights:
@@ -891,6 +920,89 @@ def _light(scene, desc, unlit, params, base, node, name, meters, swatches, world
         desc.issues.extend((node, "light: %s" % x) for x in issues)
     desc.lights[key].users.append(node)
     return key
+
+
+def _emitter(scene, t, desc, meshes, values, base, node, name, meters, swatches, built, check=None):
+    """(the key in desc.meshes of mesh light base's emitter mesh on node, its key in desc.emitters), or (None, None)
+    when it has no mesh MaxDrop builds (meshes caches the reason, an issue on every node). The mesh is the mesh
+    object's base mesh in its object space with the light node's offset baked (V-Ray places it at the light's object
+    transform); the description's issues are named on the first node."""
+    if base not in meshes:
+        meshes[base] = _emitter_mesh(scene, desc, values, node, meters, built, check)
+    found = meshes[base]
+    if isinstance(found, str):
+        desc.issues.append((node, "light: not built: %s" % found))
+        return None, None
+    mesh_base, data, area, modifiers = found
+    offset = _offset(t, node)
+    key = (EMITTER, base, mesh_base, offset)
+    md = desc.meshes.get(key)
+    if md is None:
+        md = desc.meshes[key] = mesh_description(key, name, data, offset, meters, check)
+        if md.dropped_faces:
+            desc.issues.append((node, "geometry: %d faces with a repeated vertex or doubled, left out"
+                                % md.dropped_faces))
+    md.users.append(node)
+    if base not in desc.emitters:
+        ed, issues = lights.describe_emitter(base, name, values, swatches, area)
+        desc.emitters[base] = ed
+        if modifiers:
+            issues.append(lights.EMITTER_MODIFIERS % ", ".join(modifiers))
+        desc.issues.extend((node, "light: %s" % x) for x in issues)
+    desc.emitters[base].users.append(node)
+    return key, base
+
+
+def _emitter_mesh(scene, desc, values, node, meters, built, check=None):
+    """(mesh base object index, reader MeshData, its object-space area in m^2 (the faces Blender holds), the class
+    names of the modifiers above it) of a mesh light's mesh: its own mesh object (lights.MESH_OBJECT: what V-Ray's
+    Replace mesh with light keeps), else (none, or not a mesh read here) the object of the node its mesh source
+    (parameter 34) names; or why it has none (the own object's reason when both fail)."""
+    reasons = []
+    for obj in (values.get(lights.MESH_OBJECT), _source_object(scene, values.get(lights.P_MESH_SOURCE))):
+        if obj is None:
+            continue
+        found = _mesh_of(scene, desc, obj, node, built, check)
+        if not isinstance(found, str):
+            mesh_base, data, stack = found
+            keep = valid_faces(data.loop_vertices, data.loop_starts, data.loop_totals)
+            area = mesh_area(data.positions, data.loop_vertices, data.loop_starts, data.loop_totals, keep)
+            return mesh_base, data, area * meters * meters, tuple(_class_name(scene, m) or "a modifier"
+                                                                  for m in stack.modifiers)
+        reasons.append(found)
+    return reasons[0] if reasons else lights.NO_MESH
+
+
+def _source_object(scene, source):
+    """The object of node source (a mesh light's parameter 34), None when it is no node or has none."""
+    if source is None or not 0 <= source < len(scene):
+        return None
+    try:
+        return scene.node(source).object
+    except ChunkError:  # not a node, or its record cannot be read
+        return None
+
+
+def _mesh_of(scene, desc, obj, node, built, check=None):
+    """(base object index, reader MeshData, reader Stack) of object obj's base mesh, or why there is none."""
+    try:
+        stack = scene.object_stack(obj)
+    except ChunkError as exc:
+        return lights.EMITTER_UNREAD % exc
+    mesh_base = stack.base
+    if mesh_base is None:
+        return lights.EMITTER_UNREAD % "no base object"
+    data = None
+    if not shapes.is_shape(scene, mesh_base):
+        try:
+            data = geometry.read_mesh(scene, mesh_base, check)
+        except geometry.GeometryError as exc:
+            return lights.EMITTER_UNREAD % exc
+        if data is None and primitives.is_primitive(scene, mesh_base):
+            data = _primitive(scene, mesh_base, desc.issues, node, built)
+    if data is None:
+        return lights.EMITTER_CLASS % (_class_name(scene, mesh_base) or "an unknown class")
+    return mesh_base, data, stack
 
 
 def _camera(scene, t, desc, unseen, params, base, node, name, meters, mm):

@@ -15,6 +15,23 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
   report.
 - Objects: a mesh or curve with Cast Shadows off in 3ds Max (Object Properties) casts no shadows in Blender. Receive
   Shadows off, which Blender cannot set per object, is a line in the report.
+- Lights: a V-Ray light (plane, disc, sphere) whose own Cast shadows is off in 3ds Max casts no shadow in Blender;
+  a dome light with it off is a line in the report (Blender's World has no such switch).
+- CoronaMix: the Screen, Overlay, Color Dodge, Color Burn, Linear Burn, Linear Light, Hard Light and Exclusion
+  operations are imported as nodes, in gamma 2.2 with "mix in sRGB" on as Corona does it, and Gamma when its top is
+  a grey color, instead of the first bitmap below and a line in the report; Soft Light, Vivid Light, Pin Light and
+  Hard Mix keep that, the line now naming the operation. An Add in sRGB mode whose sum is negative (negative
+  offsets or multipliers) now gives its magnitude raised to 2.2, as Corona does, instead of the negative value.
+- Lights: a V-Ray mesh light is imported as an emissive mesh (the mesh it emits, at the light's place) instead of an
+  empty: its strength in every units mode as bright as V-Ray 5.2 (measured) times Light Strength, one side or both,
+  Flip normals, invisible (not seen by the camera, no shadow), affect diffuse, specular and reflections, on / off.
+  Also a mesh light made with "Replace mesh with light", which keeps the mesh itself. A mesh light without a mesh
+  stays an empty with a line in the report; the modifiers of its mesh are left out (a line in the report).
+- Corona materials: CoronaHairMtl is imported as a surface with the color Blender's Principled Hair BSDF gives its
+  melanin, pheomelanin and tint (plus its diffuse color), its glossiness, IOR, opacity and bump, instead of grey; a
+  CoronaShadowCatcherMtl makes its object a shadow catcher (Cycles) when the object has no other material. A
+  CoronaVolumeMtl, CoronaScannedMtl or CoronaSlicerMtl stays grey, now with a line in the report naming what is
+  left out, no longer listed as a material class without a rule.
 
 ### Fixed
 
@@ -64,6 +81,36 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). T
   tangents (Bezier handles, step keys, tension, continuity, bias and ease), instead of a straight line and a line in
   the report. A Linear Rotation turning more than half a revolution between two keys turns the long way round, as in
   3ds Max. A key with a free handle, and a few rarer cases, still interpolate linearly with a line in the report.
+- Materials: a Standard material with the Anisotropic, Multi-Layer, Oren-Nayar-Blinn, Translucent or Strauss shader
+  takes each map from its shader's own map slot, instead of Blinn's: a Strauss glossiness map no longer arrives as
+  the diffuse map, an Anisotropic self-illumination map as the bump. A Strauss metalness map drives the metallic.
+  A map whose amount was left as it was after the shader switch can still get the amount of Blinn's slot (a bump
+  map at 100 instead of 30), see docs/SUPPORT.md.
+- Materials: a Standard material with the Anisotropic, Multi-Layer, Oren-Nayar-Blinn or Translucent shader takes
+  its Diffuse Level into account: a diffuse color at a Diffuse Level of 40 % arrives as dark as 3ds Max renders it,
+  instead of at full brightness (a diffuse map is not scaled yet). A missing or animated diffuse, glossiness or specular level takes
+  its own shader's default instead of Blinn's.
+- Materials: a VRayMtl with reflection Fresnel off reflects its reflection color or map as it is at every angle, as
+  V-Ray does, instead of that amount times a Fresnel curve: a 0.2 reflection reflected about 0.011 facing the camera
+  instead of 0.2, and the usual black to white Falloff in reflection reached a tenth of its brightness near the
+  silhouette. It is drawn as a white metal mixed by the amount over the material without reflection (matches V-Ray
+  5.2 in Cycles; EEVEE does not mirror neighbouring objects). A reflection bright enough for the metal rule is
+  unchanged.
+- Materials: in a scene saved with the gamma on (3ds Max's default), an image map on a glossiness, roughness,
+  metallic or opacity input, or as a mask, is decoded by its gamma as 3ds Max and V-Ray read it, instead of taken as
+  stored: a 128 grey glossiness map with automatic gamma gives glossiness 0.22 as in V-Ray 5.2, not 0.50, and image
+  masks are no longer too bright. Normal and bump maps stay as stored. With the gamma off a mask image is decoded
+  like the colors it mixes (a mask between black and white now shows as in 3ds Max).
+- Materials: a color map's constant (VRayColor, CoronaColor, a Mix color) on a glossiness, roughness, metallic or
+  opacity input, and a Corona material's opacity color, are taken as stored in a scene saved with the gamma off, as
+  V-Ray 5.2 renders them (a grey 64 glossiness map is glossiness 0.25, not 0.05).
+- Maps: in a scene saved with the gamma off, a VRayBitmap (transfer function Auto, sRGB, None or Inverse gamma) and
+  an EXR or HDR image (a Bitmap, a VRayBitmap From 3ds Max or Auto) on a color map or a mask show as V-Ray 5.2
+  renders them, their own decode decoded once more for the display-referred scene, instead of brighter (a 128 grey
+  VRayBitmap in sRGB: 0.038 linear instead of 0.216, measured). A dome light's texture gamma is now drawn (a Gamma
+  node in the World) instead of a line in the report, so a gamma-off dome with an 8-bit VRayBitmap is darker; an
+  EXR or HDR dome texture stays linear there (a line in the report: not measured as a light). A CoronaBitmap and a CoronaColor's HDR color stay as before:
+  whether Corona shows them as V-Ray does was not measured (no Corona render here).
 - Shapes: an open shape that renders in 3ds Max with a round section (a Line, an Arc or an open Editable Spline
   with Enable In Renderer) is capped at both ends, as 3ds Max renders it, instead of a hollow tube with open ends.
 - Shapes: a damaged or hostile file whose shape gives curve points past Blender's single precision (an NGon radius

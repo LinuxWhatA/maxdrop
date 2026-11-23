@@ -895,7 +895,9 @@ units:
 | 18, 19 | texmap (a map reference), texmap on |
 | 25, 26, 30 | affect diffuse, affect specular, affect reflections |
 | 27 | dome spherical (`dome_spherical`; V-Ray 5.2's default on; off: the half above the dome's local XY plane) |
+| 32 | cast shadows (`castShadows`, the light's own switch; default 1, also for a VRayLight MAXScript makes) |
 | 34 | mesh source (`mesh_source`, a node reference) |
+| 35 | flip normals (`mesh_flip`): a mesh light emits on the other side |
 | 36 | directional (`lightDistribution`) |
 | 38, 39 | color temperature (K); color mode: 0 color, 1 temperature |
 | 43 | targeted (the node has a Look At controller and a Target, [Look At](#look-at)) |
@@ -906,6 +908,12 @@ In temperature mode V-Ray also stores its own color of that temperature in 7 (35
 takes the curve of the rules source instead (3500 K: 255, 192.5, 140.8 as an sRGB swatch). `on:false` given to the
 MAXScript constructor does not stick (the fixture script sets it afterwards), and `targeted:true` there makes no
 target.
+
+**Shadows.** Parameter 32 off: the light casts no shadows (`Light.use_shadow` off; not stored: on). Read with a
+VRayLight's block dumped before and after `baseObject.castShadows = false` (3dsmaxbatch, the .NET wrapper): 32 is
+the only parameter that changes. MAXScript's `light.castShadows` is the node's Cast Shadows render flag, not this
+switch. The vray_lights fixture's FixtureNoShadow has it off. A dome with it off is a line in the report: Blender's
+World has no such switch.
 
 **Power.** The rules source's watts (its `ocbaby_exsVrayLightWatts`): emitting area `a` = plane 2 size0 × 2 size1,
 disc π size0², sphere 4π size0² (m², doubled for a double-sided plane or disc); 1 lm: `m / 683`, 2 lm/m²/sr:
@@ -926,12 +934,42 @@ units mode (its key holds X² there too). The vray_lights fixture's FixtureDiscS
 FixtureSphereWide (2, 1, 1, in W: radius twice, flux the same) and FixtureSphereTall (1, 1, 2.5: as unscaled) are
 such nodes.
 
-**Mesh light.** Not imported yet: an empty and a line in the report, naming the node parameter 34 refers to when it
-is one of the scene. Measured with `mesh_source` set by a script (a 20 × 40 box, an orthographic camera looking
-down): V-Ray 5.2 emits that node's mesh as it is now (the box made 60 wide afterwards emits 60 wide), placed at the
-light node's transform (the footprint follows the light's position and its turn about Z; where the box itself
-stands does not matter), and nothing once the box is deleted. What a Pick mesh in V-Ray's panel with Replace mesh on
-(which deletes the picked node) leaves in the file is not known.
+**Mesh light → emissive mesh.** The light's mesh object is its reference 1 when that holds one, else the object of
+the node parameter 34 names. V-Ray's Pick mesh with "Replace mesh with light" on (picked in V-Ray's panel in 3ds Max
+2020) deletes the picked node, gives the light node its transform, leaves parameter 34 empty and keeps the node's
+object in the light's reference 1 (the base object itself, or its DerivedObject when it has modifiers); a
+`mesh_source` set by a script leaves reference 1 empty, and `refs.replaceReference` of reference 1 writes the
+first structure (the vray_mesh_light fixture's FixtureEmitterOwn). Measured (V-Ray 5.2, the calibration below with
+a mesh light 1 m above the floor, its mesh a Plane 200 × 200 mm far away):
+
+- V-Ray emits the mesh object's mesh in its **object space**, placed at the light node's object transform: the
+  footprint follows the light's position, turn and object offset; the source node's position, turn, scale and
+  object offset do not matter; a later change of the mesh shows; with the node deleted (parameter 34 empty) it emits
+  nothing.
+- One side, along the faces' normals (turned away: 0); Flip normals (35) the other side; the camera sees the back
+  black, and an invisible one not at all. Double-sided: both sides, each with half the radiance in W (0.0715
+  against 0.143).
+- The flux of the units mode spread over the **object-space** area `a` of the mesh as a Lambertian emitter (flux = π
+  L a): W 1 0.143013 (a plane VRayLight of 1 W and the same size: 0.142992), lm 683 the same (683 lm/W, not the
+  dome's 671.8), default 1 0.0125633 (m a 1500 / 683 W), W/m²/sr 1 0.0179715 (π m a); the light node scaled (2, 2,
+  1) gives 4 × the floor of a 400 × 400 mesh in W too: the node's scale does not change the radiance. A Shell on the
+  mesh (5 mm) halves it in W: the area is the evaluated mesh's.
+- Seen by the camera (W 1): 11.3833 = the radiance (1 / (π 0.04)) × π 683 / 1500.
+- A visible mesh light shadows other lights (multiplier 1e-6 between a large plane light and the floor: 1.56
+  against 2.73); an invisible one, or one that is off, does not.
+
+So the radiance is: default m 1500 / (683 π), lm/m²/sr m / 683, W/m²/sr m, W m / (π a), lm m / (683 π a), with `a`
+doubled for a double-sided one in W and lm. MaxDrop makes the mesh object's base mesh (Editable Mesh, Editable Poly,
+a primitive it builds) in object space with the light node's offset, the light node a mesh object of it, and an
+Emission of that radiance × Light Strength (Cycles renders an Emission of strength S as S): one side through a Mix
+by Geometry Backfacing with a black Emission (flipped for 35), both sides when double-sided; invisible: camera and
+shadow off. The `calib_*` scenes of the calibration (W, default, lm, double-sided, flipped, seen by the camera)
+imported and rendered in Cycles (Blender 5.2, 512 samples, the floor a Diffuse BSDF of 1.0, Light Strength 1.43):
+V-Ray / Cycles 1.0003 to 1.0004. The modifiers of the mesh are left out (a line in the report: the base mesh emits,
+and in W and lm its area sets the radiance); no mesh object, or a class MaxDrop does not build, is an empty with a
+line in the report. A mirrored light node follows the rules of every mesh (an offset with a negative determinant
+reverses the loops, a mirrored node is left to Blender), so the lit side is the mesh's front as Blender sees it: not
+measured against V-Ray.
 
 **Dome light → World.** The first dome node that is on becomes the scene's World (a new World, assigned to the
 scene; the one before is kept, with a fake user when it has no other, and the report says so; in an import of
@@ -957,8 +995,11 @@ colored blocks seen through cameras at ±X, ±Y and ±20° elevation. Blender's 
 round (u = 0.5 − φ / 2π): the direction (Texture Coordinate Generated) goes through a Mapping node of scale
 (1, −1, 1) and rotation Rz(−h) F T F (F the mirror in Y, T the axis conversion and lock turn into the texture's
 frame). The vray_dome fixture (h 30, locked, its node turned 90° about Z, a hemisphere) and a tilted copy imported
-with Y up give the same texels as V-Ray's renders. Other projections are drawn as spherical; the vertical and axial
-rotation, the flips, the ground projection, an Output other than its amount, a gamma other than automatic or 1, crop or placement and a Bitmap's offset, tiling
+with Y up give the same texels as V-Ray's renders. Other projections are drawn as spherical. A CoronaBitmap on a
+dome is too, with a line in the report: V-Ray 5.2 does not project it (a camera at the dome's center sees one flat
+color in every direction, for every `enviroMapping`, a U offset and a filtering blur of 0.01: 0.5 grey with the
+eight-block image, its mean; W angle 30°: 0.65, 0.41, 0.41). The vertical and axial
+rotation, the flips, the ground projection, an Output other than its amount, crop or placement and a Bitmap's offset, tiling
 or angle are left out (a line each); a root other than an image map or a file not found leaves the World its color
 (a line).
 
@@ -1211,13 +1252,54 @@ picker and Material Editor switches off).
   So with the gamma on an automatic Bitmap (and VRayBitmap From 3ds Max) takes the file input gamma; with it off a
   Bitmap is read as stored whatever its override, and a temperature color is decoded as a swatch is. CoronaBitmap
   and VRayBitmap Auto / sRGB apply their own curve in every case, so with the gamma off V-Ray shows them darker
-  than an sRGB image (and an EXR shows its value as stored), and VRayBitmap None shows as stored: not converted
-  (maxdrop-em3.123). Reopening the saved scenes from disk renders the same.
+  than an sRGB image (and an EXR shows its value as stored), and VRayBitmap None shows as stored: converted since
+  maxdrop-em3.123 but for CoronaBitmap (below). Reopening the saved scenes from disk renders the same.
 - LUT mode belongs to the session: a scene saved in it (Scene `1`, Config `0`) opens as `#gamma` from a `#none` or
   `#gamma` session and renders as gamma on (swatch 186, the PNG 128); a `#lut` session stays in LUT mode for a file
   whose chunk says `1` (and renders as gamma off there: 128, 128). MaxDrop reads the file's `1` as gamma on.
-- A Corona render does not run on this machine (`Corona license not found` under `3dsmaxbatch`): Corona's own
+- A Corona render does not run on this machine (not under `3dsmaxbatch`, not in a silent instance): Corona's own
   swatches are not measured.
+- Data inputs and masks (maxdrop-em3.122), V-Ray 5.2 renders of the same 128 grey PNG and of swatches: VRayMtl
+  glossiness through the VRayMtlReflectGlossiness element, VRayMtl opacity as the render alpha, a Mix black -> white
+  mask on a VRayLightMtl (its internal value, `getPixels ... linear:true`):
+
+  | Map | on | off |
+  |---|---|---|
+  | glossiness or opacity: VRayColor grey 64 / red; Mix black -> white by VRayColor 64 | 0.251 / 0.333; 0.251 | the same |
+  | glossiness, opacity or mask: Bitmap automatic / 2.2 / 1.0 | 0.2195 / 0.2195 / 0.502 | 0.502 / 0.502 / 0.502 |
+  | glossiness or mask: CoronaBitmap automatic / 2.2 / 1.0 | 0.2195 / 0.2195 / 0.502 | the same |
+  | glossiness or mask: VRayBitmap sRGB / From 3ds Max / None | 0.2159 / 0.2195 / 0.502 | 0.2159 / 0.502 / 0.502 |
+  | opacity, emission: Mix grey 40 -> 220 by VRayColor 128 | 0.511 | 0.511 |
+  | emission: Mix grey 40 -> 220 by the Bitmap automatic | 0.312 | 0.511 |
+
+  A map's value does not depend on the slot it drives, and a data input uses it as it is: a swatch as stored in
+  both modes, an image decoded by its gamma with the gamma on. In a color graph with the gamma off the result is
+  display-referred (Blender needs `srgb_to_linear` of it): a mask between black and white is the decoded number,
+  a mask between two colors mixes display values (target 0.225 linear for the 0.511 above, a decoded mask gives
+  0.171). The rules are in `maxdrop/convert/texmaps.py` (MASK, colorspace, `_swatch`).
+- Maps with their own decode (maxdrop-em3.123), V-Ray 5.2 renders of VRayLightMtl planes, each rendered alone, its
+  internal value (`getPixels ... linear:true` of an HDR bitmap); greys 64 / 128 / 192 as 8-bit PNGs, EXRs of 0.25 /
+  0.5 / 2.0. Gamma on (input 2.2) and off give the same internal value for every row:
+
+  | Map | internal value | shown with the gamma off (Blender linear) |
+  |---|---|---|
+  | VRayBitmap sRGB / Auto, 64 / 128 / 192 | 0.0513 / 0.2159 / 0.5271 | 0.0042 / 0.0383 / 0.2397 |
+  | VRayBitmap None, 64 / 192 | 0.251 / 0.753 | 0.0513 / 0.527 |
+  | VRayBitmap Inverse gamma 2.0 / 0.5, 128 | 0.7085 / 0.2520 | 0.4598 / 0.0516 |
+  | Bitmap automatic, EXR 0.25 / 0.5 / 2.0 | 0.25 / 0.5 / 2.0 | 0.0509 / 0.214 / 4.954 |
+  | VRayBitmap Auto / None / From 3ds Max, EXR 0.5; sRGB, EXR 0.5 | 0.5; 0.2140 | 0.214; 0.0376 |
+  | CoronaBitmap automatic 64 / 192, 1.0 192, automatic EXR 0.5 | 0.0478 / 0.5356, 0.753, 0.5 | Corona: not measured |
+  | CoronaColor HDR 0.25 / 0.5 / 2.0, 0.5 x multiplier 2 | 0.25 / 0.5 / 2.0, 1.0 | Corona: not measured |
+
+  Inverse gamma g is pixel ^ (1 / g). With the gamma off a color input or mask gets the gamma the scene shows: 2.2 x
+  the map's own (2.2: the sRGB color space, which Blender 4.2 to 5.2 applies to an EXR with the extended curve,
+  2.0 -> 4.954), 5.0 for the sRGB curve (`SRGB_TWICE`: twice the curve is within 0.008 of x ^ 5 over 0..1); a
+  Bitmap and From 3ds Max read any file as stored, sRGB. Data inputs keep the map's own curve. Blender 5.2 and 4.2
+  renders of the probe scenes agree within 0.02 (2 % above 1). CoronaBitmap and CoronaColor HDR are left as they
+  were: whether a Corona render shows them as V-Ray does is not known (no Corona render yet). A dome's texture
+  gamma is drawn as a material's (a Gamma node in the World), but a float dome texture in a gamma-off scene keeps
+  its own decode (a line in the report): the probe measured planes seen by the camera with values up to 2.0, not a
+  float image lighting a scene, where decoding a sky's values far above 1 would give orders of magnitude more light.
 
 ## Summary properties
 
@@ -1408,14 +1490,15 @@ values by the fixture scripts or read by the tests):
 | | | Oren-Nayar-Blinn `(0x2857F421, 0)`: 0 ambient, 1 diffuse, 2 specular, 3 selfIllumColor, 4 selfIllumAmount, 5 glossiness, 6 specularLevel, 7 soften, 8 diffuseLevel, 9 diffuseRoughness, 13 useSelfIllumColor |
 | | | Multi-Layer `(0x2857F470, 0)`: 0 ambient, 1 diffuse, 2 selfIllumColor, 3 selfIllumAmount, 4 diffuseLevel, 5 diffuseRoughness, 6 / 7 / 8 / 9 / 10 specular, specularLevel, glossiness, anisotropy, orientation of the first layer, 11-15 the same of the second, 19 useSelfIllumColor |
 | | | Translucent Shader `(0x2857F480, 0)`: 0 ambient, 1 diffuse, 2 specular, 3 selfIllumColor, 4 selfIllumAmount, 5 glossiness, 6 specularLevel, 7 diffuseLevel, 8 filter, 9 translucentColor, 10 backsideSpecular, 14 useSelfIllumColor |
-| | | Strauss `(0x2857F450, 0)`: 0 diffuse, 1 glossiness, 2 metalness (standard_shaders). Anisotropic, Oren-Nayar-Blinn, Multi-Layer and Translucent store their diffuse in ambient whatever is set |
+| | | Strauss `(0x2857F450, 0)`: 0 diffuse, 1 glossiness, 2 metalness (standard_shaders). Ambient is not read: one save of standard_shaders held the diffuse there for Anisotropic, Oren-Nayar-Blinn, Multi-Layer and Translucent whatever was set, a later save of the same script (maxdrop-em3.105) the ambient as set |
 | Physical Material `(0x3D6B1CEC, 0xDEADC001)` | 0 | 1 base_weight, 2 base_color (float color with alpha), 3 reflectivity, 4 roughness, 5 roughness_inv, 6 metalness, 10 refl_color, 11 diff_roughness, 30 transparency, 31 trans_color, 33 trans_ior, 37 thin_walled, 50 emission, 51 emit_color, 52 emit_luminance (cd/m2), 60 coating, 61 coat_color, 62 coat_roughness, 63 coat_roughness_inv, 66 coat_ior; maps 100-120 (`*_map`: 101 base_color, 102 reflectivity, 103 refl_color, 104 roughness, 105 metalness, 109 transparency, 116 emission, 117 emit_color, ...), 130 bump_map, 131 coat_bump_map, 132 displacement_map, 133 cutout_map, each switched on by its id + 50 (`*_map_on`, default on), 230 bump_map_amt (a factor, default 0.3); 250-270 mapM0 ... mapM20 are saved empty, 3ds Max answers the map of id - 150 (standard_physical, standard_shaders) |
 | Bitmap `(0x240, 0)` | 0 | 0-3 clip u, v, w, h, 7 cropPlace, 8 filtering, 12 preMultAlpha, 13 bitmap (asset), 14 coords, 15 output |
 | VRayNormalMap `(0x71FA6E51, 0x72057C2F)` | 0 | 0 normal_map, 2 normal_map_on, 3 normal_map_multiplier, 4 bump_map, 5 bump_map_on, 6 bump_map_multiplier, 1 map_channel, 7 flip_red, 8 flip_green, 9 swap_red_and_green |
 
-A Standard material's map tables follow its shader's map channels (3ds Max 2020, zero-based; measured on a probe
-scene with a map in each slot, where `getSubTexmapSlotName` and the saved table agree; standard_shaders, without
-Standard maps, shows only where each shader's bump amount sits). Blinn, Phong, Metal: 0 ambient, 1 diffuse, 2 specular color, 3 specular level, 4
+A Standard material's map tables follow its shader's map channels (3ds Max 2020, zero-based; `getSubTexmapSlotName`
+and the saved table agree on a probe scene with a map in each channel; standard_maps puts a named map into every
+channel MaxDrop reads by the name 3ds Max gives it, on Blinn, Anisotropic, Multi-Layer, Oren-Nayar-Blinn, Translucent
+and Strauss). Blinn, Phong, Metal: 0 ambient, 1 diffuse, 2 specular color, 3 specular level, 4
 glossiness, 5 self-illumination, 6 opacity, 7 filter color, 8 bump, 9 reflection, 10 refraction, 11 displacement.
 Anisotropic: 0 ambient, 1 diffuse, 2 specular color, 3 diffuse level, 4 specular level, 5 glossiness, 6 anisotropy,
 7 orientation, 8 self-illumination, 9 opacity, 10 filter color, 11 bump, 12 reflection, 13 refraction, 14
@@ -1425,9 +1508,31 @@ translucent color), 10 bump, 11 reflection, 12 refraction, 13 displacement. Mult
 diffuse level, 3 diffuse roughness, 4-8 specular color, level, glossiness, anisotropy, orientation of the first
 layer, 9-13 of the second, 14 self-illumination, 15 opacity, 16 filter color, 17 bump, 18 reflection, 19 refraction,
 20 displacement. Strauss: 0 color, 1 glossiness, 2 metalness, 3 opacity, 4 refraction filter, 5 bump, 6 reflection,
-7 refraction, 8 displacement. The amounts of channels without a map keep the layout the material was created with
-(Blinn's: bump 0.3 at 8) in the file, while 3ds Max answers its shader's. MaxDrop reads Blinn's channels for every
-shader so far (maxdrop-em3.104).
+7 refraction, 8 displacement. MaxDrop reads each shader's own channels (`STD_SLOTS` in `convert/materials.py`; a
+shader without a rule with Blinn's); on Strauss the metalness map drives the metallic input.
+
+The amounts in the table keep the layout the material was created with (Blinn's: bump 0.3 at 8) at every channel
+whose amount was not set after the shader switch, with or without a map, while 3ds Max answers its shader's
+(standard_maps FixtureMapsUnsetAmounts, Anisotropic created as Blinn, maps set without touching their amounts:
+self-illumination at 8 stored 0.3, bump at 11 stored 1.0; 3ds Max answers 1.0 and 0.3). 3ds Max takes them from the
+material's Texmaps object (class `(0x1200, 0)`, the Standard material's reference 1): inside its `0x0003`
+container, chunk `0x5100 + channel` holds a channel's amount (`f32`) where it is not 1.0 (absent: 1.0), and `0x5003`
+a `u32` bit mask over the channels (bit k = channel k; set exactly at the channels holding a map in every fixture so
+far: whether it is the on switch or the occupancy is not measured). MaxDrop still reads the table's amounts
+(maxdrop-em3.148).
+
+Diffuse Level (Anisotropic, Multi-Layer, Oren-Nayar-Blinn, Translucent Shader; a fraction, 1 = 100 %), measured
+with Default Scanline renders of a plane lit head-on, gamma off, swatch (200, 100, 50): the pixel is linear in the
+level on all four (50 % half, 200 % exactly double: the product is not clamped), Blinn has none; with
+self-illumination the lit part is scaled and the self-lit part is the swatch as set (amount 100 % renders the swatch
+at level 50 and 100); a diffuse map (amount 100 or 50) is scaled too. So the shader's diffuse is swatch times level
+in the stored value, and MaxDrop applies the level before the swatch rule, which clamps to 0..1 (standard_shaders
+FixtureMultiLayerLevel: green 200 at 150 % is white), the opposite order of CoronaLegacyMtl's levels and Physical's
+base weight; the emission keeps the unscaled diffuse; a diffuse map is not scaled and the Diffuse Level map channel
+is not read (maxdrop-em3.150). A missing or animated diffuse, glossiness or specular level takes the shader's value
+as created (3ds Max 2020): diffuse 149.94 grey (Blinn, Phong, Metal; MaxDrop 150) or 127.5 (the others, Strauss included);
+glossiness 10 % (Blinn, Phong, Metal), Anisotropic 25, Multi-Layer 50, Oren-Nayar-Blinn 25, Translucent 30,
+Strauss 20; specular level 5 % (Anisotropic, Multi-Layer), 0 the others (`SHADER_DEFAULTS`).
 
 The maps of texmap_rules (block 0 each; `convert/texmaps.py`):
 
@@ -1484,8 +1589,8 @@ A Mix's Use Curve has no curve control: renderMap of a Mix of black and white gi
 alike, 0 below lower, 1 from upper on and smoothstep of (x - lower) / (upper - lower) between (lower 0.3, upper 0.7:
 0.04295 at 0.35, 0.15624 at 0.4); with lower at or above upper it is a step at lower.
 
-The Corona classes of corona_physical, corona_legacy, corona_maps, corona_layered, corona_light, corona_more and
-corona_mix_ops (3ds Max 2020 + Corona 12, DLL `coronamaxutils2020.dlt`; block 0 each). CoronaPhysicalMtl's class-directory name starts with a
+The Corona classes of corona_physical, corona_legacy, corona_maps, corona_layered, corona_light, corona_more,
+corona_mix_ops, corona_mix_blends and corona_classes (3ds Max 2020 + Corona 12, DLL `coronamaxutils2020.dlt`; block 0 each). CoronaPhysicalMtl's class-directory name starts with a
 carriage return (`"\rCoronaPhysicalMtl"`); MAXScript's `CoronaMtl` is CoronaLegacyMtl. Corona names its obsolete
 parameters `removedParam`: they are not saved. A Corona map amount is a fraction (CoronaPhysicalMtl's base and
 roughness amounts and CoronaLayeredMtl's amounts are percent in MAXScript: 75.0 there is 0.75 here). One older scene
@@ -1498,13 +1603,17 @@ CoronaLegacyMtl, CoronaBitmap and CoronaNormal.
 | CoronaLegacyMtl `(0x70BE6506, 0x448931DD)` | colors 101 diffuse, 102 reflect, 103 refract, 105 opacity, 107 selfIllum; levels 121, 122, 123, 127, 128; maps 141 diffuse, 142 reflect, 143 reflectGlossiness, 144 refract, 146 opacity, 147 bump, 158 selfIllum, each switched on by its id + 20, amounts 290, 291, 292, 293, 295, 296, 303; 180 reflectGlossiness, 182 fresnelIor, 183 ior, 210 thin, 402 pbrMode; 106 colorTranslucency, 126 levelTranslucency (map 148, switch 168, amount 297), 188 absorptionDistance (world units), 190 absorptionColor, 410 levelSss, 411 sssRadius (world units), 412 sssScatterColor, 414 / 417 / 421 SSS amount map |
 | CoronaLayeredMtl `(0x65486584, 0x8425554E)` | 1000 baseMtl, 1001 layers (table of 10), 1002 amounts, 1003 mixmaps (masks), 1004 layersOn, 1005 masksOn, 1006 maskAmounts (percent in MAXScript); getSubMtl answers the base, then the layers |
 | CoronaSkinMtl `(0xBEC41C73, 0x44CFDE95)` | 101 skinColor, 102 skinLevel, 103 sssAmount, 104 sssRadiusScale, 105 / 106 / 107 sss1 color, radius (world units), weight, 108-110 sss2, 111-113 sss3, 114 reflection1Color, 115 reflection1Level, 116 reflection1Glossiness, 117 reflection1Ior, 118-121 the second reflection, 122 opacityColor, 123 opacityLevel; maps 124-144 (skin color 124 ... bump 144), each switched on by its id + 21, amounts at its id + 42 |
-| CoronaHairMtl `(0x22C05DD6, 0xCA41F546)` | 101 colorTint, 102 colorDiffuse, 103 colorOpacity, 107 ior, 108 glossiness, 141 melanin, 142 pheomelanin (no rule) |
+| CoronaHairMtl `(0x22C05DD6, 0xCA41F546)` | 101 colorTint, 102 colorDiffuse (black), 103 colorOpacity, 104 / 105 / 106 their levels, 107 ior, 108 glossiness, 109 softness, 110 colorlessGlossiness, 111 highlightShift; maps 112-120 (tint, diffuse, opacity, ior, glossiness, softness, colorless glossiness, highlight shift, bump), each switched on by its id + 9, amounts at its id + 18 (fractions; MAXScript shows percent but for bump); 141 melanin, 142 pheomelanin, 143 randomizeMelanin, maps 144 / 145 (switches 146 / 147, amounts 148 / 149); 150 colorlessSpecular, 151 coloredSpecular, 152 transmission (maps 153-155, switches 156-158, amounts 159-161); 162 glintStrength (163 / 164 / 165); 166 giSimplification |
+| CoronaVolumeMtl `(0x39874782, 0x378CDE97)` | 101 absorptionDist (world units; 0 off), 102 absorptionColor, 201 emissionDist, 202 emissionColor, 203 scatteringColor, 204 scatteringDirectionality, 205 / 207 scattering map (on), 206 / 208 absorption map (on), 209 singleBounce, 210 / 211 emission map (on), 212 mappingMode, 213 stepSize, 214 allowMixing, 215 alphaMode |
+| CoronaShadowCatcherMtl `(0x398ACEAD, 0xACDC3625)` | 301 backplateColor, 302 / 360 backplateTexmap (on), 303 alphaMode, 304 shadowAmount, 306 reflectLevel, 307 colorReflect, 308 reflectIor, 309 reflectGlossiness, 310 projectionMode, 311 preserveAspectRatio, 312 useEnviroOffscreen, 313 offscreenColor, 350 / 361 offscreen map, 351 / 362 Fresnel IOR map, 352 / 363 glossiness map, 353 / 364 bump (355 bumpAmount), 354 / 365 reflection color map, 356 projectReflectionMaps, 357 legacyReflect, 358 legacyEnable |
+| CoronaScannedMtl `(0x766665AA, 0x448ADEBB)` | 0 filename (the `.ctf` file), 1 twoSided, 7 tilingFactor, 10-19 filter and paint colors, 20 gamma, 21 saturation, 40-48 clear coat, 64 alphaMode; its uvgen a nameless part at slot 1 |
+| CoronaSlicerMtl `(0x90ACB313, 0x394847CD)` | 500 capMaterial, 501 capMtlOn, 502 createCaps, 503 excludeList (node table), 504 excludeListIncludeMode |
 | CoronaRaySwitchMtl `(0x6816116A, 0xABE651DE)` | 1600 giMtl, 1601 reflectMtl, 1602 refractMtl, 1603 directMtl, 1610-1613 their switches |
 | CoronaSelectMtl `(0xC74E9F94, 0xC319F213)` | 311 mtlCount, 312 materials (table), 313 selected (zero-based: its default is 0) |
 | CoronaLightMtl `(0x53B7717A, 0x500D5093)` | 110 intensity, 111 texmap, 112 texmapOn, 113 color, 150 opacityTexmap, 151 opacityTexmapOn, 168 twosidedEmission |
 | CoronaBitmap `(0xABBA5784, 0x65484244)` | 101 filename (asset), 103 uvwChannel, 105 uvwScale, 106 uvwOffset (point3), 107 filteringBlur, 108 / 109 tilingU / V (0 none, 1 repeat, 2 mirror), 114 realWorldScale, 117 monoChannelOutput, 118 rgbChannelOutput (1 alpha as gray), 119 clippingOn, 120 clippingMode (0 crop, 1 place), 121-124 clipping u, v, width, height, 125 gamma (-1 automatic), 129 wAngle (radians), 130 uAngle (the U offset times 2 pi, kept in step by Corona); its Output part at slot 1 |
 | CoronaColor `(0x68426DCA, 0x372362D4)` | 50 method (0 color, 1 HDR color, 2 temperature, 3 hex), 51 temperature (K), 52 color, 56 alpha, 57 multiplier, 58 colorHdr, 59 hexColor |
-| CoronaMix `(0x6847286F, 0x3FFFAAB4)` | 200 mixOperation (0 add, 1 subtract, 2 multiply, 3 divide, 4 minimum, 5 maximum, 6 mix, 7 gamma, 8 difference), 201 mixAmount, 202 / 203 multiplierTop / Bottom, 204 / 205 offsetTop / Bottom, 206 / 207 texmapTop / Bottom, 208 / 209 colorTop / Bottom, 210 texmapMix, 211 / 212 / 213 switches of the mix, top and bottom maps, 214 mixInSRgb |
+| CoronaMix `(0x6847286F, 0x3FFFAAB4)` | 200 mixOperation (0 add, 1 subtract, 2 multiply, 3 divide, 4 minimum, 5 maximum, 6 mix, 7 gamma, 8 difference, 9 screen, 10 overlay, 11 color dodge, 12 color burn, 13 linear burn, 14 linear light, 15 soft light, 16 hard light, 17 vivid light, 18 pin light, 19 hard mix, 20 exclusion: Corona's Mix Operation list), 201 mixAmount, 202 / 203 multiplierTop / Bottom, 204 / 205 offsetTop / Bottom, 206 / 207 texmapTop / Bottom, 208 / 209 colorTop / Bottom, 210 texmapMix, 211 / 212 / 213 switches of the mix, top and bottom maps, 214 mixInSRgb |
 
 What the Corona maps do was measured with `renderMap` in 3ds Max 2020: a CoronaBitmap's UVW scale, offset and W
 angle place the image exactly as a Bitmap's tiling, offset and W angle; CoronaMix gives mix(bottom, operation(bottom,
@@ -1514,7 +1623,16 @@ on (the default) the operation runs on each layer raised to 1 / 2.2 and its resu
 40 of 255: add 206.1, off 90.0; the sRGB curve would give 207.2); multiply, divide, min and max come out the same
 either way; results are not clamped (an add's 2.14 shows through a 0.25 mask). Each layer is its map or color times
 its multiplier, plus its offset times -0.1 (offset 1.0 lowers it by 25.5 of 255, -1.0 raises it; the multiplier
-first). Operations 7 and 9-20 are not identified. CoronaColor's temperature is Corona's own linear color, the
+first). Operations 7 and 9-20 (maxdrop-em3.117, CoronaColor HDR layers read through (v + 4) x 0.05, so -4 to 16
+show), a the bottom and b the top per channel: gamma a^(1 / b) (in sRGB mode b^(1 / 2.2), the 2.2s of a cancel; no
+number at b = 0), screen 1 - (1 - a)(1 - b), overlay 2ab for a below 0.5 else 1 - 2(1 - a)(1 - b), hard light the
+overlay with a and b swapped, color dodge a / (1 - b) at most 1 (1 at b = 1; a top above 1 gives a negative), color
+burn 1 - (1 - a) / b at least 0 (0 at b = 0; not clamped above), linear burn a + b - 1 at least 0, linear light
+a + 2b - 1, exclusion a + b - 2ab, none of them clamped otherwise; soft light is Photoshop's (not Blender's Pegtop
+form), vivid light, pin light and hard mix have no Mix node type. In sRGB mode Corona raises the magnitude of a
+result to 2.2 (linear light of black over black gives 0.998, |-1|^2.2) and takes the magnitude of a negative layer
+(an add of -0.1 and 0.5 gives 1.186), and renders 1 as about 0.998. The amount lerp is linear in both modes for
+these operations too. CoronaColor's temperature is Corona's own linear color, the
 brightest channel 1 (`texmaps.CORONA_KELVIN`, 24 points from 1000 K to 40000 K; 3000 K = (255, 121.6, 39.2));
 colorSpace (61) changed nothing for a color, a hex value or a temperature. A Corona render (`render`) does not run
 here, under `3dsmaxbatch` or in an own `3dsmax.exe -silent` instance ("Unable to open renderer, possible
@@ -1574,8 +1692,8 @@ Bitmap's).
 
 Not shown by any fixture yet, so not stated above:
 
-- Of VRayLight ([VRayLight](#vraylight)): a mesh light's mesh (parameter 34, a node; none picked in the fixture),
-  the dome's parameters, size2, the texmap's use, the light units of a scene unit other than millimeters (the rules
+- Of VRayLight ([VRayLight](#vraylight)): the dome's parameters, size2, the texmap's use, the light units of a
+  scene unit other than millimeters (the rules
   scale lengths by the unit; the fixture is in millimeters), an animated parameter (its default is taken); a sphere
   scaled with Y or Z larger than X (taken as the largest scale), and whether a scaled sphere's radius in Blender
   follows the object's scale as V-Ray's does.

@@ -55,13 +55,17 @@ of the description's type, shape and size and of the shape the fixture script ma
 energy the watts 3ds Max computed with the rules source's function times the default Light Strength (the disc's 4 / pi,
 the double-sided plane's half), its color, the off light hidden in viewport and render, the invisible one unseen by
 the camera and glossy rays; the instance shares the plane's light, the disc's instance scaled 2, 1.5, 1 has its
-own, three times as strong; imported again with Light Strength 2, twice the
+own, three times as strong; FixtureNoShadow's light casts no shadows (its own Cast shadows off), the others
+do; imported again with Light Strength 2, twice the
 power. vray_dome: the dome is the scene's World (its texture image, strength, hemisphere, the Mapping rotations
 that look its texels up where V-Ray does, camera visibility off), the report's World line, the World before it
-kept with a fake user; the second dome and the mesh light empties; the spheres' radii and powers (X scale only);
+kept with a fake user; the second dome an empty; the spheres' radii and powers (X scale only);
 undo() after the run, and a build that fails after the World, put the World before back (no fake user) and remove
 the new one; a World that cannot be built leaves the scene imported, a line in the report; of two files with a dome
-the first gives the World. lights_standard, lights_photometric (and lookat's target spot): each light of the type,
+the first gives the World. vray_mesh_light and vray_dome's mesh light: each emitter a mesh object of its mesh at the
+light's place (EMITTER_BOXES), its only material an Emission of the radiance V-Ray gives it (EMITTER_RADIANCE)
+times the Light Strength, one side through a Backfacing mix (flipped for Flip normals) or both, its camera, shadow,
+diffuse and glossy visibility; the mesh light without a mesh an empty. lights_standard, lights_photometric (and lookat's target spot): each light of the type,
 spot cone, power and color of the rules (STOCK_LIGHTS), its -Z axis along the oracle's, its flags, its shadow switch (STOCK_SHADOWS);
 the Skylight an empty.
 Cameras (cameras, lookat): each camera node a camera object of the description's type, sensor fit HORIZONTAL, sensor,
@@ -128,6 +132,8 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
     "arc_pie_reverse": ["UVMap"],  # every Extrude with Generate Mapping Coords; the two plain arcs are curves
     "box_poly_standard": ["UVMap"],
     "corona_layered": ["UVMap"],
+    "corona_classes": ["UVMap"],
+    "corona_mix_blends": ["UVMap"],
     "corona_mix_ops": ["UVMap"],
     "corona_more": ["UVMap"],
     "corona_legacy": ["UVMap"],
@@ -156,6 +162,7 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
     "stack_wsm": ["UVMap"],  # FixtureWSM's UVW Map writes channel 1; the Map Scaler bindings are not applied
     "standard_physical": ["UVMap"],
     "standard_shaders": ["UVMap"],
+    "standard_maps": ["UVMap"],
     "saved_as_2017": ["UVMap"],
     "saved_as_2018": ["UVMap"],
     "saved_as_2019": ["UVMap"],
@@ -170,6 +177,7 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
     "vray_more": ["UVMap"],
     "vray_lights": [],  # lights and a target: no mesh
     "vray_dome": [],  # lights and a box without Generate Mapping Coords
+    "vray_mesh_light": ["UVMap"],  # Planes, also as the emitters' meshes
     "lights_standard": [],
     "lights_photometric": [],
     "cameras": [],  # its box, without Generate Mapping Coords
@@ -190,6 +198,7 @@ SHARP_EDGES = {"editable_mesh": 8, "modifier_pivot": {"FixtureSmooth": 0, None: 
                # rim makes sharp; the plane's open edges; a TurboSmooth below the Shell clears the groups, not the
                # open edges; one above it smooths the rim too
                "stack_shell": {"FixtureShellPlane": 4, "FixtureShellTurbo": 4, "FixtureShellSmoothed": 0, None: 12},
+               "vray_mesh_light": 0,  # Planes: open edges only
                # boxes of 3 x 2 x 2 segments: 28; the cylinder's rims 2 x 16; the sphere is smooth
                "uvwmap": {"FixtureUVWCyl": 32, "FixtureUVWSphere": 0, "FixtureUVWSharedB": 12, None: 28},
                # smooth spheres, the rims of a 10-sided cylinder
@@ -217,7 +226,8 @@ FLAT_SHADED = {"FixtureGeoOcta"}  # a GeoSphere not smoothed: no smoothing group
 # primitives whose normals are not "away from the box center": a Plane's point up or down (by its sizes' signs), and
 # a Box of width -12 keeps 3ds Max's faces, which point in
 PLANE_NORMALS = {"FixturePlane": 1.0, "FixturePlaneDown": -1.0, "FixturePlaneReal": 1.0,
-                 "FixtureShellPlane": 1.0}  # stack_shell's base plane (its Shell is a Solidify)
+                 "FixtureShellPlane": 1.0,  # stack_shell's base plane (its Shell is a Solidify)
+                 "FixtureEmitterSource": 1.0}  # vray_mesh_light's source
 INSIDE_OUT = {"FixtureBoxInside"}
 # vray_lights (tools/fixtures/vray_lights.ms): watts of the rules source's ocbaby_exsVrayLightWatts, run in 3ds Max
 # on each light; the factor MaxDrop changes them by (the disc in lm/m2/sr, measured against V-Ray; the double-sided
@@ -227,6 +237,7 @@ VRAY_LIGHT_WATTS = {"FixturePlane": 0.0527086444, "FixturePlaneInst": 0.05270864
                     "FixtureDisc": 0.00975400303, "FixtureSphere": 40.0, "FixtureSphereKelvin": 0.252661914,
                     "FixtureOff": 0.00439238735, "FixtureInvisible": 20.0, "FixtureTargeted": 25.0,
                     "FixtureDiscScaled": 0.00975400303,
+                    "FixtureNoShadow": 15.0,  # by hand, not run in 3ds Max: in W the rules give the multiplier
                     # vray_dome (tools/fixtures/vray_dome.ms): the rules' watts by hand (W/m2/sr: pi m 4 pi r^2; W: m),
                     # which V-Ray's X-scale rule leaves as they are for these scales
                     "FixtureSphereTall": math.pi * 2.0 * 4.0 * math.pi * 0.005 ** 2, "FixtureSphereWide": 40.0,
@@ -242,6 +253,7 @@ VRAY_LIGHT_SHAPES = {"FixturePlane": ('AREA', 'RECTANGLE', 0.04, 0.02, 0.0),
                                                                                                0.0, 0.0),
                      "FixtureTargeted": ('AREA', 'RECTANGLE', 0.02, 0.01, 0.0),
                      "FixtureDiscScaled": ('AREA', 'DISK', 0.03, 0.0, 0.0),
+                     "FixtureNoShadow": ('AREA', 'RECTANGLE', 0.02, 0.02, 0.0),
                      # vray_dome: radius 5 mm times the X scale (1, 2, 1), whatever the Y and Z scale
                      "FixtureSphereTall": ('POINT', None, 0.0, 0.0, 0.005),
                      "FixtureSphereWide": ('POINT', None, 0.0, 0.0, 0.01),
@@ -250,13 +262,34 @@ VRAY_LIGHT_COLORS = {"FixturePlane": (1.0, 0.57758, 0.304987), "FixturePlaneInst
                      "FixtureDisc": (0.187821, 0.351533, 1.0), "FixtureDiscScaled": (0.187821, 0.351533, 1.0),
                      "FixtureSphereKelvin": (1.0, 0.5304, 0.265643)}
 VRAY_LIGHT_FLAGS = {"FixtureInvisible": (False, True, False, 0.5, 0.0)}  # camera, diffuse, glossy, factors
+VRAY_NO_SHADOWS = {"FixtureNoShadow"}  # the VRayLights whose own Cast shadows is off (V-Ray's default on)
 # cameras (tools/fixtures/cameras.ms): Blender's shift (image widths) and sensor where they are not 0 and 36 mm
 CAMERA_SHIFTS = {"CamPhysShift": (-0.1, 0.15), "CamVRayShift": (-0.1, -0.25)}
 CAMERA_SENSORS = {"CamVRayTarget": 30.0}
 FOV_TOLERANCE = 0.05  # degrees
 KEPT_SIZE = (1234, 567, 50)  # the scene's render size before each import (empty_scene)
 USER_WORLD = "UserWorld"  # the scene's World before each import (empty_scene)
-BARE_MESHES = {"FixtureMeshSource"}  # meshes a fixture leaves without a material: vray_dome's mesh light source
+BARE_MESHES = {"FixtureMeshSource", "FixtureEmitterSource"}  # meshes a fixture leaves without a material: the
+# mesh lights' sources (vray_dome, vray_mesh_light)
+# mesh lights (tools/fixtures/vray_mesh_light.ms, vray_dome.ms): the radiance in W/m2/sr by hand (docs/FORMAT.md,
+# "VRayLight": default units m 1500 / (683 pi); W m / (pi a), a double-sided one over 2 a; lm m / (683 pi a); a the
+# object-space mesh area), the world box of the emitter's mesh in file units from the scripts (the source's mesh at
+# the light's place: its position, turn, scale and object offset), double-sided, flip, camera, shadow, diffuse, glossy
+EMITTER_RADIANCE = {"FixtureEmitter": 2.0 * 1500.0 / (683.0 * math.pi),
+                    "FixtureEmitterW": 5.0 / (2.0 * math.pi * 0.0008),
+                    "FixtureEmitterOwn": 100.0 / 683.0 / (math.pi * 0.0003),
+                    "FixtureMeshLight": 10.0 / (math.pi * 0.0016)}
+EMITTER_BOXES = {"FixtureEmitter": ((-20.0, -10.0, 50.0), (20.0, 10.0, 50.0)),
+                 "FixtureEmitterW": ((60.0, -10.0, 50.0), (140.0, 10.0, 50.0)),
+                 "FixtureEmitterOwn": ((-80.0 - 15.0 * math.cos(math.radians(30.0)) - 2.5,
+                                        -7.5 - 5.0 * math.cos(math.radians(30.0)), 40.0),
+                                       (-80.0 + 15.0 * math.cos(math.radians(30.0)) + 2.5,
+                                        7.5 + 5.0 * math.cos(math.radians(30.0)), 40.0)),
+                 "FixtureMeshLight": ((-10.0, -70.0, 50.0), (10.0, -50.0, 60.0))}
+EMITTER_FLAGS = {"FixtureEmitter": (False, False, True, True, True, True),
+                 "FixtureEmitterW": (True, True, False, False, True, True),
+                 "FixtureEmitterOwn": (False, False, True, True, True, False),
+                 "FixtureMeshLight": (False, False, True, True, True, True)}
 
 # lights_standard, lights_photometric (tools/fixtures/*.ms) and lookat's target spot: Blender's light type, spot
 # size in degrees and blend, and the watts of the rules (docs/FORMAT.md, "Standard and photometric lights") from
@@ -335,6 +368,7 @@ EXTRUDE_EULER = {"FixtureExtRect": 2, "FixtureExtL": 2, "FixtureExtHole": 0, "Fi
 VALUE_TOLERANCE = 1e-4
 SPECULAR_LEVEL = 0.5  # the IR's specular is a reflection weight: 1 is Blender's Specular IOR Level 0.5
 TWIN_LABEL, WEIGHT_LABEL = "Without reflection", "Reflection weight"  # a weight between 0 and 1 (maxdrop-em3.119)
+MIRROR_LABEL = "Mirror reflection"  # the white metal of a weight without Fresnel (maxdrop-em3.120)
 DEG = math.pi / 180.0
 failures = []
 
@@ -468,9 +502,13 @@ def run_fixture(path, modules):
         check(label + ": in its layer's collection", homes == [o["layer"]], str(homes))
         flags = (ob.hide_viewport, ob.hide_get(view_layer=view_layer), ob.hide_render, ob.hide_select)
         want = (o["hidden"], o["hidden"], not o["renderable"], o["frozen"])
-        if node.kind == convert_scene.LIGHT and not desc.lights[node.light].on:  # a light switched off
+        if node.kind == convert_scene.LIGHT and not desc.lights[node.light].on or \
+                node.emitter is not None and not desc.emitters[node.emitter].on:  # a light switched off
             want = (True, o["hidden"], True, o["frozen"])
         check(label + ": hidden, renderable and frozen flags", flags == want, str(flags))
+        if node.emitter is not None:
+            check_emitter(label, ob, desc.emitters[node.emitter], o, meters)
+            continue
         if node.kind in (convert_scene.MESH, convert_scene.CURVE):
             check(label + ": casts shadows as in 3ds Max", ob.visible_shadow == o["cast_shadows"],
                   str(ob.visible_shadow))
@@ -667,8 +705,8 @@ def run_fixture(path, modules):
         check_lookat(path, desc, obs, nodes, meters)
     if name == "vray_lights":
         lit = sorted(ob.name for ob in obs if ob.type == 'LIGHT')
-        check("vray_lights: ten light objects, nine lights (the instance shares one, the scaled one has its own)",
-              len(lit) == 10 and len(bpy.data.lights) == 9 and bpy.data.objects["FixturePlane"].data ==
+        check("vray_lights: eleven light objects, ten lights (the instance shares one, the scaled one has its own)",
+              len(lit) == 11 and len(bpy.data.lights) == 10 and bpy.data.objects["FixturePlane"].data ==
               bpy.data.objects["FixturePlaneInst"].data and bpy.data.objects["FixtureDisc"].data !=
               bpy.data.objects["FixtureDiscScaled"].data, "%s, %d lights" % (lit, len(bpy.data.lights)))
         world = bpy.context.scene.world
@@ -681,6 +719,13 @@ def run_fixture(path, modules):
         check_light_strength(path)
     if name == "vray_dome":
         check_dome(desc)
+    if name == "vray_mesh_light":
+        lit = sorted(ob.name for ob in obs if ob.type == 'MESH' and ob.name.startswith("FixtureEmitter")
+                     and ob.name != "FixtureEmitterSource")
+        none = bpy.data.objects.get("FixtureEmitterNone")
+        check("vray_mesh_light: three emitters, three Emission materials, the mesh light without a mesh an empty",
+              lit == ["FixtureEmitter", "FixtureEmitterOwn", "FixtureEmitterW"] and len(bpy.data.materials) == 3
+              and none is not None and none.type == 'EMPTY', "%s %d" % (lit, len(bpy.data.materials)))
     if name in ("lights_standard", "lights_photometric"):
         lit = [ob for ob in obs if ob.type == 'LIGHT']
         shared = {"lights_standard": ("StdOmni", "StdOmniInst"), "lights_photometric": ("PhPoint", "PhPointInst")}
@@ -754,11 +799,65 @@ def check_render(name, oracle, obs, desc):
               str(desc.camera_note))
 
 
+def check_emitter(label, ob, ed, o, meters):
+    """A mesh light's node: a mesh object at the light's place whose box is the script's (EMITTER_BOXES), its mesh's
+    only material an Emission of the radiance by hand (EMITTER_RADIANCE) times the operator's default Light Strength
+    and the light's color; one side: a Mix Shader by Geometry Backfacing between it and a black Emission, in the order
+    flip says; double-sided: the Emission alone; its flags (EMITTER_FLAGS: double-sided, flip, camera, shadow,
+    diffuse, glossy)."""
+    from maxdrop import ops
+    check(label + ": an emitter mesh object", ob.type == 'MESH', ob.type)
+    if ob.type != 'MESH':
+        return
+    name = o["name"]
+    mw = world_of(ob)
+    world = [mw @ v.co for v in ob.data.vertices]
+    lo = [min(p[k] for p in world) / meters for k in range(3)]
+    hi = [max(p[k] for p in world) / meters for k in range(3)]
+    box = EMITTER_BOXES.get(name)
+    check(label + ": the source's mesh at the light's place", box is not None and close(lo, box[0], 1e-3) and
+          close(hi, box[1], 1e-3), "%s..%s vs %s" % (["%.6g" % v for v in lo], ["%.6g" % v for v in hi], box))
+    mats = [m for m in ob.data.materials]
+    indices = {p.material_index for p in ob.data.polygons}
+    check(label + ": one material on every face", len(mats) == 1 and mats[0] is not None and indices == {0} and
+          all(not s.link == 'OBJECT' for s in ob.material_slots), "%s %s" % (mats, indices))
+    if len(mats) != 1 or mats[0] is None:
+        return
+    nodes = mats[0].node_tree.nodes
+    out = next((n for n in nodes if n.bl_idname == "ShaderNodeOutputMaterial"), None)
+    lit = [n for n in nodes if n.bl_idname == "ShaderNodeEmission" and n.inputs["Strength"].default_value > 0]
+    want = EMITTER_RADIANCE.get(name, -1.0) * ops.LIGHT_STRENGTH
+    got = lit[0].inputs["Strength"].default_value if len(lit) == 1 else None
+    check(label + ": Emission strength = the radiance x Light Strength", got is not None and
+          abs(got - want) <= want * 1e-5 and abs(got - ed.radiance * ops.LIGHT_STRENGTH) <= want * 1e-6,
+          "%s vs %g" % (got, want))
+    check(label + ": Emission color = the light's", len(lit) == 1 and
+          close(tuple(lit[0].inputs["Color"].default_value)[:3], ed.color, 1e-6), str(ed.color))
+    surface = out.inputs["Surface"].links[0].from_node if out is not None and out.inputs["Surface"].links else None
+    flags = EMITTER_FLAGS.get(name)
+    double, flip = flags[:2] if flags else (None, None)
+    if double:
+        check(label + ": double-sided: the Emission alone", surface is not None and lit and surface == lit[0],
+              str(surface))
+    else:
+        ok = surface is not None and surface.bl_idname == "ShaderNodeMixShader"
+        fac = surface.inputs["Fac"].links[0].from_socket if ok and surface.inputs["Fac"].links else None
+        sides = [surface.inputs[k].links[0].from_node if ok and surface.inputs[k].links else None for k in (1, 2)]
+        lit_side = 1 if flip else 0  # the side the Emission is on: front (Backfacing 0, input 1) unless flipped
+        check(label + ": one side: Backfacing mixes the Emission and black (%s)" % ("back" if flip else "front"),
+              ok and fac is not None and fac.name == "Backfacing" and fac.node.bl_idname == "ShaderNodeNewGeometry"
+              and lit and sides[lit_side] == lit[0] and sides[1 - lit_side] is not None and
+              sides[1 - lit_side].inputs["Strength"].default_value == 0.0, str(sides))
+    got = (ed.double_sided, ed.flip, ob.visible_camera, ob.visible_shadow, ob.visible_diffuse, ob.visible_glossy)
+    check(label + ": double-sided, flip, camera, shadow, diffuse and glossy visibility", got == flags, str(got))
+
+
 def check_light(label, ob, ld, o):
     """vray_lights: a LIGHT node's object holds its light: the description's type, shape and size; its -Z axis
     (where a V-Ray plane and a Blender area light shine) along the oracle's; its energy the watts 3ds Max computed
     with the rules source's own function (VRAY_LIGHT_WATTS) times the operator's default Light Strength, halved for
-    the double-sided plane; its color and its object flags. Any other light: check_stock_light."""
+    the double-sided plane; its color, its object flags and its shadow switch (VRAY_NO_SHADOWS). Any other light:
+    check_stock_light."""
     light = ob.data
     check(label + ": a light object", ob.type == 'LIGHT', ob.type)
     if ob.type != 'LIGHT':
@@ -791,6 +890,8 @@ def check_light(label, ob, ld, o):
              round(light.specular_factor, 6))
     want = VRAY_LIGHT_FLAGS.get(o["name"], (True, True, True, 1.0, 1.0))
     check(label + ": camera, diffuse and glossy visibility, diffuse and specular factors", flags == want, str(flags))
+    check(label + ": shadows as in 3ds Max", light.use_shadow == ld.shadow == (o["name"] not in VRAY_NO_SHADOWS),
+          "%s, %s" % (light.use_shadow, ld.shadow))
 
 
 def check_stock_light(label, ob, ld, o):
@@ -832,7 +933,8 @@ def check_stock_light(label, ob, ld, o):
 
 def check_dome(desc):
     """vray_dome: the dome is the World: Background strength (through the hemisphere's Math nodes) = 2 x 1500 /
-    (683 pi) x Light Strength, its color an Environment Texture of fixture_dome.png, the texture's Mapping (scale 1, -1,
+    (683 pi) x Light Strength, its color an Environment Texture of fixture_dome.png (Linear Rec.709) through a Gamma
+    node (the gamma-off fixture's Auto VRayBitmap: SRGB_TWICE), the texture's Mapping (scale 1, -1,
     1; turned 60 degrees about Z: -30 of the VRayBitmap's horizontal rotation, then the mirrored dome turned 90 about Z)
     and the hemisphere's (the dome's -90 about Z), camera rays off, diffuse and glossy on. The two spheres share one
     light, the scaled one has its own. The report says the World and the one it replaced, which is kept."""
@@ -854,10 +956,19 @@ def check_dome(desc):
           times is not None and above is not None and abs(times.inputs[1].default_value - want) < 1e-5 and
           times.inputs[0].links and times.inputs[0].links[0].from_node == above,
           "%s" % (times and times.inputs[1].default_value))
+    from maxdrop.convert import texmaps as tx
+    links = nodes["Background"].inputs["Color"].links
+    power = links[0].from_node if links else None
     check("vray_dome: an Environment Texture of fixture_dome.png drives the color",
           env is not None and env.image is not None and env.image.name.startswith("fixture_dome") and
-          nodes["Background"].inputs["Color"].links and
-          nodes["Background"].inputs["Color"].links[0].from_node == env, str(env and env.image))
+          power is not None and power.inputs["Color"].links and power.inputs["Color"].links[0].from_node == env,
+          str(env and env.image))
+    # transfer function Auto in the gamma-off fixture: V-Ray's sRGB curve shown decoded once more (maxdrop-em3.123)
+    check("vray_dome: the texture in Linear Rec.709 through a Gamma node of SRGB_TWICE",
+          power is not None and power.bl_idname == "ShaderNodeGamma" and
+          abs(power.inputs["Gamma"].default_value - tx.SRGB_TWICE) < 1e-6 and env.image is not None and
+          env.image.colorspace_settings.name == "Linear Rec.709",
+          "%s %s" % (power and power.bl_idname, env and env.image and env.image.colorspace_settings.name))
     tex, up = maps.get((1.0, -1.0, 1.0)), maps.get((1.0, 1.0, 1.0))
     check("vray_dome: the texture's Mapping turned 60 degrees about Z, the hemisphere's -90",
           tex is not None and up is not None and
@@ -868,9 +979,8 @@ def check_dome(desc):
     rays = world.cycles_visibility
     check("vray_dome: invisible: camera rays off, diffuse and glossy on", (rays.camera, rays.diffuse, rays.glossy) ==
           (False, True, True), str((rays.camera, rays.diffuse, rays.glossy)))
-    for name in ("FixtureDomeColor", "FixtureMeshLight"):
-        ob = bpy.data.objects.get(name)
-        check("vray_dome: %s an empty" % name, ob is not None and ob.type == 'EMPTY', ob and ob.type)
+    ob = bpy.data.objects.get("FixtureDomeColor")
+    check("vray_dome: FixtureDomeColor an empty", ob is not None and ob.type == 'EMPTY', ob and ob.type)
     check("vray_dome: three sphere objects, three lights (the scaled instance its own)",
           len([ob for ob in bpy.data.objects if ob.type == 'LIGHT']) == 3 and len(bpy.data.lights) == 3 and
           bpy.data.objects["FixtureSphereWide"].data != bpy.data.objects["FixtureSphereWideInst"].data,
@@ -1442,8 +1552,9 @@ def _irs(path):
 
 
 def _bsdfs(material):
-    """The Principled BSDFs of a material, the twins of a reflection weight left out."""
-    return [n for n in material.node_tree.nodes if n.bl_idname == "ShaderNodeBsdfPrincipled" and n.label != TWIN_LABEL]
+    """The Principled BSDFs of a material, the twins and mirrors of a reflection weight left out."""
+    return [n for n in material.node_tree.nodes if n.bl_idname == "ShaderNodeBsdfPrincipled"
+            and n.label not in (TWIN_LABEL, MIRROR_LABEL)]
 
 
 def _shaders(material):
@@ -1491,13 +1602,49 @@ def check_specular(label, p, ir, present):
               "mix %s, linked %s, %r vs %r" % (mix is not None, s.is_linked, s.default_value, w))
         return
     fac = mix.inputs[0] if mix is not None else None
-    check("%s: reflection weight %s over a twin, Specular IOR Level 0.5" % (label, "linked" if linked else "value"),
-          mix is not None and not s.is_linked and _value_ok(s, SPECULAR_LEVEL) and fac.is_linked == linked
+    mirror = not ir.fresnel and (linked or ir.specular.map is None)
+    level = 0.0 if mirror else SPECULAR_LEVEL
+    check("%s: reflection weight %s %s, Specular IOR Level %.1f" % (
+              label, "linked" if linked else "value", "under a mirror" if mirror else "over a twin", level),
+          mix is not None and not s.is_linked and _value_ok(s, level) and fac.is_linked == linked
           and (linked or _value_ok(fac, w)),
           "mix %s, level %r, factor %r vs %r" % (mix is not None, s.default_value,
                                                   None if fac is None else fac.default_value, w))
     if mix is not None:
-        check_twin(label, p, mix)
+        (check_mirror if mirror else check_twin)(label, p, mix)
+
+
+def _same_inputs(p, copy, own):
+    """The identifiers of p's inputs copy does not repeat: own {name: value} unlinked on copy, the others p's link
+    or value."""
+    bad = []
+    for a, b in zip(p.inputs, copy.inputs):
+        if a.name in own:
+            va, want = b.default_value, own[a.name]
+            same = not b.is_linked and (close(list(va), list(want), 1e-6) if hasattr(want, "__len__")
+                                        else abs(float(va) - want) <= 1e-6)
+        elif a.is_linked:
+            same = b.is_linked and b.links[0].from_socket == a.links[0].from_socket
+        elif hasattr(a, "default_value"):
+            va, vb = a.default_value, b.default_value
+            same = not b.is_linked and (close(list(va), list(vb), 1e-6) if hasattr(va, "__len__")
+                                        else abs(float(va) - float(vb)) <= 1e-6)
+        else:
+            same = True
+        if not same:
+            bad.append(a.identifier)
+    return bad
+
+
+def check_mirror(label, p, mix):
+    """A weight without Fresnel: the Mix Shader's first shader is p (Specular IOR Level 0), its second p's copy as
+    a white metal: p's links and values but Metallic 1, Base Color white (both unlinked), Specular IOR Level 0.5."""
+    copy = _from(mix.inputs[2])
+    ok = copy is not None and copy.bl_idname == "ShaderNodeBsdfPrincipled" and copy.label == MIRROR_LABEL \
+        and _from(mix.inputs[1]) == p
+    bad = _same_inputs(p, copy, {"Metallic": 1.0, "Base Color": (1.0, 1.0, 1.0, 1.0),
+                                 "Specular IOR Level": SPECULAR_LEVEL}) if ok else []
+    check(label + ": the mirror is the Principled BSDF as a white metal", ok and bad == [], str(bad))
 
 
 def check_twin(label, p, mix):
@@ -1505,21 +1652,7 @@ def check_twin(label, p, mix):
     twin = _from(mix.inputs[1])
     ok = twin is not None and twin.bl_idname == "ShaderNodeBsdfPrincipled" and twin.label == TWIN_LABEL \
         and _from(mix.inputs[2]) == p
-    bad = []
-    if ok:
-        for a, b in zip(p.inputs, twin.inputs):
-            if a.identifier == "Specular IOR Level":
-                same = not b.is_linked and b.default_value == 0.0
-            elif a.is_linked:
-                same = b.is_linked and b.links[0].from_socket == a.links[0].from_socket
-            elif hasattr(a, "default_value"):
-                va, vb = a.default_value, b.default_value
-                same = not b.is_linked and (close(list(va), list(vb), 1e-6) if hasattr(va, "__len__")
-                                            else abs(float(va) - float(vb)) <= 1e-6)
-            else:
-                same = True
-            if not same:
-                bad.append(a.identifier)
+    bad = _same_inputs(p, twin, {"Specular IOR Level": 0.0}) if ok else []
     check(label + ": the twin is the Principled BSDF without reflection", ok and bad == [], str(bad))
 
 
@@ -1541,8 +1674,11 @@ def _alpha_of(ir, present):
 
 
 def _value_ok(socket, want):
+    """The socket's value against want; a color input stores no negative, so want is held at 0 there."""
     got = socket.default_value
     if isinstance(want, (tuple, list)):
+        if socket.type == 'RGBA':
+            want = [max(0.0, w) for w in want]
         return close(list(got)[:3], list(want)[:3], VALUE_TOLERANCE)
     return abs(float(got) - float(want)) <= VALUE_TOLERANCE
 
@@ -1773,6 +1909,10 @@ def check_fixture_materials(name, plan, desc, obs):
         got = [sp.material_index for sp in ob.data.splines]
         want = plan.curves[key].indices.tolist() if key in plan.curves else [0] * len(cd.splines)
         check("%s/%s: each spline on its material's slot" % (name, ob.name), got == want, "%s vs %s" % (got, want))
+    if name == "corona_classes":  # a shadow catcher only where every slot is a CoronaShadowCatcherMtl
+        catchers = sorted(ob.name for ob in obs if ob.is_shadow_catcher)
+        check("corona_classes: the shadow-catcher boxes are shadow catchers, the mixed box and the others not",
+              catchers == ["FixtureCoronaShadowCatcherBox", "FixtureCoronaShadowCatcherReflBox"], str(catchers))
     if name == "falloff_curve":
         check_falloff_curve(textured=False)
     if name == "vray_maps":
@@ -2543,8 +2683,8 @@ def check_found_textures():
                 check_reflection_falloff()
             if name == "falloff_curve":
                 check_falloff_curve(textured=True)
-        check("found textures: a linear color image (VRayBitmap transfer function None) imported in Linear Rec.709",
-              "vtx_linear.png" in linear, str(linear))
+        check("found textures: a linear color image (VRayBitmap transfer function Auto in the gamma-off fixture, "
+              "decoded twice) imported in Linear Rec.709", "vtx_diffuse.png" in linear, str(linear))
     finally:
         empty_scene()
         for img in list(bpy.data.images):
@@ -2714,6 +2854,68 @@ def check_builder_blend():
         shutil.rmtree(scratch, ignore_errors=True)
 
 
+def _reaches_image(socket, depth=4):
+    """Whether an Image Texture node feeds socket, through at most depth nodes."""
+    if depth == 0 or not socket.is_linked:
+        return False
+    n = socket.links[0].from_node
+    return n.bl_idname == "ShaderNodeTexImage" or any(_reaches_image(i, depth - 1) for i in n.inputs)
+
+
+def check_builder_blend_modes():
+    """The CoronaMix blend modes of bead maxdrop-em3.117 over an image: a Mix node of the mode (bottom in A, hard
+    light's top in A), linear burn's add minus 1 floored at 0; in sRGB mode a Vector Math ABSOLUTE before the
+    closing Gamma (Corona raises the magnitude) but for linear burn, in linear mode none."""
+    from maxdrop.build import materials as build_materials
+    from maxdrop.convert import materials as cm
+    from maxdrop.convert import texmaps as tx
+    from maxdrop.convert import textures as ct
+    empty_scene()
+    scratch = tempfile.mkdtemp(prefix="maxdrop-blend-modes-")
+    try:
+        png = os.path.join(scratch, "blend.png")
+        _write_png(png)
+        img = tx.Image(1, "blend.png", "blend.png", "", ct.Found(png, ct.SCENE))
+        top = tx.Constant((0.6, 0.2, 0.75))
+        types = {tx.BLEND_SCREEN: 'SCREEN', tx.BLEND_OVERLAY: 'OVERLAY', tx.BLEND_HARD_LIGHT: 'OVERLAY',
+                 tx.BLEND_DODGE: 'DODGE', tx.BLEND_BURN: 'BURN', tx.BLEND_LINEAR_BURN: 'ADD',
+                 tx.BLEND_LINEAR_LIGHT: 'LINEAR_LIGHT', tx.BLEND_EXCLUSION: 'EXCLUSION'}
+        builder = build_materials.MaterialBuilder()
+        for op, blend_type in types.items():
+            for gamma in (2.2, 1.0):
+                ir = cm.MaterialIR(30, "Mode", "test", base_color=cm.Input((0.5,) * 3, cm.MapRef(1)))
+                ir.textures = {"base_color": tx.TextureGraphIR(tx.Blend(op, img, top, gamma), tx.COLOR)}
+                m = builder.make(ir)
+                nodes = m.node_tree.nodes
+                what = "blend mode %s, gamma %s" % (op, gamma)
+                mix = [n for n in nodes if n.bl_idname == "ShaderNodeMix" and n.blend_type == blend_type]
+                ok = len(mix) == 1 and not mix[0].clamp_result
+                if ok:
+                    a, b = _input(mix[0], "A_Color"), _input(mix[0], "B_Color")
+                    image, constant = (b, a) if op == tx.BLEND_HARD_LIGHT else (a, b)
+                    ok = _reaches_image(image) and not _reaches_image(constant)
+                check("%s: one unclamped Mix node, the bottom image in %s" % (what, "B" if op == tx.BLEND_HARD_LIGHT
+                                                                              else "A"), ok)
+                vm = {n.operation: n for n in nodes if n.bl_idname == "ShaderNodeVectorMath"}
+                absolute = vm.get('ABSOLUTE')
+                wants = gamma != 1.0 and op != tx.BLEND_LINEAR_BURN  # linear burn is floored at 0: none
+                check("%s: %s" % (what, "ABSOLUTE into the closing Gamma" if wants else "no ABSOLUTE"),
+                      (absolute is not None and absolute.outputs[0].links
+                       and absolute.outputs[0].links[0].to_node.bl_idname == "ShaderNodeGamma") if wants
+                      else absolute is None)
+                if op == tx.BLEND_LINEAR_BURN:
+                    add, floor = vm.get('ADD'), vm.get('MAXIMUM')
+                    check("%s: minus 1, then floored at 0" % what,
+                          add is not None and tuple(_input(add, "Vector_001").default_value) == (-1.0, -1.0, -1.0)
+                          and floor is not None and floor.inputs[0].links[0].from_node == add)
+                bpy.data.materials.remove(m)
+    finally:
+        empty_scene()
+        for img in list(bpy.data.images):
+            bpy.data.images.remove(img)
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def check_builder_weight():
     """A reflection weight (bead maxdrop-em3.119): between 0 and 1, or a map, a Mix Shader by the weight over a
     twin without reflection; 0, 1, a metal and full glass keep the lone Principled at 0.5 x the weight; a layer
@@ -2779,6 +2981,53 @@ def check_builder_weight():
           and _weight_mix(bsdfs[1]) is not None and _from(layer_mix.inputs[2]) == _weight_mix(bsdfs[1]))
     if under is not None:
         check_twin("weight: the base under a layer", bsdfs[0], under)
+    empty_scene()
+
+
+def check_builder_fresnel_off():
+    """A weight without Fresnel (bead maxdrop-em3.120, VRayMtl Fresnel off): between 0 and 1, or a converted map, a
+    Mix Shader by the weight from the BSDF at Specular IOR Level 0 to its copy as a white metal; 0, a metal and a
+    reflection map that did not convert or whose image is not found (no node: its swatch) keep em3.119's drawing;
+    Fresnel on keeps the twin."""
+    from maxdrop.build import materials as build_materials
+    from maxdrop.convert import materials as cm
+    from maxdrop.convert import texmaps as tx
+    empty_scene()
+    builder = build_materials.MaterialBuilder()
+    facing = tx.TextureGraphIR(tx.Mix(tx.Constant((0.0,) * 3), tx.Constant((1.0,) * 3), 0.0,
+                                      tx.Facing(tx.PERPENDICULAR)), tx.COLOR)
+    for name, kw, textures, drawing, level in (
+            ("Dim", dict(specular=cm.Input(0.2), roughness=cm.Input(0.3)), {}, "mirror", 0.0),
+            ("DimRed", dict(specular=cm.Input(0.2), base_color=cm.Input((1.0, 0.0, 0.0), cm.MapRef(1)),
+                            metallic=cm.Input(0.2, cm.MapRef(1))),
+             {"base_color": facing, "metallic": tx.TextureGraphIR(tx.Mix(tx.Constant(0.0), tx.Constant(0.5), 0.0,
+                                                                          tx.Facing(tx.PERPENDICULAR)), tx.DATA)},
+             "mirror", 0.0),
+            ("Falloff", dict(specular=cm.Input(0.0, cm.MapRef(1))), {"specular": facing}, "mirror", 0.0),
+            ("None", dict(specular=cm.Input(0.0)), {}, "lone", 0.0),
+            ("Metal", dict(specular=cm.Input(0.4), metallic=cm.Input(1.0)), {}, "lone", 0.2),
+            ("Unconverted", dict(specular=cm.Input(0.6, cm.MapRef(1))), {}, "twin", 0.5),
+            ("LostImage", dict(specular=cm.Input(0.8, cm.MapRef(2))),
+             {"specular": tx.TextureGraphIR(tx.Image(2, "nothere.png", "C:\\x\\nothere.png", "", None), tx.COLOR)},
+             "twin", 0.5),
+            ("On", dict(specular=cm.Input(0.2), fresnel=True), {}, "twin", 0.5)):
+        ir = cm.MaterialIR(80, name, "test", **{"fresnel": False, **kw})
+        ir.textures = textures
+        m = builder.make(ir)
+        p = _principled(m) if m is not None else None
+        mix = _weight_mix(p) if p is not None else None
+        level_ok = p is not None and abs(p.inputs["Specular IOR Level"].default_value - level) < 1e-6
+        second = _from(mix.inputs[2]) if mix is not None else None
+        got = "lone" if mix is None else "mirror" if getattr(second, "label", "") == MIRROR_LABEL else "twin"
+        check("fresnel off: %s: %s, Specular IOR Level %.1f" % (name, drawing, level), level_ok and got == drawing,
+              "%s, level %r" % (got, None if p is None else p.inputs["Specular IOR Level"].default_value))
+        if name == "DimRed" and got == "mirror":
+            check("fresnel off: DimRed: the source's Base Color and Metallic are linked (the copy's are not)",
+                  p.inputs["Base Color"].is_linked and p.inputs["Metallic"].is_linked)
+        if p is not None and mix is not None:
+            check_specular("fresnel off: " + name, p, ir, name != "LostImage")
+            out = next(n for n in m.node_tree.nodes if n.bl_idname == "ShaderNodeOutputMaterial")
+            check("fresnel off: %s: the surface is the Mix Shader" % name, _from(out.inputs["Surface"]) == mix)
     empty_scene()
 
 
@@ -2852,6 +3101,59 @@ def check_builder_mono():
         dots = [n for n in m.node_tree.nodes if n.bl_idname == "ShaderNodeVectorMath" and n.operation == 'DOT_PRODUCT']
         check("mono: one mean per image in a float graph (two images, and the Color Correction)", len(dots) == 3,
               str(len(dots)))
+    finally:
+        empty_scene()
+        for img in list(bpy.data.images):
+            bpy.data.images.remove(img)
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def check_builder_multiply():
+    """A Multiply of two maps in a float graph (bead maxdrop-em3.124): V-Ray 5.2 takes the product of the two maps'
+    means (red x green 1/9, measured on an RGB Multiply as a Mix mask and a glossiness map, a CoronaMix Multiply as
+    a Mix mask), not the mean of their product (0). On roughness and on a color Mix's mask: a Math MULTIPLY of two
+    DOT_PRODUCTs by (1/3, 1/3, 1/3), one from each image."""
+    from maxdrop.build import materials as build_materials
+    from maxdrop.convert import materials as cm
+    from maxdrop.convert import texmaps as tx
+    from maxdrop.convert import textures as ct
+    empty_scene()
+    for img in list(bpy.data.images):
+        bpy.data.images.remove(img)
+    scratch = tempfile.mkdtemp(prefix="maxdrop-multiply-")
+    try:
+        png = os.path.join(scratch, "mult.png")
+        _write_png(png)
+        found = ct.Found(png, ct.SCENE)
+        a = tx.Image(1, "mult.png", "mult.png", "", found, colorspace=tx.NON_COLOR)
+        b = tx.Image(2, "mult.png", "mult.png", "", found, colorspace=tx.NON_COLOR,
+                     mapping=tx.Mapping(tiling=(2.0, 2.0)))
+        ir = cm.MaterialIR(52, "Multiply", "test", base_color=cm.Input((0.5,) * 3, cm.MapRef(1)),
+                           roughness=cm.Input(0.5, cm.MapRef(1)))
+        ir.textures = {
+            "base_color": tx.TextureGraphIR(tx.Mix(tx.Constant((0.0,) * 3), tx.Constant((1.0,) * 3), 0.0,
+                                                   tx.Multiply(a, b)), tx.COLOR),
+            "roughness": tx.TextureGraphIR(tx.Multiply(a, b), tx.DATA)}
+        m = build_materials.MaterialBuilder().make(ir)
+        check("multiply: material built", m is not None)
+        if m is None:
+            return
+        mixed = _color_into_float(m)
+        check("multiply: no color output linked into a float input", mixed == [], str(mixed))
+        p = _principled(m)
+
+        def means_product(socket):
+            mul = _from(socket)
+            if mul is None or mul.bl_idname != "ShaderNodeMath" or mul.operation != 'MULTIPLY':
+                return False
+            sides = [_meaned(s) for s in mul.inputs[:2]]
+            return all(getattr(n, "bl_idname", None) == "ShaderNodeTexImage" for n in sides) and sides[0] != sides[1]
+
+        check("multiply: roughness is the product of the two images' means", means_product(p.inputs["Roughness"]))
+        base = _from(p.inputs["Base Color"])
+        check("multiply: a color Mix's mask is the product of the two images' means",
+              base is not None and base.bl_idname == "ShaderNodeMix"
+              and means_product(_input(base, "Factor_Float")))
     finally:
         empty_scene()
         for img in list(bpy.data.images):
@@ -3877,8 +4179,10 @@ def check_builder_wiring(ma, mb, builder, cm, tx, srgb, data, lost, gamma):
     b = _from(_principled(mc).inputs["Normal"])
     check("wiring: a negative bump amount inverts the Bump node", b.invert and b.inputs["Strength"].default_value == 0.5)
     mask = _meaned(_input(_from(_principled(mc).inputs["Base Color"]), "Factor_Float"))
-    check("wiring: a mask with a gamma override gets no Gamma node, only the mean",
-          getattr(mask, "bl_idname", None) == "ShaderNodeTexImage")
+    check("wiring: a mask with a gamma override is decoded by a Gamma node of 1.8, then the mean (maxdrop-em3.122)",
+          getattr(mask, "bl_idname", None) == "ShaderNodeGamma"
+          and abs(_input(mask, "Gamma").default_value - 1.8) < 1e-6
+          and getattr(_from(_input(mask, "Color")), "bl_idname", None) == "ShaderNodeTexImage")
     pd = _principled(md)
     check("wiring: missing images leave the IR's values: Normal free, alpha 0.8 (BLENDED), base color the swatch",
           not pd.inputs["Normal"].is_linked and not pd.inputs["Alpha"].is_linked
@@ -4405,7 +4709,10 @@ def main():
                                  ("found textures", check_found_textures), ("builder", check_builder),
                                  ("builder debt", check_builder_debt), ("builder mirror", check_builder_mirror),
                                  ("builder blend", check_builder_blend), ("builder mono", check_builder_mono),
+                                 ("builder blend modes", check_builder_blend_modes),
+                                 ("builder multiply", check_builder_multiply),
                                  ("builder weight", check_builder_weight),
+                                 ("builder fresnel off", check_builder_fresnel_off),
                                  ("builder clip mask", check_builder_clip_mask),
                                  ("curve step", check_curve_step),
                                  ("crease open edges", check_crease_open_edges),
