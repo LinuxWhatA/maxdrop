@@ -77,9 +77,12 @@ world scale puts on its area (lights.area_scale, 1 but for a VRayLight), so inst
 issues of its parameters are named on its first node, those of a description on the first node of that key. A
 VRayLight's mesh light is a MESH of its emitter (node.emitter, the key into desc.emitters of its
 lights.EmitterDescription, one per light object): its mesh object's base mesh (the light's own, else the picked
-node's object; an Editable Mesh, Editable Poly or primitive built here) in object space with the light node's offset
-baked, keyed (EMITTER, light base, mesh base, offset), the light's nodes its users; its area (mesh_area, object
-space) sets the radiance in lm and W; the modifiers above the base mesh are an issue. A mesh light without such a
+node's object; an Editable Mesh, Editable Poly or primitive built here; a shape under an Extrude, extruded here) in
+object space with the light node's offset baked, keyed (EMITTER, light base, mesh base, offset), the light's nodes
+its users; its area (mesh_area, object space) sets the radiance in lm and W. The mesh object's modifiers that render
+above it, but its UVW Maps (an emitter has no texture), are converted as a mesh node's (Blender modifiers in
+node.converted, with the light node's offset; build.emitters spreads the radiance over the mesh under them); the
+rest are an issue. A mesh light without such a
 mesh, a Skylight (not built yet), or a light whose parameters cannot be read, is an EMPTY with the reason as an
 issue, on every node, not counted as a placeholder. A VRayLight dome is an EMPTY too (its children
 stay placed), not a placeholder: the first dome node that is on (in walk order) gives desc.dome
@@ -130,8 +133,12 @@ mesh's open edges join its sharp edges (after a SMOOTH smoother cleared them) an
 Mirrors below the Shell, but the open edges a Mirror welds shut (both ends within its threshold of their copies: a
 seam once welded), and the rim entry of the key holds those Mirrors; what Solidify still cannot do (auto smooth
 splitting the rim's sharper corners, the override group) is an issue, named once per Shell and mesh, only when the
-mesh has open edges. Viewport levels that would give an object more than convert.modifiers.MAX_VIEWPORT_CORNERS face
-corners are lowered (an issue).
+mesh has open edges. A Symmetry right above the lowest Shell (only Symmetries converted below it) whose slice plane
+holds the mesh's open edges drops the rim the Shell made there in 3ds Max and welds the cut: where that rim lies on
+the plane (lowered()), its Mirror is moved below the Solidify (node.converted is in Blender's order), which welds the
+cut before the shell is made, and the rim is that of the Mirrors below; otherwise an issue. ("seam", the Mirrors
+below the Shell, those right above it) joins the mesh key before its shading entry. Viewport levels that would give
+an object more than convert.modifiers.MAX_VIEWPORT_CORNERS face corners are lowered (an issue).
 describe(..., convert_modifiers=False) converts nothing.
 
 Layers: each node names its layer's object index (None without one, or when the layer record cannot be read, which
@@ -165,12 +172,27 @@ UV_NAME = "UVChannel_%d"
 MAX_EDGE_MASKS = 64  # distinct smoothing-group masks paired on one non-manifold edge
 # Face corners the primitives and extrusions of one scene may make: each has its own cap (primitives.MAX_CORNERS,
 # extrude.MAX_VERTICES), but a file can hold any number of them, each costing up to about a second and hundreds of
-# MB. Checked before each is made, so the last one made can pass it by up to its own cap.
+# MB (an adaptive Extrude several seconds, also when it is refused: ExtrudeError.spent counts it). Checked before
+# each is made, so the last one made can pass it by up to its own cap.
 MAX_BUILT_CORNERS = 1 << 24
 # Face corners of a mesh with its copies under the Mirrors below a Shell, counted for the rim's corners (each Mirror
 # doubles them): past it the corners are not counted (a line in the report)
 MAX_MIRRORED_CORNERS = 1 << 22
 MAX_MIRROR_IMAGES = 64  # copies of the open edges tested against the next Mirror below a Shell (_rim_edges)
+# 3ds Max 2020's slice drops the rim faces of a Shell below it lying within this many system units of its plane
+# (1e-4 off: dropped; 1e-3 off: kept, doubled; lowered()). Positions are float32: some 1000 units from the origin
+# along the plane's axis one step passes it, and such a cut keeps the order
+PLANE_TOLERANCE = 1e-4
+# Blender's Mirror keeps a vertex this close to the plane (meters, bisect_threshold's default) on the kept side: in
+# files of large units the on-plane test stays within it, so a moved Mirror cuts no end of the cut away
+BISECT_DISTANCE = 1e-3
+# |cos| between a face's normal and a plane's axis: a face at the plane offset along it by a Shell up to 10 units
+# thick stays within PLANE_TOLERANCE of the plane
+NORMAL_TOLERANCE = 1e-5
+SEAM_STAYS = ("the rim of the Shell below it along the mirror plane differs from 3ds Max's: the Mirror is moved below "
+              "the Solidify only for a rim lying on the plane, with slice and weld on")
+SEAM_UNTESTED = ("whether the rim of the Shell below it lies on the mirror plane is not tested (with its copies the "
+                 "mesh would pass %d face corners): where it does, it differs from 3ds Max's" % MAX_MIRRORED_CORNERS)
 _SPENT = "the primitives and extrusions before it reach %d face corners, the budget for one scene"
 SHEAR_TOLERANCE = 1e-5  # |cos| between two rows of a local matrix
 OFFSET = "its object is offset from its pivot: the camera looks from the pivot, 3ds Max from the object"
@@ -269,10 +291,11 @@ class MeshDescription:
     share it, in walk order; dropped_faces the faces left out (a repeated vertex, doubled); applied the UVW Maps
     (reader.modifiers Modifiers) evaluated into it; creases whether its sharp edges are to be creased (a converted
     smoother separates by smoothing groups); zeroed_uvs the U and V coordinates that were not numbers (inf, NaN),
-    set to 0."""
+    set to 0; lowered how many Mirrors right above its Shell go below it, seam_issue why the next one does not when
+    it may leave a rim on its plane (SEAM_STAYS, SEAM_UNTESTED or None: lowered())."""
     __slots__ = ("key", "name", "positions", "loop_vertices", "loop_starts", "loop_totals", "material_indices",
                  "sharp_faces", "sharp_edges", "uv_layers", "users", "dropped_faces", "applied", "creases",
-                 "zeroed_uvs")
+                 "zeroed_uvs", "lowered", "seam_issue")
 
     def __init__(self, key, name, positions, loop_vertices, loop_starts, loop_totals, material_indices,
                  sharp_faces, sharp_edges, uv_layers, dropped_faces=0, zeroed_uvs=0):
@@ -284,6 +307,7 @@ class MeshDescription:
         self.applied = ()
         self.creases = False
         self.zeroed_uvs = zeroed_uvs
+        self.lowered, self.seam_issue = 0, None
 
     def __repr__(self):
         return "MeshDescription(%r, %d vertices, %d faces, %d UV layers)" % (
@@ -817,7 +841,7 @@ def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, 
     desc = SceneDescription(meters, unit)
     order = scene.walk()
     found = {}  # node -> (reader Node, Stack or None), or the ChunkError its record or object stack raised
-    shape_of = {}  # base object index -> reader Shape, or None when the reader refused it
+    shape_of = {}  # base object index -> reader Shape, or the text of the reader's refusal (_shape)
     unbuilt = set()  # curve keys refused for their range (CurveError), named on their first node
     remaining = collections.Counter()  # base object -> nodes still to build: its MeshData goes with the last
     for i in order:
@@ -832,8 +856,8 @@ def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, 
         except ChunkError as exc:
             found[i] = exc
     data_of = {}  # base object index -> MeshData, or None when the reader refused or does not read it
-    extruded = {}  # base object index -> {Extrude modifier index: MeshData, or None when it cannot be evaluated}
     built = [0]  # face corners the primitives and extrusions made so far
+    extrusions = _Extrusions(scene, desc, shape_of, built)  # shared by the shapes' nodes and the mesh lights
     mapped = {}  # UVW Map modifier index -> (Params, gizmo matrix), or None when it is not evaluated
     told = set()  # modifier indices whose conversion issues were named (on the first node only)
     rims = set()  # (Shell modifier index, mesh key) whose rim issues were named
@@ -870,24 +894,27 @@ def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, 
                 if ext is not None:
                     fresh = {m.index for m in rest} - told  # named on this node only if its Extrude is made
                     conv, conv_issues = _converted(scene, rest, meters, _offset(t, i), told, convert_modifiers)
-                    shell = _rim(conv)
-                    mirrors = _mirrors(conv, shell)
-                    key, done = _extruded(scene, desc, shape_of, extruded, mapped, base, ext, maps, i, name,
-                                          t.offset(i), meters, built, _shading(conv), check, shell is not None,
-                                          mirrors, ranges)
+                    shell, (seam, above) = _rim(conv), _seam(conv)
+                    mirrors = _mirrors(conv, seam if shell is None else shell)
+                    key, done = _extruded(scene, desc, extrusions, mapped, base, ext, maps, i, name, t.offset(i),
+                                          meters, _shading(conv), check, shell is not None, mirrors, ranges, above)
                     if key is None:
                         told.difference_update(fresh)
                 if key is not None:
                     kind = MESH
+                    moved = above[:desc.meshes[key].lowered]
+                    conv = _lowered(conv, seam, moved)
                     converted, more = rules.budget(conv, len(desc.meshes[key].loop_vertices))
                     desc.issues.extend((i, x) for x in conv_issues + more)
-                    _name_rim(desc, rims, shell, key, i, check, mirrors)
+                    _name_seam(desc, rims, above, key, i)
+                    _name_rim(desc, rims, shell, key, i, check,
+                              _rim_mirrors(desc.meshes[key], mirrors, above, _unit(_offset(t, i), meters)))
                     applied, modifiers = _split(scene, stack.modifiers, (ext,) + done, conv)
                 else:
                     kind, curve = _curve(scene, desc, shape_of, unbuilt, base, i, name, t.offset(i), meters)
                 remaining[base] -= 1
                 if not remaining[base]:
-                    extruded.pop(base, None)
+                    extrusions.drop(base)
             elif base is not None and lights.light_class(scene, base) is not None:
                 class_name = _class_name(scene, base)
                 if swatches is None:
@@ -901,8 +928,9 @@ def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, 
                         desc.issues.append((i, "light: not built: %s" % emitter_refused[refused]))
                     else:
                         try:
-                            key, emitter = _emitter(scene, t, desc, emitter_meshes, light_params[base], base, i,
-                                                    name, meters, swatches, built, check)
+                            key, emitter, converted = _emitter(scene, t, desc, emitter_meshes, light_params[base],
+                                                               base, i, name, meters, swatches, built, check, stacks,
+                                                               told, convert_modifiers, extrusions)
                         except MeshError as exc:  # its mesh with the node's offset: nothing of it is written yet
                             emitter_refused[refused] = str(exc)
                             desc.issues.append((i, "light: not built: %s" % exc))
@@ -913,7 +941,9 @@ def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, 
                                     _name_zeroed(desc, desc.meshes[key], i)
                 remaining[base] -= 1
                 if not remaining[base]:
-                    emitter_meshes.pop(base, None)
+                    mesh = emitter_meshes.pop(base, None)
+                    if isinstance(mesh, tuple) and not remaining[mesh[0]]:  # a picked shape no node still needs
+                        extrusions.drop(mesh[0])
             elif base is not None and cameras.camera_class(scene, base) is not None:
                 class_name = _class_name(scene, base)
                 camera = _camera(scene, t, desc, unseen, camera_params, base, i, name, meters, mm)
@@ -936,18 +966,23 @@ def describe(scene, meters=1.0, unit=None, convert_modifiers=True, assets=None, 
                     offset = _offset(t, i)
                     fresh = {m.index for m in rest} - told  # named on this node only if its mesh is made
                     converted, conv_issues = _converted(scene, rest, meters, offset, told, convert_modifiers)
-                    shell = _rim(converted)
-                    mirrors = _mirrors(converted, shell)
+                    shell, (seam, above) = _rim(converted), _seam(converted)
+                    mirrors = _mirrors(converted, seam if shell is None else shell)
                     key, done = _mapped_mesh(scene, desc, mapped, (base, offset), data, maps, i, name, offset,
-                                             meters, _shading(converted), check, shell is not None, mirrors, ranges)
+                                             meters, _shading(converted), check, shell is not None, mirrors, ranges,
+                                             above=above)
                     if key is None:  # its positions do not fit single precision: a placeholder
                         told.difference_update(fresh)
                         converted = ()
                     else:
                         desc.issues.extend((i, x) for x in conv_issues)
+                        moved = above[:desc.meshes[key].lowered]
+                        converted = _lowered(converted, seam, moved)
                         converted, more = rules.budget(converted, len(desc.meshes[key].loop_vertices))
                         desc.issues.extend((i, x) for x in more)
-                        _name_rim(desc, rims, shell, key, i, check, mirrors)
+                        _name_seam(desc, rims, above, key, i)
+                        _name_rim(desc, rims, shell, key, i, check,
+                                  _rim_mirrors(desc.meshes[key], mirrors, above, _unit(offset, meters)))
                         if done or converted:
                             applied, modifiers = _split(scene, stack.modifiers, done, converted)
                         kind = MESH
@@ -1035,18 +1070,25 @@ def _light(scene, desc, unlit, params, base, node, name, meters, swatches, world
     return key
 
 
-def _emitter(scene, t, desc, meshes, values, base, node, name, meters, swatches, built, check=None):
-    """(the key in desc.meshes of mesh light base's emitter mesh on node, its key in desc.emitters), or (None, None)
-    when it has no mesh MaxDrop builds (meshes caches the reason, an issue on every node). The mesh is the mesh
-    object's base mesh in its object space with the light node's offset baked (V-Ray places it at the light's object
-    transform); the description's issues are named on the first node."""
+def _emitter(scene, t, desc, meshes, values, base, node, name, meters, swatches, built, check=None, stacks=None,
+             told=None, convert=True, extrusions=None):
+    """(the key in desc.meshes of mesh light base's emitter mesh on node, its key in desc.emitters, the converted
+    modifiers of its mesh object as on node (ModifierDescriptions, budgeted)), or (None, None, ()) when it has no mesh
+    MaxDrop builds (meshes caches the reason, an issue on every node). The mesh is the mesh object's mesh below its
+    modifiers (_emitter_mesh) in its object space with the light node's offset baked (V-Ray places it at the light's
+    object transform); the modifiers above it are converted with that offset (_converted: told and convert as there;
+    their issues as a mesh node's), a converted smoother that separates by smoothing groups creasing the mesh's sharp
+    edges (md.creases, as _mapped_mesh does: the shape and so the area depend on it; a smoother's SMOOTH shading and a
+    Shell's rim change the shading only, which an emitter does not show). The description's issues, and the line
+    naming the modifiers neither evaluated nor converted (but those _converted names), are named on the first
+    node. extrusions: as _emitter_mesh's."""
     if base not in meshes:
-        meshes[base] = _emitter_mesh(scene, desc, values, node, meters, built, check)
+        meshes[base] = _emitter_mesh(scene, desc, values, node, meters, built, check, stacks, extrusions)
     found = meshes[base]
     if isinstance(found, str):
         desc.issues.append((node, "light: not built: %s" % found))
-        return None, None
-    mesh_base, data, area, modifiers = found
+        return None, None, ()
+    mesh_base, data, area, rest, unread = found
     offset = _offset(t, node)
     key = (EMITTER, base, mesh_base, offset)
     md = desc.meshes.get(key)
@@ -1056,34 +1098,102 @@ def _emitter(scene, t, desc, meshes, values, base, node, name, meters, swatches,
             desc.issues.append((node, "geometry: %d faces with a repeated vertex or doubled, left out"
                                 % md.dropped_faces))
     md.users.append(node)
+    converted, issues = _converted(scene, rest, meters, offset, set() if told is None else told, convert)
+    converted, more = rules.budget(converted, len(md.loop_vertices))
+    desc.issues.extend((node, x) for x in issues + more)
+    if _shading(converted) == rules.CREASE:
+        md.creases = True
     if base not in desc.emitters:
         ed, issues = lights.describe_emitter(base, name, values, swatches, area)
         desc.emitters[base] = ed
-        if modifiers:
-            issues.append(lights.EMITTER_MODIFIERS % ", ".join(modifiers))
+        done = {m.index for m in converted}
+        left = unread + tuple(_class_name(scene, m.index) or "a modifier" for m in reversed(rest)
+                              if m.index not in done and not (convert and rules.is_convertible(m)))
+        if left:
+            issues.append(lights.EMITTER_MODIFIERS % ", ".join(left))
         desc.issues.extend((node, "light: %s" % x) for x in issues)
     desc.emitters[base].users.append(node)
-    return key, base
+    return key, base, converted
 
 
-def _emitter_mesh(scene, desc, values, node, meters, built, check=None):
-    """(mesh base object index, reader MeshData, its object-space area in m^2 (the faces Blender holds), the class
-    names of the modifiers above it) of a mesh light's mesh: its own mesh object (lights.MESH_OBJECT: what V-Ray's
-    Replace mesh with light keeps), else (none, or not a mesh read here) the object of the node its mesh source
-    (parameter 34) names; or why it has none (the own object's reason when both fail)."""
+def _emitter_mesh(scene, desc, values, node, meters, built, check=None, stacks=None, extrusions=None):
+    """(mesh base object index, reader MeshData, its object-space area in m^2 (the faces Blender holds), the reader
+    Modifiers above it that render (bottom first, its UVW Maps left out: _emitter_rest), the class names of the
+    modifiers of a stack the reader cannot read (top first)) of a mesh light's mesh: its own mesh object
+    (lights.MESH_OBJECT: what V-Ray's Replace mesh with light keeps), else (none, or not a mesh read here) the object
+    of the node its mesh source (parameter 34) names; or why it has none (the own object's reason when both fail).
+    The mesh is the object's base mesh (_mesh_of), or its shape under the Extrude right above it (_emitter_shape).
+    stacks: the scene's reader.modifiers Modifiers (None: none read, every modifier named); extrusions: the scene's
+    _Extrusions, shared with the shape's own nodes (None: one of its own, counting into built)."""
+    if extrusions is None:
+        extrusions = _Extrusions(scene, desc, {}, built)
     reasons = []
     for obj in (values.get(lights.MESH_OBJECT), _source_object(scene, values.get(lights.P_MESH_SOURCE))):
         if obj is None:
             continue
-        found = _mesh_of(scene, desc, obj, node, built, check)
+        found = _emitter_shape(scene, desc, stacks, obj, node, extrusions)
+        if found is None:
+            found = _mesh_of(scene, desc, obj, node, built, check)
+            if not isinstance(found, str):
+                found = found + (None,)
         if not isinstance(found, str):
-            mesh_base, data, stack = found
+            mesh_base, data, stack, ext = found
             keep = valid_faces(data.loop_vertices, data.loop_starts, data.loop_totals)
             area = mesh_area(data.positions, data.loop_vertices, data.loop_starts, data.loop_totals, keep)
-            return mesh_base, data, area * meters * meters, tuple(_class_name(scene, m) or "a modifier"
-                                                                  for m in stack.modifiers)
+            rest, unread = _emitter_rest(scene, desc, stacks, obj, stack, ext, node)
+            return mesh_base, data, area * meters * meters, rest, unread
         reasons.append(found)
     return reasons[0] if reasons else lights.NO_MESH
+
+
+def _active(stacks, obj):
+    """The reader Modifiers of object obj that render, bottom first (ChunkError when its stack cannot be read)."""
+    return [m for m in stacks.object_stack(obj).modifiers if m.renders]
+
+
+def _emitter_rest(scene, desc, stacks, obj, stack, ext, node):
+    """(rest, unread) of _emitter_mesh: the modifiers of object obj that render above its mesh (the Extrude ext made
+    it, or None), but the UVW Maps (an emitter has no texture), bottom first, and (); or, without stacks or when the
+    reader cannot read them (an issue on node), () and the class names of reader Stack stack's modifiers."""
+    if stacks is not None:
+        try:
+            active = _active(stacks, obj)
+        except ChunkError as exc:
+            desc.issues.append((node, "modifiers: the modifier stack cannot be read: %s" % exc))
+        else:
+            return tuple(m for m in active if not uvwmap.is_uvwmap(m) and (ext is None or m.index != ext.index)), ()
+    return (), tuple(_class_name(scene, m) or "a modifier" for m in stack.modifiers)
+
+
+def _emitter_shape(scene, desc, stacks, obj, node, extrusions):
+    """(shape base object index, reader MeshData of the Extrude, reader Stack, the Extrude's reader Modifier) of object
+    obj when it is a shape whose lowest modifier that renders is an Extrude (convert.extrude), made once with the
+    shape's own nodes (_Extrusions); why it has no mesh when the shape, the Extrude or the positions cannot be made,
+    or the scene's MAX_BUILT_CORNERS are spent; None when obj is no such shape (_mesh_of then says why)."""
+    if stacks is None:
+        return None
+    try:
+        stack = scene.object_stack(obj)
+    except ChunkError:  # _mesh_of names the stack it cannot read
+        return None
+    if stack.base is None or not shapes.is_shape(scene, stack.base):
+        return None
+    try:
+        active = _active(stacks, obj)
+    except ChunkError as exc:  # whether an Extrude makes it a mesh is not known
+        return lights.EMITTER_UNREAD % ("the modifier stack cannot be read: %s" % exc)
+    if not (active and extrude.is_extrude(active[0])):
+        return None
+    ext = active[0]
+    data = extrusions.get(stack.base, ext, node, light=True)
+    if isinstance(data, tuple):
+        kind, text = data
+        return lights.EMITTER_UNREAD % ("its Extrude is not made: " + text if kind == _SPENT_KIND else text)
+    try:
+        _positions(data, None, desc.meters)  # before the light node's offset, applied in _emitter (describe)
+    except MeshError as exc:
+        return lights.EMITTER_UNREAD % exc
+    return stack.base, data, stack, ext
 
 
 def _source_object(scene, source):
@@ -1177,16 +1287,17 @@ def _primitive(scene, base, issues, node, built):
 
 
 def _shape(scene, desc, shape_of, base, node):
-    """The reader Shape of base, read once (shape_of caches it, None when refused); its issues, or the refusal,
-    are named on the first node only."""
+    """The reader Shape of base, read once (shape_of caches it, or the text of its refusal), None when refused; its
+    issues, or the refusal, are named on the first node only."""
     if base not in shape_of:
         try:
             shape_of[base] = shapes.read_shape(scene, base)
             desc.issues.extend((node, "shape: %s" % x) for x in shape_of[base].issues)
-        except shapes.ShapeError as exc:
-            shape_of[base] = None
+        except ChunkError as exc:  # ShapeError, or a block the reader refuses
+            shape_of[base] = str(exc)
             desc.issues.append((node, "shape: %s" % exc))
-    return shape_of[base]
+    sh = shape_of[base]
+    return None if isinstance(sh, str) else sh
 
 
 def _curve(scene, desc, shape_of, unbuilt, base, node, name, offset, meters):
@@ -1312,6 +1423,38 @@ def _mirrors(converted, shell):
     return tuple(out)
 
 
+def _seam(converted):
+    """(shell, above): the lowest converted Shell (a ModifierDescription) when only Mirrors are converted below it, and
+    the run of Mirrors right above it, bottom first: those lowered() may move below it. (None, ()) otherwise."""
+    for k, m in enumerate(converted):
+        if m.kind == rules.SOLIDIFY:
+            above = []
+            for x in converted[k + 1:]:
+                if x.kind != rules.MIRROR:
+                    break
+                above.append(x)
+            return m, tuple(above)
+        if m.kind != rules.MIRROR:
+            break
+    return None, ()
+
+
+def _lowered(converted, shell, moved):
+    """converted with the Mirrors moved (the first of those right above Shell shell, lowered()) just below it."""
+    if not moved:
+        return converted
+    k = converted.index(shell)
+    return converted[:k] + tuple(moved) + (shell,) + converted[k + 1 + len(moved):]
+
+
+def _unit(offset, meters):
+    """Meters per system unit of the object's space with the object offset (a reader matrix or None) baked: the mean
+    length of its axes, times meters."""
+    if offset is None:
+        return meters
+    return meters * sum(math.sqrt(sum(offset[r][c] ** 2 for c in range(3))) for r in range(3)) / 3.0
+
+
 def _reflection(mirror):
     """The 4x4 matrix (numpy, Blender's columns) that mirrors a point of the object's space as Mirror
     ModifierDescription mirror does: F S inverse(F), F the mirror object's matrix (the identity without one), S the
@@ -1373,16 +1516,84 @@ def _mirrored(md, mirrors, check=None):
     for m in mirrors:
         if check is not None:
             check()
-        n = len(p)
-        r = _reflection(m)
-        w = welded(p, m)
-        index = numpy.where(w, numpy.arange(n), n + numpy.arange(n))
-        copy = index[lv[_reversed_loops(starts, totals)]]
-        p = numpy.concatenate((p, p @ r[:3, :3].T + r[:3, 3]))
-        starts = numpy.concatenate((starts, starts + len(lv)))
-        lv = numpy.concatenate((lv, copy))
-        totals = numpy.concatenate((totals, totals))
+        p, lv, starts, totals = _mirror_once(p, lv, starts, totals, m)
     return p, lv, starts, totals
+
+
+def _mirror_once(p, lv, starts, totals, m):
+    """_mirrored's step: the mesh (float64 positions, int64 loop arrays) and its copy under Mirror m."""
+    import numpy
+    n = len(p)
+    r = _reflection(m)
+    index = numpy.where(welded(p, m), numpy.arange(n), n + numpy.arange(n))
+    copy = index[lv[_reversed_loops(starts, totals)]]
+    return (numpy.concatenate((p, p @ r[:3, :3].T + r[:3, 3])), numpy.concatenate((lv, copy)),
+            numpy.concatenate((starts, starts + len(lv))), numpy.concatenate((totals, totals)))
+
+
+def _face_normals(p, lv, starts, totals, faces):
+    """The unit normals of the faces (bool (F,)) of a mesh (numpy arrays), float64 (k, 3): each face's area vector, a
+    fan of cross products from its first vertex; a face of no area gets (0, 0, 0)."""
+    import numpy
+    face_of = numpy.repeat(numpy.arange(len(starts)), totals)
+    following = numpy.arange(1, len(lv) + 1)
+    following[starts + totals - 1] = starts
+    loops = numpy.flatnonzero(faces[face_of])
+    first = numpy.zeros(int(faces.sum()), dtype=numpy.int64)
+    numpy.cumsum(totals[faces][:-1], out=first[1:])
+    origin = p[lv[starts[face_of[loops]]]]  # each face's first vertex: the cross products stay small
+    n = numpy.add.reduceat(numpy.cross(p[lv[loops]] - origin, p[lv[following[loops]]] - origin), first, axis=0)
+    length = numpy.sqrt(numpy.einsum("ij,ij->i", n, n))
+    return n / numpy.where(length > 0, length, 1.0)[:, None]
+
+
+def lowered(md, below, above, unit, check=None):
+    """(moved, issue) for a Shell above the Mirrors below and below the Mirrors above (_seam), on MeshDescription md
+    (meters; unit meters per system unit, _unit): how many of above, bottom first, Blender's Mirror makes as 3ds Max
+    2020's Symmetry does from below the Solidify, and why the next one is not moved when it may leave a rim on its
+    plane (None otherwise). Above a Shell, 3ds Max's slice drops the rim faces on its plane (within PLANE_TOLERANCE,
+    at most BISECT_DISTANCE) and the weld shuts the cut; Blender's bisect keeps them. On the mesh with its copies
+    under the Mirrors below and those moved (_mirrored), a Mirror whose plane holds no open edge (both ends on it)
+    ends the run; one that slices and welds those ends, every face at them square to the plane (NORMAL_TOLERANCE: the
+    rim then lies on the plane), is moved; another ends it with SEAM_STAYS. Only the open edges on the plane decide:
+    others within the weld threshold of it are welded too once the Mirror is moved, where 3ds Max keeps their rim.
+    The mesh with its copies tested is at most MAX_MIRRORED_CORNERS face corners (past it: SEAM_UNTESTED). check()
+    between the Mirrors."""
+    import numpy
+    if not above:
+        return 0, None
+    if len(md.loop_vertices) << len(below) > MAX_MIRRORED_CORNERS:
+        return 0, SEAM_UNTESTED
+    p, lv, starts, totals = _mirrored(md, below, check)
+    tolerance = 2.0 * min(PLANE_TOLERANCE * unit, BISECT_DISTANCE)  # |p - R p|, twice the distance to the plane
+    for k, m in enumerate(above):
+        if check is not None:
+            check()
+        edges = open_edges(lv, starts, totals)
+        r = _reflection(m)
+        d = p - (p @ r[:3, :3].T + r[:3, 3])
+        on = numpy.einsum("ij,ij->i", d, d) <= tolerance * tolerance
+        edges = edges[on[edges[:, 0]] & on[edges[:, 1]]]
+        if not len(edges):
+            return k, None
+        ends = numpy.unique(edges)
+        settings = dict(m.settings)
+        square = any(settings["use_bisect_axis"]) and welded(p[ends], m).all()
+        if square:
+            at = numpy.zeros(len(p), dtype=bool)
+            at[ends] = True
+            faces = numpy.zeros(len(starts), dtype=bool)
+            faces[numpy.repeat(numpy.arange(len(starts)), totals)[at[lv]]] = True
+            n = _face_normals(p, lv, starts, totals, faces)
+            tilt = n - n @ r[:3, :3].T  # twice the normal's part along the axis
+            square = bool((numpy.einsum("ij,ij->i", tilt, tilt) <= 4.0 * NORMAL_TOLERANCE ** 2).all())
+        if not square:
+            return k, SEAM_STAYS
+        if k + 1 < len(above):
+            if 2 * len(lv) > MAX_MIRRORED_CORNERS:
+                return k + 1, SEAM_UNTESTED
+            p, lv, starts, totals = _mirror_once(p, lv, starts, totals, m)
+    return len(above), None
 
 
 def rim_issues(md, rim, check=None, mirrors=()):
@@ -1424,6 +1635,31 @@ def _name_rim(desc, rims, shell, key, node, check=None, mirrors=()):
                        for x in rim_issues(md, shell.rim, _large(md, check), mirrors))
 
 
+def _rim_mirrors(md, mirrors, above, unit):
+    """The Mirrors (ModifierDescriptions) the corners of the rim on MeshDescription md are counted with (rim_issues):
+    mirrors (below the Shell) and those of above lowered() moves; when the next one leaves a rim on its plane
+    (md.seam_issue SEAM_STAYS) and slices, that one too, welding what lies on its plane (3ds Max's slice drops the
+    rim there: no corner; without the slice 3ds Max keeps it, corners and all)."""
+    out = tuple(mirrors) + tuple(above[:md.lowered])
+    if md.seam_issue == SEAM_STAYS and any(dict(above[md.lowered].settings)["use_bisect_axis"]):
+        m = above[md.lowered]
+        weld = (("use_mirror_merge", True), ("merge_threshold", 2.0 * PLANE_TOLERANCE * unit * (1.0 + 1e-6)))
+        out += (m._replace(settings=tuple(x for x in m.settings if x[0] not in dict(weld)) + weld),)
+    return out
+
+
+def _name_seam(desc, rims, above, key, node):
+    """The issue of the Mirror of above (_seam) that may leave a rim on its plane on mesh key (md.seam_issue), on
+    node: once per Mirror and mesh."""
+    md = desc.meshes[key]
+    if md.seam_issue is None:
+        return
+    m = above[md.lowered]
+    if ("seam", m.index, key) not in rims:
+        rims.add(("seam", m.index, key))
+        desc.issues.append((node, "modifiers: %s: %s" % (m.class_name or "Symmetry", md.seam_issue)))
+
+
 def _large(md, check):
     """check for the passes over md when it has more than reader.geometry.CHECK_EVERY face corners, else None (the
     call counts of a small mesh stay once per node, as in mesh_description)."""
@@ -1463,13 +1699,16 @@ def _mapping(scene, mapped, m, issues, node):
 
 
 def _mapped_mesh(scene, desc, mapped, key, data, maps, node, name, offset, meters, shading=None, check=None,
-                 rim=False, mirrors=(), ranges=None, refusal="geometry: not built"):
+                 rim=False, mirrors=(), ranges=None, refusal="geometry: not built", above=()):
     """(the key in desc.meshes of reader MeshData data under the UVW Maps maps, the maps applied), made on first use:
     key extended by (modifier index, context matrix) per UVW Map evaluated, then by ("shading", shading) when a
     converted smoother changes the shading (SMOOTH: no sharp edge or flat face; CREASE: the sharp edges creased),
     then by ("rim", True) when a converted Shell's rim is hardened (_rim): the open edges join the sharp ones. Above
     the Mirrors mirrors (_mirrors), ("rim", their settings and mirror matrices) instead, and the open edges they
-    weld shut stay smooth (_rim_edges): marked sharp, the weld would make them a hard seam. check goes to
+    weld shut stay smooth (_rim_edges): marked sharp, the weld would make them a hard seam. With Mirrors above right
+    above the Shell (_seam; mirrors then those below it), ("seam", the settings and matrices of mirrors, those of
+    above) before the shading entry; md.lowered and md.seam_issue say which of them go below the Shell (lowered()),
+    and the rim is that of mirrors and those. check goes to
     mesh_description. (None, ()) when its positions do not fit single precision (MeshError: an issue), found before
     any UVW Map is read (the maps, the shading and the rim leave the positions as they are); ranges caches per key
     as given whether they fit, a refusal (its issue starts with refusal) then named on the first node only."""
@@ -1497,6 +1736,9 @@ def _mapped_mesh(scene, desc, mapped, key, data, maps, node, name, offset, meter
             continue
         usable.append((m, found))
     key = key + tuple((m.index, m.context.tm) for m, _found in usable)
+    if above:
+        key = key + (("seam", tuple((m.settings, m.mirror) for m in mirrors),
+                      tuple((m.settings, m.mirror) for m in above)),)
     if shading is not None:
         key = key + (("shading", shading),)
     if rim:
@@ -1515,8 +1757,11 @@ def _mapped_mesh(scene, desc, mapped, key, data, maps, node, name, offset, meter
         if shading == rules.SMOOTH:
             md.sharp_faces[:] = False
             md.sharp_edges = md.sharp_edges[:0]
+        if above:
+            md.lowered, md.seam_issue = lowered(md, mirrors, above, _unit(offset, meters), _large(md, check))
         if rim:
-            md.sharp_edges = _merged_edges(md.sharp_edges, _rim_edges(md, mirrors, _large(md, check)))
+            md.sharp_edges = _merged_edges(md.sharp_edges, _rim_edges(md, mirrors + tuple(above[:md.lowered]),
+                                                                      _large(md, check)))
         md.creases = shading == rules.CREASE
         if md.dropped_faces:
             desc.issues.append((node, "geometry: %d faces with a repeated vertex or doubled, left out"
@@ -1533,34 +1778,96 @@ def _name_zeroed(desc, md, node):
         desc.issues.append((node, "geometry: %d UV coordinates that are not numbers set to 0" % md.zeroed_uvs))
 
 
-def _extruded(scene, desc, shape_of, extruded, mapped, base, ext, maps, node, name, offset, meters, built,
-              shading=None, check=None, rim=False, mirrors=(), ranges=None):
+def _extruded(scene, desc, extrusions, mapped, base, ext, maps, node, name, offset, meters, shading=None, check=None,
+              rim=False, mirrors=(), ranges=None, above=()):
     """(the key in desc.meshes of shape base under the Extrude ext and the UVW Maps maps, the maps applied), made on
     first use; (None, ()) when the shape or the Extrude cannot be read or the scene's MAX_BUILT_CORNERS are spent (an
-    issue, once per base object and Extrude), or when its positions do not fit single precision (_mapped_mesh, which
-    gets ranges; the shape is then drawn as a curve). extruded caches the MeshData per base object, built counts the
-    face corners made."""
-    cache = extruded.setdefault(base, {})
-    if ext.index not in cache:
-        cache[ext.index] = None
-        sh = _shape(scene, desc, shape_of, base, node)
-        if sh is not None and built[0] >= MAX_BUILT_CORNERS:
-            desc.issues.append((node, "extrude: not made: " + _SPENT % MAX_BUILT_CORNERS))
-        elif sh is not None:
-            try:
-                params, issues = extrude.read_params(scene, ext)
-                data, more = extrude.extrude(sh, params)
-                cache[ext.index] = data
-                built[0] += len(data.loop_vertices)
-                desc.issues.extend((node, "extrude: %s" % x) for x in issues + more)
-            except extrude.ExtrudeError as exc:
-                desc.issues.append((node, "extrude: %s" % exc))
-    data = cache[ext.index]
-    if data is None:
+    issue, once per base object and Extrude: _Extrusions), or when its positions do not fit single precision
+    (_mapped_mesh, which gets ranges; the shape is then drawn as a curve)."""
+    data = extrusions.get(base, ext, node)
+    if isinstance(data, tuple):
+        kind, text = data
+        if kind != _SHAPE_KIND and extrusions.tell(base, ext):  # a refused shape: _shape named it
+            desc.issues.append((node, "extrude: " + ("not made: " + text if kind == _SPENT_KIND else text)))
         return None, ()
     offset = None if offset == controllers.IDENTITY else offset
     return _mapped_mesh(scene, desc, mapped, (base, offset, ext.index), data, maps, node, name, offset, meters,
-                        shading, check, rim, mirrors, ranges, "extrude: not made")
+                        shading, check, rim, mirrors, ranges, "extrude: not made", above)
+
+
+_SHAPE_KIND, _SPENT_KIND, _EXTRUDE_KIND = "shape", "spent", "extrude"  # why _Extrusions did not make one
+_DROPPED = "dropped"  # an extrusion made, named and counted, whose MeshData is gone
+
+
+class _Extrusions:
+    """The extrusions of one scene's shapes, one per (shape base object, Extrude modifier index), shared by the shape's
+    own nodes (_extruded) and the mesh lights that pick it (_emitter_shape): made, its shape and Extrude issues named
+    (on the node that makes it) and its face corners counted against MAX_BUILT_CORNERS once (a refused adaptive
+    Extrude's ExtrudeError.spent too, once for both paths). drop() lets the MeshData go once no node needs it; a mesh
+    light after that gets the same mesh made again, naming and counting nothing. Mesh lights that pick one shape
+    share its count as nodes of the shape at different offsets do (each still gets a mesh of its own in desc.meshes).
+    A shape a mesh light reads first and the reader refuses is not kept in shape_of: the shape's own node reads it
+    again and names the refusal (_shape), where a user looks for it. shape_of: the scene's reader Shapes (_shape);
+    built: [face corners made so far]."""
+
+    def __init__(self, scene, desc, shape_of, built):
+        self.scene, self.desc, self.shape_of, self.built = scene, desc, shape_of, built
+        self.made = {}  # base -> {Extrude index: MeshData, _DROPPED or (kind, text) why it is not made}
+        self.told = set()  # (base, Extrude index) whose refusal a shape's node named
+
+    def get(self, base, ext, node, light=False):
+        """The reader MeshData of shape base under the Extrude ext (a reader Modifier) for node (light: a mesh light's),
+        or (kind, text) why it is not made: _SHAPE_KIND (the shape is refused; text its reason), _SPENT_KIND
+        (MAX_BUILT_CORNERS; text says so) or _EXTRUDE_KIND (the Extrude cannot be read or made)."""
+        cache = self.made.setdefault(base, {})
+        found = cache.get(ext.index)
+        if found is None:
+            found = cache[ext.index] = self._make(base, ext, node, light)
+        elif found is _DROPPED:
+            try:
+                found, _issues = extrude.extrude(self.shape_of[base], extrude.read_params(self.scene, ext)[0])
+            except ChunkError as exc:  # it did not fail the first time; a refusal all the same
+                found = (_EXTRUDE_KIND, str(exc))
+        return found
+
+    def _make(self, base, ext, node, light):
+        if light and base not in self.shape_of:
+            try:
+                sh = shapes.read_shape(self.scene, base)
+            except ChunkError as exc:  # not kept: the shape's own node reads it again and names it
+                return _SHAPE_KIND, str(exc)
+            self.shape_of[base] = sh
+            self.desc.issues.extend((node, "shape: %s" % x) for x in sh.issues)
+        else:
+            sh = _shape(self.scene, self.desc, self.shape_of, base, node)
+        if sh is None:
+            return _SHAPE_KIND, self.shape_of[base]
+        if self.built[0] >= MAX_BUILT_CORNERS:
+            return _SPENT_KIND, _SPENT % MAX_BUILT_CORNERS
+        try:
+            params, issues = extrude.read_params(self.scene, ext)
+            data, more = extrude.extrude(sh, params)
+        except ChunkError as exc:  # ExtrudeError, or a block the reader refuses
+            self.built[0] += getattr(exc, "spent", 0)  # a refused adaptive Extrude made its points first
+            return _EXTRUDE_KIND, str(exc)
+        self.built[0] += len(data.loop_vertices)
+        self.desc.issues.extend((node, "extrude: %s" % x) for x in issues + more)
+        return data
+
+    def tell(self, base, ext):
+        """Whether a shape's node is the first to meet the refusal of base under ext (it names it then)."""
+        key = (base, ext.index)
+        if key in self.told:
+            return False
+        self.told.add(key)
+        return True
+
+    def drop(self, base):
+        """The MeshData of base's extrusions let go; what they were (made, or why not) stays known."""
+        cache = self.made.get(base, {})
+        for index, found in cache.items():
+            if not isinstance(found, tuple):
+                cache[index] = _DROPPED
 
 
 def _layer(scene, i, layers, issues, node):

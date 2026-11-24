@@ -18,15 +18,17 @@ whose 0x0120 names the Extrude class (reader.realworld; another class's entry is
 Interpolation (3ds Max's, fitted to its own counts): each segment gets steps points between its knots; with
 optimize a straight segment (segment type line, or a curve whose points at t 0.4 and 0.6 turn the path from knot to
 knot by at most 2 degrees) or one back to the same spot gets none;
-adaptive gives a straight segment none and a curved one 2^d - 1, d the smallest depth up to 5 at which every piece
-turns by at most 2 degrees (the angle between the chords of its two halves). Without optimize even a straight segment
+adaptive gives a straight segment none and splits a curved one at its middle, again and again, each piece while it
+fails the same test and is wider than 1/2048 of the segment: a point at every split (3ds Max computes in float32, which
+next to a cusp or far from the origin splits pieces this double test keeps). Without optimize even a straight segment
 gets its steps.
 
 The sides join segments + 1 copies of each polyline along the object's Z, one per level, amount * level / segments
-up; a closed polyline also gets a cap at level 0 (Cap Start) and at the last level (Cap End). Closed polylines nest
-even-odd: one inside an even number of others is a solid, inside an odd number a hole of its innermost container.
+up; a closed polyline also gets a cap at the bottom (Cap Start: level 0, downwards the last level) and at the top
+(Cap End: the last level, downwards level 0). Closed polylines nest even-odd: one inside an even number of others is
+a solid, inside an odd number a hole of its innermost container.
 A closed polyline with two edges that do not follow each other and meet (cross, touch or run over each other, on XY,
-without a tolerance) or that lost a zero-length segment between straight edges gets no cap and is left out of the
+without a tolerance) or that lost a zero-length segment after a straight edge gets no cap and is left out of the
 nesting (no hole, no container, not turned), as 3ds Max 2020 does. Every solid is turned counter-clockwise and every hole
 clockwise seen from +Z (a turned polyline starts at its last point) before the sides are made, and a negative amount
 reverses the sides, so the normals point out whatever way the splines run; an open polyline keeps its own direction
@@ -37,14 +39,14 @@ per axis, more for a small hole (floor(0.95 x size / half the hole's extent), at
 the box plus a thousandth of a division; the cells that lie wholly inside the solid are quads and the band between
 them and the outline is ear-clipped like a cap with holes (a cap of n outline points, k grid points and h holes:
 n + 2k + 2h - 2 triangles, as 3ds Max). The grid points lie at z 0 and the levels' heights whatever the shape's z,
-as 3ds Max puts them; a solid without a whole cell gets the morph cap. Downwards the caps are turned out only when
-both are on: a lone cap faces as upwards, into the solid, as 3ds Max makes it. The cap facing +Z gets material ID 1,
-the one facing -Z ID 2, the sides ID 3 (zero-based here: 0, 1, 2) when Generate Material IDs is on, else every face
-ID 1; with Use Shape IDs too each side face takes the material ID of the spline segment it comes from (the caps keep
-1 and 2). Smooth gives the sides smoothing groups that change only at a corner or Bezier corner knot or at a Bezier
-knot with a vector on its point (a pie Arc's corners), the caps group 16; without it the sides have none. Mapping:
-the sides' U runs along each polyline from its first point (0 to 1, or its length with Real-World Map Size), V up
-the levels (0 to 1, or the height); the caps map the shape's XY box (0 to 1, or its size).
+as 3ds Max puts them; a solid without a whole cell gets the morph cap. Every cap faces out, a lone one too. The cap
+facing +Z gets material ID 1, the one facing -Z ID 2, the sides ID 3 (zero-based here: 0, 1, 2) when Generate
+Material IDs is on, else every face ID 1; with Use Shape IDs too each side face takes the material ID of the spline
+segment it comes from (the caps keep 1 and 2). Smooth gives the sides smoothing groups that change only at a
+corner or Bezier corner knot or at a Bezier knot with a vector on its point (a pie Arc's corners), the caps group 16;
+without it the sides have none. Mapping: the sides' U runs along each polyline from its first point (0 to 1, or its
+length with Real-World Map Size), V up the levels (0 to 1, or times the amount), downwards from the far level (1 at
+the shape, or the amount there); the caps map the shape's XY box (0 to 1, or its size).
 
 The file comes from anywhere: a parameter that is animated or no number raises ExtrudeError; segments are clamped
 to 1 .. MAX_SEGMENTS; a mesh past MAX_VERTICES raises ExtrudeError; a holed cap past MAX_CAP_POINTS or one that
@@ -71,11 +73,11 @@ OUTPUT_PATCH, OUTPUT_MESH, OUTPUT_NURBS = 0, 1, 2
 SLOT_PARAMS = 0
 
 ADAPTIVE_ANGLE = math.radians(2.0)
-ADAPTIVE_DEPTH = 5
+ADAPTIVE_DEPTH = 11  # a piece of 1/2048 of its segment is never split: at most 2047 steps a segment
 TOP_ID, BOTTOM_ID, SIDE_ID = 0, 1, 2  # zero-based: 3ds Max shows 1, 2, 3
 CAP_GROUP = 1 << 4
 MAX_SEGMENTS = 10000
-MAX_VERTICES = 1 << 21  # about 2 million: about a second and 500 MB at most
+MAX_VERTICES = 1 << 21  # about 2 million: about a second and 500 MB at most (Adaptive's points: several seconds)
 MAX_CAP_POINTS = 5000  # a holed cap is ear-clipped in Python: quadratic
 MAX_CLIP_STEPS = 1 << 25  # the holed caps of one mesh: a 5000-point cap takes up to about 8 million, 3 s
 MAX_LOOPS = 4000  # closed polylines nested against each other: quadratic
@@ -91,7 +93,12 @@ STRAIGHT_AT = (0.4, 0.6)  # where _straight looks at the curve
 
 
 class ExtrudeError(ChunkError):
-    """An Extrude that cannot be evaluated; the shape stays a curve."""
+    """An Extrude that cannot be evaluated; the shape stays a curve. spent: the face corners the work done before
+    the refusal stands for, charged against the scene's budget (convert.scene.MAX_BUILT_CORNERS)."""
+
+    def __init__(self, message, spent=0):
+        super().__init__(message)
+        self.spent = spent
 
 
 class CapError(ValueError):
@@ -109,8 +116,8 @@ DEFAULT = Params(0.0, 1, True, True, CAP_MORPH, OUTPUT_MESH, False, True, False,
 class Polyline(collections.namedtuple("Polyline", "points hard closed ids doubled")):
     """A spline as points (x, y, z); hard[k]: point k is a knot where the sides' smoothing changes (_hard);
     ids[k]: the zero-based material ID of the segment the column from point k belongs to (Use Shape IDs); doubled:
-    a closed spline that lost a zero-length segment between two straight edges (3ds Max keeps both points and finds
-    the spline touching itself there)."""
+    a closed spline that lost a zero-length segment after a straight edge, with or without Optimize
+    (3ds Max keeps both points and finds the spline touching itself there)."""
     __slots__ = ()
 
 
@@ -183,6 +190,15 @@ def _turn(a, b):
     return math.acos(max(-1.0, min(1.0, c)))
 
 
+def _bent(p0, c1, c2, p3, a, b, pa, pb):
+    """Whether the piece [a, b] of the curve, from pa to pb, fails _straight's test."""
+    for f in STRAIGHT_AT:
+        s = _bezier(p0, c1, c2, p3, a + f * (b - a))
+        if _turn(_sub(s, pa), _sub(pb, s)) > ADAPTIVE_ANGLE:
+            return True
+    return False
+
+
 def _straight(p0, c1, c2, p3):
     """Whether 3ds Max's Optimize and Adaptive call a curve segment straight: at t 0.4 and at 0.6 the curve's point S
     turns the path p0 -> S -> p3 by at most ADAPTIVE_ANGLE (3ds Max 2020, maxdrop-em3.142). A vector a little off the
@@ -190,21 +206,28 @@ def _straight(p0, c1, c2, p3):
     on the chord's line fail once S lies past an end (the curve folds back)."""
     if p0 == p3:  # S comes back off the point by rounding, turning 180 degrees: only vectors on it are straight
         return c1 == p0 and c2 == p3
-    for t in STRAIGHT_AT:
-        s = _bezier(p0, c1, c2, p3, t)
-        if _turn(_sub(s, p0), _sub(p3, s)) > ADAPTIVE_ANGLE:
-            return False
-    return True
+    return not _bent(p0, c1, c2, p3, 0.0, 1.0, p0, p3)
 
 
-def _adaptive_steps(p0, c1, c2, p3):
-    for depth in range(ADAPTIVE_DEPTH):
-        n = 1 << depth
-        pts = [_bezier(p0, c1, c2, p3, k / n) for k in range(n + 1)]
-        if all(_turn(_sub(m, pts[k]), _sub(pts[k + 1], m)) <= ADAPTIVE_ANGLE
-               for k, m in enumerate(_bezier(p0, c1, c2, p3, (k + 0.5) / n) for k in range(n))):
-            return n - 1
-    return (1 << ADAPTIVE_DEPTH) - 1
+def _adaptive(p0, c1, c2, p3, room):
+    """[(t, point)] of Adaptive's steps on a curved segment, in order: 3ds Max 2020 splits it at its middle and each
+    piece again while the piece fails the straight test and is wider than 2^-ADAPTIVE_DEPTH (maxdrop-6n0.6.11). The
+    whole segment is split without a test (it failed it). Stops once it has more than room steps."""
+    out = []
+    todo = [(0.0, 1.0, p0, p3, 0)]  # a stack of pieces: (a, b, B(a), B(b), depth)
+    while todo:
+        a, b, pa, pb, depth = todo.pop()
+        if depth >= ADAPTIVE_DEPTH or (depth and not _bent(p0, c1, c2, p3, a, b, pa, pb)):
+            continue
+        m = (a + b) / 2
+        pm = _bezier(p0, c1, c2, p3, m)
+        todo.append((m, b, pm, pb, depth + 1))
+        todo.append((a, m, pa, pm, depth + 1))
+        out.append((m, pm))
+        if len(out) > room:
+            break
+    out.sort()
+    return out
 
 
 def _hard(knot):
@@ -216,70 +239,83 @@ def _hard(knot):
     return knot.kind == shapes.BEZIER and (knot.in_vec == knot.point or knot.out_vec == knot.point)
 
 
-def _polyline(spline, steps, optimize, adaptive):
+def _polyline(spline, steps, optimize, adaptive, room):
+    """The Polyline of a spline, or None when it has more than room points before equal ones are merged."""
     knots = spline.knots
     n = len(knots)
     closed = spline.closed
-    pts, hard, ids, bare = [], [], [], []  # bare[k]: no steps follow point k (a straight edge leaves it)
+    pts, hard, ids, flat = [], [], [], []  # flat[k]: the edge leaving point k is straight (a straight segment's,
+    # Optimize's test, or a curve's one chord)
     for k in range(n if closed else n - 1):
         a, b = knots[k], knots[(k + 1) % n]
         p0, p3 = a.point, b.point
         line = a.segment == shapes.LINE
         c1, c2 = (_lerp(p0, p3, 1 / 3.0), _lerp(p0, p3, 2 / 3.0)) if line else (a.out_vec, b.in_vec)
         straight = line or _straight(p0, c1, c2, p3)
+        pts.append(p0)
         if adaptive:
-            count = 0 if straight else _adaptive_steps(p0, c1, c2, p3)
+            made = [] if straight else _adaptive(p0, c1, c2, p3, room - len(pts))
+            count = len(made)
+            pts.extend(pm for _t, pm in made)
         else:  # Optimize gives a segment back to the same spot no steps whatever its vectors (3ds Max 2020)
             count = 0 if optimize and (straight or p0 == p3) else steps
-        pts.append(p0)
+            if straight and p0 == p3:  # its steps on its point exactly: the Bezier sum can round them off it
+                pts.extend([p0] * count)
+            else:
+                pts.extend(_bezier(p0, c1, c2, p3, s / (count + 1.0)) for s in range(1, count + 1))
+        if len(pts) > room:
+            return None
         hard.append(_hard(a))
-        bare.append(count == 0)
-        pts.extend(_bezier(p0, c1, c2, p3, s / (count + 1.0)) for s in range(1, count + 1))
         hard.extend([False] * count)
-        bare.extend([False] * count)
+        flat.append(straight or count == 0)  # no steps: one chord, straight whatever the curve
+        flat.extend([straight] * count)
         ids.extend([a.material] * (count + 1))
     if not closed and n:
+        if len(pts) >= room:
+            return None
         pts.append(knots[-1].point)
         hard.append(_hard(knots[-1]))
-        bare.append(True)
+        flat.append(True)
         ids.append(0)  # no column leaves the last point
-    out_p, out_h, out_i, out_b = [], [], [], []
-    doubled = at_first = False
-    for p, h, i, b in zip(pts, hard, ids, bare):  # a zero-length segment would make faces of no area
+    # A zero-length segment is merged into one point (3ds Max keeps both, with faces of no area: docs/FORMAT.md,
+    # Extrude); run[k]: point k stood for more than one.
+    out_p, out_h, out_i, out_f, run = [], [], [], [], []
+    for p, h, i, f in zip(pts, hard, ids, flat):
         if out_p and p == out_p[-1]:
-            # straight edges on both sides: 3ds Max, keeping both points, finds them touching (between curves its
-            # rounding decides, mostly a cap); on the first point the edge into it is the closing one, known below
-            if len(out_b) > 1:
-                doubled = doubled or (out_b[-2] and b)
-            else:
-                at_first = True
             out_h[-1] = out_h[-1] or h
             out_i[-1] = i  # the column that leaves this point is the one that remains
-            out_b[-1] = b
+            out_f[-1] = f
+            run[-1] = True
             continue
         out_p.append(p)
         out_h.append(h)
         out_i.append(i)
-        out_b.append(b)
-    if closed and len(out_p) > 1 and out_p[0] == out_p[-1]:
-        doubled = doubled or (len(out_b) > 2 and out_b[-2] and out_b[0])
+        out_f.append(f)
+        run.append(False)
+    if closed and len(out_p) > 1 and out_p[0] == out_p[-1]:  # the last point on the first: one run with it
         out_h[0] = out_h[0] or out_h[-1]
-        out_p.pop()
-        out_h.pop()
-        out_i.pop()
-        out_b.pop()
-    if at_first and len(out_b) > 2:
-        doubled = doubled or (out_b[-1] and out_b[0])
+        run[0] = True
+        for column in (out_p, out_h, out_i, out_f, run):
+            column.pop()
     if closed and len(out_p) < 3:
         closed = False
-    return Polyline(out_p, out_h, closed, out_i, closed and doubled)
+    # a straight edge into a run: 3ds Max, keeping its points, finds the spline touching itself there whatever the
+    # edge out and the steps; after a curve's step its rounding decides, a straight edge out or not (MaxDrop: a cap)
+    doubled = closed and any(r and out_f[k - 1] for k, r in enumerate(run))
+    return Polyline(out_p, out_h, closed, out_i, doubled)
 
 
-def polylines(shape):
-    """[Polyline] of a reader Shape, one per spline of two points or more."""
+def polylines(shape, most=None):
+    """[Polyline] of a reader Shape, one per spline of two points or more; ExtrudeError when its splines make more
+    than most points (Adaptive's are known only once made): a spline is stopped once its points before merging pass
+    what is left, and what it keeps after merging is taken from that."""
     out = []
+    room = math.inf if most is None else most
     for sp in shape.splines:
-        pl = _polyline(sp, shape.steps, shape.optimize, shape.adaptive)
+        pl = _polyline(sp, shape.steps, shape.optimize, shape.adaptive, room)
+        if pl is None:
+            raise ExtrudeError("more than %d points to interpolate" % most)
+        room -= len(pl.points)
         if len(pl.points) >= 2:
             out.append(pl)
     return out
@@ -553,7 +589,7 @@ def _crosses(numpy, xy, tests):
 
 def _crossed(numpy, lines, closed, capped, issues):
     """{j}: the closed polylines that cross, touch or run over themselves (_crosses), or lost a zero-length segment
-    between straight edges (Polyline.doubled): 3ds Max gives them no cap and leaves them out of the nesting. With
+    after a straight edge (Polyline.doubled): 3ds Max gives them no cap and leaves them out of the nesting. With
     capped, one issue counts them and one more those past MAX_CROSS_TESTS (capped unchecked)."""
     out, tests, unchecked = set(), [MAX_CROSS_TESTS], 0
     for j, xy in closed.items():
@@ -601,8 +637,9 @@ def _side_groups(hard, closed, columns, smooth):
 
 
 def _estimate(shape):
-    """The most points the polylines of shape can have: known before any is interpolated."""
-    per = (1 << ADAPTIVE_DEPTH) if shape.adaptive else shape.steps + 1
+    """The most points the polylines of shape can have, known before any is interpolated; Adaptive's steps are not
+    known (up to 2047 a segment): they are counted as they are made (polylines)."""
+    per = 1 if shape.adaptive else shape.steps + 1
     return sum(len(sp.knots) * per + 1 for sp in shape.splines)
 
 
@@ -636,9 +673,14 @@ def _sides(numpy, pl, base, first, params, side_id):
     lengths = numpy.concatenate(([0.0], numpy.cumsum(numpy.linalg.norm(nxt - p[:columns], axis=1))))
     if not params.real_world:
         lengths = lengths / lengths[-1] if lengths[-1] else numpy.zeros_like(lengths)
-    vs = numpy.arange(segs + 1, dtype=numpy.float64) / segs
+    # V 0 at the shape and 1 at the far level, but downwards 0 at the far level (z = amount), 1 at the shape;
+    # Real-World Map Size: times the signed amount, so downwards from the amount at the shape to 0 (3ds Max 2020)
+    vs = numpy.arange(segs + 1, dtype=numpy.float64)
+    if params.amount < 0:
+        vs = vs[::-1]
+    vs = vs / segs
     if params.real_world:
-        vs = vs * abs(params.amount)
+        vs = vs * params.amount
     uvw = numpy.zeros((segs + 1, row, 3), dtype=numpy.float32)
     uvw[:, :, 0] = lengths[None, :]
     uvw[:, :, 1] = vs[:, None]
@@ -914,7 +956,10 @@ def extrude(shape, params):
     most = _estimate(shape) * levels
     if most > MAX_VERTICES:  # before any point is made: a small file can ask for hundreds of millions
         raise ExtrudeError("up to %d vertices, more than %d" % (most, MAX_VERTICES))
-    lines = polylines(shape)
+    try:
+        lines = polylines(shape, MAX_VERTICES // levels)
+    except ExtrudeError:  # Adaptive's points were made before they were counted: charged like the sides they make
+        raise ExtrudeError("more than %d vertices" % MAX_VERTICES, MAX_VERTICES // levels * segs * 4) from None
     if params.amount == 0:
         issues.append("an amount of 0: a flat mesh")
     closed = {j: [(p[0], p[1]) for p in pl.points] for j, pl in enumerate(lines) if pl.closed}
@@ -942,7 +987,9 @@ def extrude(shape, params):
     for pl in lines:
         base.append(start)
         start += len(pl.points) * levels
-    caps = ([0] if params.cap_start else []) + ([segs] if params.cap_end else [])
+    # Cap Start is the bottom cap and Cap End the top one: downwards Cap Start lies at the far level (3ds Max 2020)
+    bottom, top = (0, segs) if params.amount >= 0 else (segs, 0)
+    caps = ([bottom] if params.cap_start else []) + ([top] if params.cap_end else [])
     cap_faces, grid = {}, []
     if solids and caps:
         cap_faces, grid = _caps(closed, solids, issues, params.cap_type == CAP_GRID, numpy,
@@ -981,8 +1028,7 @@ def extrude(shape, params):
         x0, y0 = min(xs), min(ys)
         w, h = max(xs) - x0, max(ys) - y0
     for slot, level in enumerate(caps):
-        # this cap faces +Z; downwards 3ds Max turns the caps out only when both are on: a lone cap faces as upwards
-        up = (level == segs) == (params.amount >= 0 or not (params.cap_start and params.cap_end))
+        up = level == top
         mat = (TOP_ID if up else BOTTOM_ID) if params.material_ids else 0
         index = {}
         first = start + slot * len(grid)

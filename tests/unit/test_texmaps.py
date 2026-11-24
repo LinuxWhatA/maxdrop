@@ -41,6 +41,8 @@ classids = importlib.import_module(_PKG + ".reader.classids")
 pblock = importlib.import_module(_PKG + ".reader.pblock")
 reader_materials = importlib.import_module(_PKG + ".reader.materials")
 reader_scene = importlib.import_module(_PKG + ".reader.scene")
+controllers_mod = importlib.import_module(_PKG + ".reader.controllers")
+params_mod = importlib.import_module(_PKG + ".convert.params")
 
 Ref = pblock.Reference
 DEG = math.pi / 180.0
@@ -93,6 +95,13 @@ class Checks(unittest.TestCase):
         else:
             self.assertAlmostEqual(ours, theirs, delta=TOLERANCE, msg=what)
 
+    def held(self, root, what=""):
+        """The graph under a gamma-off color root's Decode: the map computed on the values the renderer holds
+        (maxdrop-em3.158, maxdrop-6n0.6.18)."""
+        self.assertIsInstance(root, tx.Decode, what)
+        self.assertFalse(root.mean, what)
+        return root.input
+
     def image(self, node, name, colorspace, tiling=(1.0, 1.0), offset=(0.0, 0.0), w_angle=0.0, channel=1):
         self.assertIsInstance(node, tx.Image, name)
         self.assertEqual(node.name, name)
@@ -120,19 +129,20 @@ class VRayMaps(Checks):
         g = ir.textures["base_color"]
         self.assertEqual(g.kind, tx.COLOR)
         self.assertFalse(g.approximated)
-        self.assertIsInstance(g.root, tx.Mix)
-        self.close(g.root.factor, 0.91)
-        self.close(g.root.a.value, tuple(_lin(c) for c in (180, 120, 60)))
-        self.image(g.root.b, "fixture_diffuse.png", tx.SRGB, (2.0, 2.5), (0.1, 0.15), 15.0)
-        self.close(g.root.b.mapping.blur, 1.1)
-        self.assertIsNone(g.root.b.crop)
-        self.assertIsNone(g.root.b.gamma)
+        held = self.held(g.root, "gamma off: the slot's amount mixes the stored values (maxdrop-6n0.6.18)")
+        self.assertIsInstance(held, tx.Mix)
+        self.close(held.factor, 0.91)
+        self.close(held.a.value, tuple(c / 255 for c in (180, 120, 60)))
+        self.image(held.b, "fixture_diffuse.png", tx.NON_COLOR, (2.0, 2.5), (0.1, 0.15), 15.0)
+        self.close(held.b.mapping.blur, 1.1)
+        self.assertIsNone(held.b.crop)
+        self.assertIsNone(held.b.gamma)
 
     def test_reflection_is_the_specular(self):
-        g = self.f.irs["FixtureVRayMaps"].textures["specular"]
-        self.close(g.root.factor, 0.82)
-        self.close(g.root.a.value, (0.0, 0.0, 0.0))  # the float input's value, as RGB in a color graph
-        self.image(g.root.b, "fixture_reflect.png", tx.SRGB, (3.0, 3.5), (0.2, 0.25), 25.0)
+        held = self.held(self.f.irs["FixtureVRayMaps"].textures["specular"].root)
+        self.close(held.factor, 0.82)
+        self.close(held.a.value, (0.0, 0.0, 0.0))  # the float input's value, as RGB in a color graph
+        self.image(held.b, "fixture_reflect.png", tx.NON_COLOR, (3.0, 3.5), (0.2, 0.25), 25.0)
 
     def test_glossiness_is_inverted(self):
         g = self.f.irs["FixtureVRayMaps"].textures["roughness"]
@@ -199,13 +209,14 @@ class TexmapRules(Checks):
 
     def test_peeled_to_the_bitmap_below(self):
         t = self.f.irs["FixtureTexPeel"].textures
-        fo = t["base_color"].root  # Falloff, perpendicular / parallel: map 1 to color 2
+        fo = self.held(t["base_color"].root)  # Falloff, perpendicular / parallel: map 1 to color 2, as held
         self.assertIsInstance(fo, tx.Mix)
         self.assertEqual(fo.mask, tx.Facing(tx.PERPENDICULAR, 1.6))
-        self.image(fo.a, "peel_diffuse.png", tx.SRGB)
-        self.close(fo.b.value, tuple(_lin(c) for c in (10, 20, 30)))
-        self.image(t["specular"].root.b, "peel_reflect.png", tx.SRGB)  # VRayDirt, at 80 %
-        self.close(t["specular"].root.factor, 0.8)
+        self.image(fo.a, "peel_diffuse.png", tx.NON_COLOR)
+        self.close(fo.b.value, tuple(c / 255 for c in (10, 20, 30)))
+        spec = self.held(t["specular"].root)  # VRayDirt, at 80 %: the slot's amount on the held values
+        self.image(spec.b, "peel_reflect.png", tx.NON_COLOR)
+        self.close(spec.factor, 0.8)
         self.assertIsInstance(t["roughness"].root, tx.Invert)  # Output, a glossiness map
         self.image(t["roughness"].root.input, "peel_gloss.png", tx.NON_COLOR)
         self.assertIsInstance(t["bump"].root, tx.Bump)  # VRayColor2Bump: a height map
@@ -225,7 +236,7 @@ class TexmapRules(Checks):
         t = self.f.irs["FixtureTexPeel"].textures
         g = t["metallic"].root  # a data input: the mean of each swatch as stored, the gamma is off (em3.122)
         self.close((g.a.value, g.b.value), ((200 + 100 + 50) / 3.0 / 255.0, 1.0))
-        g = t["emission_color"].root  # map1 switched off: color1
+        g = self.held(t["emission_color"].root)  # map1 switched off: color1
         self.close(g.a.value, (1.0, 0.0, 0.0))
         self.close(g.b.value, (1.0, 1.0, 1.0))
         self.assertIsInstance(g.mask, tx.Facing)
@@ -244,7 +255,7 @@ class TexmapRules(Checks):
         self.assertIsInstance(mul, tx.Multiply)
         self.image(mul.a, "keep_mul.png", tx.SRGB)
         self.close(mul.b.value, tuple(_lin(c) for c in (200, 150, 100)))
-        cc = t["emission_color"].root
+        cc = self.held(t["emission_color"].root)  # on the held values (maxdrop-6n0.6.18)
         self.assertIsInstance(cc, tx.ColorCorrect)
         self.close(cc.hue, 30.0 / 360.0)
         self.close(cc.saturation, 1.2)
@@ -252,7 +263,7 @@ class TexmapRules(Checks):
         self.close(cc.contrast, 0.0)
         self.close(cc.gain, 1.0)
         self.close(cc.gamma, 1.2)
-        self.image(cc.input, "keep_cc.png", tx.SRGB)
+        self.image(cc.input, "keep_cc.png", tx.NON_COLOR)
         for name in ("base_color", "specular", "emission_color"):
             self.assertFalse(t[name].approximated, name)
 
@@ -383,6 +394,9 @@ class FakeOld:
 
     def get(self, i, default=None):
         return self._values.get(i, default)
+
+    def controller(self, i):
+        return None
 
 
 class FakeBlock:
@@ -836,15 +850,17 @@ class CoronaMaps(Checks):
 
     def test_base_bitmap_placement(self):
         g = self.f.irs["FixtureCoronaMaps"].textures["base_color"]
-        self.assertIsInstance(g.root, tx.Mix)
-        self.close(g.root.factor, 0.75)
-        self.close(g.root.a.value, tuple(_lin(c) for c in (150, 140, 130)))
-        image = g.root.b
+        held = self.held(g.root)  # the material's map amount over its color, on the held values (maxdrop-6n0.6.18)
+        self.assertIsInstance(held, tx.Mix)
+        self.close(held.factor, 0.75)
+        self.close(held.a.value, tuple(c / 255 for c in (150, 140, 130)))
+        image = held.b
         self.image(image, "fixture_c_base.png", tx.SRGB, tiling=(2.0, 3.0), offset=(0.1, 0.2), w_angle=30.0,
                    channel=2)
         self.assertEqual((image.mapping.tile, image.mapping.mirror), ((True, False), (True, False)))
         self.close(image.mapping.blur, 0.8)
-        self.assertEqual((image.gamma, image.crop, image.output, image.alpha), (None, None, None, False))
+        self.assertEqual((image.crop, image.output, image.alpha), (None, None, False))
+        self.assertIsNone(image.gamma, "gamma off: its own decode, held (maxdrop-em3.165), the Decode shows it")
         self.assertEqual((g.approximated, g.issues), (False, ()))
 
     def test_glossiness_bitmap_with_gamma_1(self):
@@ -877,17 +893,20 @@ class CoronaMaps(Checks):
 
     def test_corona_mix_with_a_mask(self):
         root = self.f.irs["FixtureCoronaMaps"].textures["emission_color"].root
+        self.assertIsInstance(root, tx.Decode)
+        root = root.input
         self.assertIsInstance(root, tx.Mix)
         self.close(root.factor, 0.4)
-        self.close(root.a.value, tuple(_lin(c) for c in (10, 20, 30)), "the bottom color")
-        self.image(root.b, "fixture_c_top.png", tx.SRGB)
-        self.image(root.mask, "fixture_c_mask.png", tx.SRGB)
+        self.close(root.a.value, tuple(c / 255.0 for c in (10, 20, 30)), "the bottom color as stored")
+        self.image(root.b, "fixture_c_top.png", tx.SRGB)  # its own decode
+        self.image(root.mask, "fixture_c_mask.png", tx.SRGB)  # a data mask: its own decode
 
     def test_legacy_slots(self):
         t = self.f.irs["FixtureCoronaLegacyMaps"].textures
-        self.assertIsInstance(t["base_color"].root, tx.Multiply)
-        self.image(t["base_color"].root.a, "fixture_c_mul_bottom.png", tx.SRGB)
-        self.image(t["base_color"].root.b, "fixture_c_mul_top.png", tx.SRGB)
+        self.assertIsInstance(t["base_color"].root, tx.Decode)
+        self.assertIsInstance(t["base_color"].root.input, tx.Multiply)
+        self.image(t["base_color"].root.input.a, "fixture_c_mul_bottom.png", tx.SRGB)
+        self.image(t["base_color"].root.input.b, "fixture_c_mul_top.png", tx.SRGB)
         self.assertIsInstance(t["roughness"].root, tx.Invert)
         self.image(t["roughness"].root.input, "fixture_c_legacy_gloss.png", tx.SRGB)
         self.assertIsInstance(t["bump"].root, tx.Bump)
@@ -897,10 +916,14 @@ class CoronaMaps(Checks):
 
     def test_add_is_a_blend_in_gamma_space(self):
         g = self.f.irs["FixtureCoronaLegacyMaps"].textures["specular"]
-        self.assertIsInstance(g.root, tx.Blend)
-        self.assertEqual((g.root.op, g.root.gamma), (tx.BLEND_ADD, 2.2), "mix in sRGB: on by default")
-        self.close(g.root.a.value, (0.0, 0.0, 0.0), "the bottom color, black")
-        self.image(g.root.b, "fixture_c_add_top.png", tx.SRGB)
+        self.assertIsInstance(g.root, tx.Multiply, "levelReflect 0.5 scales the map (maxdrop-6n0.6.6)")
+        self.close(g.root.b.value, (0.5, 0.5, 0.5))
+        self.assertIsInstance(g.root.a, tx.Decode)
+        blend = g.root.a.input
+        self.assertIsInstance(blend, tx.Blend)
+        self.assertEqual((blend.op, blend.gamma), (tx.BLEND_ADD, 2.2), "mix in sRGB: on by default")
+        self.close(blend.a.value, (0.0, 0.0, 0.0), "the bottom color, black")
+        self.image(blend.b, "fixture_c_add_top.png", tx.SRGB)
         self.assertFalse(g.approximated)
         self.assertEqual(g.issues, ())
         self.assertEqual(self.f.tex.stats.peeled, collections.Counter())
@@ -911,7 +934,8 @@ class CoronaMaps(Checks):
         f = Fixture("corona_light")
         try:
             t = f.irs["FixtureCoronaLight"].textures
-            self.image(t["emission_color"].root, "fixture_c_light.png", tx.SRGB)
+            self.image(t["emission_color"].root, "fixture_c_light.png", tx.LINEAR)  # gamma off: shown decoded
+            self.close(t["emission_color"].root.gamma, tx.SRGB_TWICE)
             self.image(t["alpha"].root, "fixture_c_light_alpha.png", tx.SRGB)
             self.assertEqual(f.irs["FixtureCoronaLightPlain"].textures, {})
         finally:
@@ -919,13 +943,19 @@ class CoronaMaps(Checks):
 
 
 class CoronaMixOps(Checks):
-    """tools/fixtures/corona_mix_ops.ms (gamma off: swatches decoded from sRGB): top 200 100 50, bottom 60 120 180."""
+    """tools/fixtures/corona_mix_ops.ms: top 200 100 50, bottom 60 120 180. The gamma is off: Corona 12 computes a
+    CoronaMix on the swatches as stored, the same in both modes, and the scene shows the result decoded (a folded
+    constant decoded exactly; maxdrop-em3.165)."""
 
     @classmethod
     def setUpClass(cls):
         cls.f = Fixture("corona_mix_ops")
-        cls.top = tuple(_lin(c) for c in (200, 100, 50))
-        cls.bottom = tuple(_lin(c) for c in (60, 120, 180))
+        cls.top = tuple(c / 255.0 for c in (200, 100, 50))
+        cls.bottom = tuple(c / 255.0 for c in (60, 120, 180))
+
+    @staticmethod
+    def shown(rgb):
+        return tuple(colors.srgb_to_linear(c) for c in rgb)
 
     @classmethod
     def tearDownClass(cls):
@@ -943,22 +973,21 @@ class CoronaMixOps(Checks):
                                 ("Max", tx.BLEND_MAX, 1.0), ("Difference", tx.BLEND_DIFFERENCE, 2.2),
                                 ("AddLinear", tx.BLEND_ADD, 1.0)):
             with self.subTest(name):
-                self.close(self.root(name).value, tx.blend_value(op, self.bottom, self.top, gamma))
+                self.close(self.root(name).value, self.shown(tx.blend_value(op, self.bottom, self.top, gamma)))
 
     def test_layer_multipliers_and_offsets(self):
         root = self.root("Scaled")
-        self.assertIsInstance(root, tx.Mix)
-        self.close(root.factor, 0.75)
-        self.close(root.a.value, tuple(c * 2.0 + 0.01 for c in self.bottom), "x 2, offset -0.1")
-        self.close(root.b.value, tuple(c * 0.5 - 0.02 for c in self.top), "x 0.5, offset 0.2")
+        self.assertIsInstance(root, tx.Constant, "a Mix of constants, folded")
+        a = tuple(c * 2.0 + 0.01 for c in self.bottom)  # x 2, offset -0.1
+        b = tuple(c * 0.5 - 0.02 for c in self.top)  # x 0.5, offset 0.2
+        self.close(root.value, self.shown(tuple(x + (y - x) * 0.75 for x, y in zip(a, b))))
 
     def test_masked_subtract(self):
         root = self.root("Masked")
-        self.assertIsInstance(root, tx.Mix)
-        self.close(root.factor, 0.5)
-        self.close(root.mask.value, _lin(64), "the mask replaces the amount")
-        self.close(root.a.value, self.bottom)
-        self.close(root.b.value, tx.blend_value(tx.BLEND_SUBTRACT, self.bottom, self.top, 2.2))
+        self.assertIsInstance(root, tx.Constant, "a Mix of constants by a constant mask, folded")
+        f = 64 / 255.0  # the mask replaces the amount: its stored value, a data mask
+        sub = tx.blend_value(tx.BLEND_SUBTRACT, self.bottom, self.top, 2.2)
+        self.close(root.value, self.shown(tuple(x + (y - x) * f for x, y in zip(self.bottom, sub))))
 
     def test_temperatures(self):
         for k in (2000, 3000, 9000):
@@ -972,9 +1001,10 @@ class CoronaMixOps(Checks):
 
 
 class CoronaMixBlends(Checks):
-    """tools/fixtures/corona_mix_blends.ms: CoronaColor HDR layers (linear, no swatch decode), so the IR is compared
-    with renderMap of the saved file in 3ds Max 2020 + Corona 12 (maxdrop-em3.117, read through (v + 4) x 0.05:
-    within 3e-4; Corona's sRGB mode renders 1 as 0.998)."""
+    """tools/fixtures/corona_mix_blends.ms: CoronaColor HDR layers (no swatch decode), so the IR is compared with
+    renderMap of the saved file in 3ds Max 2020 + Corona 12 (maxdrop-em3.117, read through (v + 4) x 0.05: within
+    3e-4; Corona's sRGB mode renders 1 as 0.998): the value Corona holds, the same with the gamma on and off, which
+    the gamma-off fixture shows decoded (maxdrop-em3.165)."""
     RENDERMAP = {  # box -> renderMap of its base map
         "Screen": (0.691844, 0.651865, 0.987258), "Overlay": (0.137636, 0.383001, 0.974746),
         "ColorDodge": (0.999771, 0.999771, 0.999771), "ColorBurn": (0.00213623, 0.0665293, 0.886549),
@@ -1002,16 +1032,29 @@ class CoronaMixBlends(Checks):
             with self.subTest(name):
                 root = self.root(name)
                 self.assertIsInstance(root, tx.Constant)
-                for ours, theirs in zip(root.value, want):
-                    self.assertAlmostEqual(ours, theirs, delta=2e-3, msg=name)
+                for ours, theirs in zip(root.value, want):  # ours encoded back: the value Corona holds
+                    self.assertAlmostEqual(colors.linear_to_srgb(ours), theirs, delta=2e-3, msg=name)
+
+    def test_gamma_under_a_grey_swatch_over_a_map(self):
+        """FixtureCoronaMixGammaGrey: gamma, colorTop 128, a CoronaBitmap bottom, mix in sRGB on (maxdrop-6n0.6.40).
+        renderMap with a flat 64 / 128 / 192 PNG as the bottom, gamma off and on alike: bottom (0.04776, 0.21953,
+        0.53567), the mix (0.015595, 0.125628, 0.425696): one exponent ln(bottom) / ln(mix) = 0.7310, the top
+        swatch as stored, (128 / 255)^(1 / 2.2) (decoded it would be 0.498)."""
+        root = self.root("GammaGrey")
+        self.assertIsInstance(root, tx.Decode)
+        cc = root.input
+        self.assertIsInstance(cc, tx.ColorCorrect)
+        self.assertEqual(cc.input.name, "cmix_gamma_bottom.png")
+        self.assertTrue(cc.magnitude, "sRGB mode: the magnitude of a negative bottom")
+        for b, r in zip((0.0477607, 0.219532, 0.535668), (0.0155947, 0.125628, 0.425696)):
+            self.assertAlmostEqual(cc.gamma, math.log(b) / math.log(r), delta=1e-3)
+            self.assertAlmostEqual(b ** (1.0 / cc.gamma), r, delta=1e-4)
 
     def test_gamma_at_half_amount(self):
         root = self.root("GammaHalf")
-        self.assertIsInstance(root, tx.Mix)
-        self.close(root.factor, 0.5)
-        value = tuple(a + (b - a) * 0.5 for a, b in zip(root.a.value, root.b.value))
-        for ours, theirs in zip(value, (0.0329595, 0.342412, 0.882582)):  # renderMap
-            self.assertAlmostEqual(ours, theirs, delta=1e-3)
+        self.assertIsInstance(root, tx.Constant, "a Mix of constants, folded")
+        for ours, theirs in zip(root.value, (0.0329595, 0.342412, 0.882582)):  # renderMap, shown decoded
+            self.assertAlmostEqual(ours, colors.srgb_to_linear(theirs), delta=1e-3)
 
     def test_nothing_peeled(self):
         self.assertEqual(self.f.tex.stats.peeled, collections.Counter())
@@ -1202,22 +1245,74 @@ class CoronaSynthetic(Checks):
         root = tex.convert(mat.MapRef(1), tx.COLOR).root
         self.assertIsInstance(root, tx.Mix)
         self.assertIs(root.a, root.b.input, "the bottom, shared")
-        # a colored top over a map, a top map, a top of 0: peeled to the first bitmap, the operation named
+        # a colored top over a map, a top image map, a top of 0: peeled to the first bitmap, the operation named
+        table = assets.AssetTable([assets.AssetEntry(G1, "Bitmap", "maps\\a.png", ""),
+                                   assets.AssetEntry(G2, "Bitmap", "maps\\b.png", "")])
         for params in (dict(p208=(0.5, 0.25, 1.0)), dict(p206=Ref(3)), dict(p208=(0.0, 0.0, 0.0))):
             with self.subTest(params=params):
-                tex = _tex(_cmix(1, [2, 3], p200=7, p207=Ref(2), **params), _cbitmap(2), _cbitmap(3, G2))
+                tex = _tex(_cmix(1, [2, 3], p200=7, p207=Ref(2), **params), _cbitmap(2), _cbitmap(3, G2),
+                           table=table)
                 g = tex.convert(mat.MapRef(1), tx.COLOR)
                 self.assertEqual(g.root.name, "a.png")
                 self.assertTrue(g.approximated)
-                self.assertIn("operation gamma drawn as its first bitmap", tex.stats.issues[0][1])
+                self.assertEqual([r for _i, r in tex.stats.issues],
+                                 ["CoronaMix 'map': operation gamma drawn as its first bitmap"])
+        # a top map that converts to nothing: the lost-side rule, its other side (maxdrop-6n0.6.24: sides first)
+        tex = _tex(_cmix(1, [2, 3], p200=7, p206=Ref(3), p207=Ref(2)), _cbitmap(2), _cbitmap(3, G2))
+        g = tex.convert(mat.MapRef(1), tx.COLOR)
+        self.assertEqual((g.root.name, g.approximated), ("a.png", True))
+        self.assertTrue(any("converts to nothing" in r for _i, r in tex.stats.issues), tex.stats.issues)
         self.close(tx._gamma_value(1e6, 0.01), tx.MAX_MULTIPLIER, "held")
+
+    def test_corona_mix_gamma_on_converted_sides(self):
+        """maxdrop-6n0.6.24 (a): the gamma operation is decided on the converted sides: a top map that converts to a
+        constant (CoronaColor) is a top color, and a colored top folds per channel over a bottom map that does."""
+        grey = _ccolor(3, p50=1, p58=(0.5, 0.5, 0.5))  # HDR color: linear as stored with the gamma on
+        for srgb, want in ((1, 0.5 ** (1 / 2.2)), (0, 0.5)):
+            with self.subTest(srgb=srgb):
+                tex = _tex(_cmix(1, [2, 3], p200=7, p206=Ref(3), p207=Ref(2), p214=srgb), _cbitmap(2), grey)
+                g = tex.convert(mat.MapRef(1), tx.COLOR)
+                self.assertIsInstance(g.root, tx.ColorCorrect)
+                self.close(g.root.gamma, want)
+                self.assertEqual(g.root.input.name, "a.png")
+                self.assertEqual((g.approximated, g.issues, tex.stats.issues), (False, (), []))
+        # a colored top color over a CoronaColor bottom map: folded per channel (linear mode: bottom ^ (1 / top))
+        tex = _tex(_cmix(1, [2], p200=7, p207=Ref(2), p208=(0.5, 0.25, 1.0), p214=0),
+                   _ccolor(2, p50=1, p58=(0.05, 0.4, 0.9)))
+        root = tex.convert(mat.MapRef(1), tx.COLOR).root
+        self.assertIsInstance(root, tx.Constant)
+        self.close(root.value, (0.05 ** 2, 0.4 ** 4, 0.9))
+        # a colored CoronaColor top map over a bitmap: one exponent per channel, no node: peeled, the operation named,
+        # once
+        tex = _tex(_cmix(1, [2, 3], p200=7, p206=Ref(3), p207=Ref(2)), _cbitmap(2),
+                   _ccolor(3, p50=1, p58=(0.5, 0.25, 1.0)))
+        g = tex.convert(mat.MapRef(1), tx.COLOR)
+        self.assertEqual((g.root.name, g.approximated), ("a.png", True))
+        self.assertEqual(g.issues, ("CoronaMix 'map': operation gamma drawn as its first bitmap",))
+        self.assertEqual(tex.stats.issues, [(1, "CoronaMix 'map': operation gamma drawn as its first bitmap")])
+        self.assertEqual(tex.stats.peeled, collections.Counter({"CoronaMix": 1}))
+
+    def test_corona_mix_gamma_converts_each_layer_once(self):
+        """The layers the gamma decision converted are the ones drawn: no layer is asked for twice."""
+        for name, bottom, top, want in (
+                ("grey top over a bitmap", _cbitmap(2), (0.5, 0.5, 0.5), tx.ColorCorrect),
+                ("colored top over a constant", _ccolor(2, p50=1, p58=(0.2, 0.4, 0.6)), (0.5, 0.25, 1.0), tx.Constant)):
+            with self.subTest(name):
+                tex = _tex(_cmix(1, [2, 3], p200=7, p206=Ref(3), p207=Ref(2)), bottom, _ccolor(3, p50=1, p58=top))
+                calls, sub = collections.Counter(), tex._sub
+                tex._sub = lambda m, pid, *a, **k: (calls.update([(m.index, pid)]), sub(m, pid, *a, **k))[1]
+                self.assertIsInstance(tex.convert(mat.MapRef(1), tx.COLOR).root, want)
+                self.assertEqual({k: n for k, n in calls.items() if k[1] in (206, 207)}, {(1, 206): 1, (1, 207): 1})
 
     def test_corona_mix_negative_layers(self):
         """renderMap of probe1's P5 (maxdrop-em3.117): CoronaColor HDR layers below 0 by their offsets; in sRGB mode
         Corona raises each layer's magnitude (maxdrop-em3.161), the gamma operation's top exponent and bottom too."""
         for op, srgb, want in ((0, 1, (1.18624, 1.13619, 0.799878)), (0, 0, (0.399786, 0.0997939, 0.799878)),
                                (14, 1, (0.629587, 0.258488, 0.624094)), (20, 1, (0.288395, 0.22034, 0.799878)),
-                               (11, 0, (-0.200198, 0.249943, 0.0))):
+                               (11, 0, (-0.200198, 0.249943, 0.0)),
+                               # gamma: P5's renderMap through its CoronaColor maps (maxdrop-6n0.6.24: the top map
+                               # is a constant); the bottom's blue is 0, so the top's 1.1 (0.9 below) changes nothing
+                               (7, 1, (0.0424199, 0.0817881, 0.0))):
             with self.subTest(op=op, srgb=srgb):
                 tex = _tex(_cmix(1, [2, 3], p200=op, p214=srgb, p206=Ref(2), p207=Ref(3), p204=3.0, p205=3.0),
                            _ccolor(2, p50=1, p58=(0.8, 0.1, 1.1)), _ccolor(3, p50=1, p58=(0.2, 0.6, 0.3)))
@@ -1254,6 +1349,21 @@ class CoronaSynthetic(Checks):
         g = tex.convert(mat.MapRef(1), tx.COLOR)
         self.assertEqual(g.root.name, "a.png")
         self.assertEqual(tex.stats.unsupported, collections.Counter(), "the bottom Noise is never drawn")
+
+    def test_corona_mix_gamma_peeled_on_its_top_converts_nothing_else(self):
+        # maxdrop-6n0.6.24: the top decides first; an image top peels before the bottom and the mask are converted
+        tex = _tex(_cmix(1, [2, 3, 4], p200=7, p206=Ref(2), p207=Ref(3), p210=Ref(4)), _cbitmap(2), _noise(3),
+                   _noise(4))
+        g = tex.convert(mat.MapRef(1), tx.COLOR)
+        self.assertEqual(g.root.name, "a.png")
+        self.assertEqual(tex.stats.unsupported, collections.Counter(), "the bottom and mask Noise are never drawn")
+        self.assertEqual([r for _i, r in tex.stats.issues], ["CoronaMix 'map': operation gamma drawn as its first "
+                                                             "bitmap"])
+        # a colored constant top: the bottom decides, the mask is not converted
+        tex = _tex(_cmix(1, [2, 3], p200=7, p208=(0.5, 0.25, 1.0), p207=Ref(2), p210=Ref(3)), _cbitmap(2),
+                   _noise(3))
+        self.assertEqual(tex.convert(mat.MapRef(1), tx.COLOR).root.name, "a.png")
+        self.assertEqual(tex.stats.unsupported, collections.Counter(), "the mask Noise is never drawn")
 
     def test_corona_mix_other_operation_without_a_bitmap(self):
         tex = _tex(_cmix(1, p200=17))
@@ -1522,11 +1632,11 @@ class VRayTexmaps(Checks):
         self.close(n.input.gamma, 1.0)
 
     def test_below_a_color_correction_composite_and_mix(self):
-        cc = self.f.irs["FixtureCCComposite"].textures["base_color"].root
-        self.assertIsInstance(cc, tx.ColorCorrect)
+        cc = self.held(self.f.irs["FixtureCCComposite"].textures["base_color"].root)
+        self.assertIsInstance(cc, tx.ColorCorrect)  # gamma off: corrected and composited on the held values
         self.close(cc.brightness, 0.1)
-        self.assertIsInstance(cc.input, tx.Decode)  # gamma off: composited on the stored values (em3.158)
-        a, b = cc.input.input.layers
+        self.assertIsInstance(cc.input, tx.Composite, "one Decode, at the root (em3.158, 6n0.6.18)")
+        a, b = cc.input.layers
         self.image(a.node, "vtx_layer_a.png", tx.SRGB)  # Auto: V-Ray's own decode, the Decode shows it once more
         self.image(b.node, "vtx_layer_b.png", tx.SRGB)
         self.close((a.opacity, b.opacity), (1.0, 0.5))
@@ -1542,14 +1652,15 @@ class VRayTexmaps(Checks):
 
     def test_vray_color_below_falloff_color_correction_and_mix(self):
         g = self.f.irs["FixtureVFalloff"].textures["base_color"]
-        self.assertIsInstance(g.root, tx.Mix)  # the Falloff: its map 1 to its color 2
-        self.close(g.root.a.value, (_lin(50), _lin(150), _lin(250)))
-        self.assertIsInstance(g.root.mask, tx.Facing)
+        fo = self.held(g.root)  # gamma off: on the held values (maxdrop-6n0.6.18)
+        self.assertIsInstance(fo, tx.Mix)  # the Falloff: its map 1 to its color 2
+        self.close(fo.a.value, (50 / 255, 150 / 255, 250 / 255))
+        self.assertIsInstance(fo.mask, tx.Facing)
         self.assertFalse(g.approximated)
-        cc = self.f.irs["FixtureCCColor"].textures["base_color"].root
+        cc = self.held(self.f.irs["FixtureCCColor"].textures["base_color"].root)
         self.assertIsInstance(cc, tx.ColorCorrect)
         self.close(cc.saturation, 1.2)
-        self.close(cc.input.value, (_lin(100), _lin(200), _lin(50)))
+        self.close(cc.input.value, (100 / 255, 200 / 255, 50 / 255))
         mix = self.f.irs["FixtureMixMask"].textures["base_color"].root.input
         self.assertIsInstance(mix.mask, tx.Constant)
         self.close(mix.mask.value, 64 / 255)  # a float, as stored: V-Ray mixes the stored colors by it (em3.158)
@@ -1557,14 +1668,16 @@ class VRayTexmaps(Checks):
     def test_falloff_in_reflection(self):
         black, white = tx.Constant((0.0, 0.0, 0.0)), tx.Constant((1.0, 1.0, 1.0))
         ir = self.f.irs["FixtureVReflPerp"]
-        g = ir.textures["specular"]  # the default Falloff: black facing the viewer, white at grazing
-        self.assertEqual(g.root, tx.Mix(black, white, 0.0, tx.Facing(tx.PERPENDICULAR)))
+        g = ir.textures["specular"]  # the default Falloff: black facing the viewer, white at grazing; gamma off:
+        # the ratio V-Ray holds, shown decoded (maxdrop-6n0.6.18)
+        self.assertEqual(g.root, tx.Decode(tx.Mix(black, white, 0.0, tx.Facing(tx.PERPENDICULAR))))
         self.assertEqual((g.approximated, g.issues), (False, ()))
         self.assertEqual((ir.metallic.value, ir.metallic.map), (0.0, None), "Fresnel off, a dark swatch: no metal")
         self.assertFalse(ir.fresnel, "Fresnel off: the Falloff is the reflection at every angle, no Fresnel on it")
         self.assertNotIn("base_color", ir.textures)
         g = self.f.irs["FixtureVReflFresnel"].textures["specular"]  # map amount 50: half the swatch (black)
-        self.assertEqual(g.root, tx.Mix(black, tx.Mix(black, white, 0.0, tx.Facing(tx.FRESNEL, 1.5)), 0.5))
+        self.assertEqual(g.root, tx.Decode(tx.Mix(black, tx.Mix(black, white, 0.0, tx.Facing(tx.FRESNEL, 1.5)),
+                                                  0.5)))
         self.assertEqual((g.approximated, g.issues), (False, ()))
 
     def test_falloff_in_reflection_over_a_white_swatch(self):
@@ -1579,7 +1692,8 @@ class VRayTexmaps(Checks):
         self.assertEqual(ir.base_color, dark.base_color, "the diffuse")
         textures = tx.texture_graphs(ir, self.f.tex)
         self.assertNotIn("base_color", textures)
-        self.assertEqual(textures["specular"].root, tx.Mix(black, white, 0.0, tx.Facing(tx.PERPENDICULAR)))
+        self.assertEqual(textures["specular"].root,
+                         tx.Decode(tx.Mix(black, white, 0.0, tx.Facing(tx.PERPENDICULAR))))
 
     def test_color_correction_over_an_unsupported_map(self):
         ir = self.f.irs["FixtureCCNoise"]
@@ -2166,7 +2280,10 @@ class WrapperConstants(Checks):
                 self.assertAlmostEqual(_tinted_mean(g.root), 0.293, delta=0.001)
                 self.assertEqual(tex.stats.issues, [])
                 _t, g = self.convert(rule, tx.COLOR, _wtint(1))
-                self.close(g.root.red, rule.color(STORED_ROWS[0]), "a color input: the rows decoded by the rule")
+                if rule.linear:
+                    self.close(g.root.red, rule.color(STORED_ROWS[0]), "a color input: the rows linear")
+                else:  # tinted with the rows as stored, the result decoded (folded; maxdrop-6n0.6.18)
+                    self.close(g.root.value, tuple(_lin(c) for c in (128, 64, 32)))
                 _t, g = self.convert(rule, tx.BUMP, _wtint(1))
                 self.close(g.root.input.input.value, (1.0, 1.0, 1.0), "a height: the same rule")
 
@@ -2220,7 +2337,8 @@ class WrapperConstants(Checks):
                 g = self.convert(rule, tx.DATA, cc, _vcolor(2, (1.0, 0.0, 0.0)))[1]
                 self.assertEqual(g.root.input, tx.Constant((1.0, 0.0, 0.0)))
                 g = self.convert(rule, tx.COLOR, cc, _vcolor(2, (1.0, 0.0, 0.0)))[1]
-                self.assertEqual(g.root.input, tx.Constant(rule.color((1.0, 0.0, 0.0))), "a color input: unchanged")
+                root = g.root if rule.linear else self.held(g.root)  # gamma off: on the held values (6n0.6.18)
+                self.assertEqual(root.input, tx.Constant((1.0, 0.0, 0.0)), "a color input: unchanged")
 
     def test_nested_maps_below_a_tint(self):
         # a Mix of two colors below the Tint: both sides colors, the mask a mono value (DATA)
@@ -2282,9 +2400,130 @@ class WrapperConstants(Checks):
                 self.assertEqual(g.root.input.input, tx.Constant((1.0, 1.0, 1.0)))
 
 
+PROBE_COLOR = (200 / 255, 100 / 255, 50 / 255)  # maxdrop-6n0.6.2's VRayColor
+
+
+def _wout(index, map_ref=None, level=0.5):
+    """An Output whose Output part has that RGB level."""
+    out = FakeMap(index, tx.OUTPUT, {0: Ref(map_ref)}, [map_ref] if map_ref is not None else [], cls="Output",
+                  name="out")
+    part = FakeMap(index + 40, (0x100, 0), superclass=classids.SC_TEXOUTPUT)
+    part.legacy = {0: FakeOld({0: level})}  # an old ParamBlock: level stored, the rest neither stored nor animated
+    out.parts = {2: part}
+    return out
+
+
+def _bw_mix(index, mask):
+    """A Mix black -> white at amount 0 whose mask is map mask: what V-Ray renders is the mask's value."""
+    return FakeMap(index, tx.MIX, {0: 0.0, 8: Ref(mask)}, [mask], cls="Mix", name="mix")
+
+
+class MaskWrapperConstants(Checks):
+    """An RGB Tint or an Output that changes anything, as the mask of a color graph, acts on the color below it, and
+    the mask is the mean of its output (maxdrop-6n0.6.2): V-Ray 5.2 renders the same internal value with the gamma on
+    and off (swatches, rows and a Bitmap as it holds them), which the gamma-off scene shows decoded. Measured on a Mix
+    black -> white: a Tint of rows 128 / 64 / 32 over a VRayColor (200, 100, 50) renders 0.1722, over white 0.2928;
+    an Output of level 0.5 over that VRayColor 0.2287, over white 0.5."""
+
+    def mask(self, swatches, *objects):
+        tex = tx.TexmapConverter(FakeGraph(*objects), _table(), swatches=swatches)
+        g = tex.convert(mat.MapRef(1), tx.COLOR)
+        self.assertIsInstance(g.root, tx.Mix)
+        return tex, g.root.mask
+
+    def test_tint_over_a_color_constant_in_a_mask(self):
+        want = (PROBE_COLOR[0] * 128 + PROBE_COLOR[1] * 64 + PROBE_COLOR[2] * 32) / 255 / 3.0
+        self.assertAlmostEqual(want, 0.1722, delta=0.0001, msg="V-Ray 5.2, both modes")
+        grey = sum(PROBE_COLOR) / 3.0 * (128 + 64 + 32) / 255 / 3.0
+        self.assertGreater(abs(want - grey), 0.03, "not the tint of the grey")
+        tex, mask = self.mask(colors.GAMMA_OFF, _bw_mix(1, 2), _wtint(2, 3), _vcolor(3, PROBE_COLOR))
+        self.assertIsInstance(mask, tx.Constant, "gamma off: folded")
+        self.close(mask.value, colors.srgb_to_linear(want), "gamma off: the mean decoded")
+        self.assertEqual(tex.stats.issues, [])
+        tex, mask = self.mask(colors.GAMMA_ON, _bw_mix(1, 2), _wtint(2, 3), _vcolor(3, PROBE_COLOR))
+        self.assertEqual(mask.input, tx.Constant(PROBE_COLOR), "gamma on: the color, linear")
+        self.close((mask.red, mask.green, mask.blue), STORED_ROWS)
+        self.close(_tinted_mean(mask), want, "the builder's mean of the tinted color")
+
+    def test_empty_tint_in_a_mask(self):
+        want = 224 / 255 / 3.0  # 0.2928 measured
+        _t, mask = self.mask(colors.GAMMA_OFF, _bw_mix(1, 2), _wtint(2))
+        self.close(mask.value, colors.srgb_to_linear(want))
+        _t, mask = self.mask(colors.GAMMA_ON, _bw_mix(1, 2), _wtint(2))
+        self.close(_tinted_mean(mask), want)
+
+    def test_output_in_a_mask(self):
+        for below in (None, 3):
+            with self.subTest(below=below):
+                objects = (_bw_mix(1, 2), _wout(2, below)) + ((_vcolor(3, PROBE_COLOR),) if below else ())
+                stored = PROBE_COLOR if below else (1.0, 1.0, 1.0)
+                adjust = tx.Adjust(tx.Constant(stored), tx.TexOutput(level=0.5))
+                _t, mask = self.mask(colors.GAMMA_OFF, *objects)
+                want = sum(0.5 * c for c in stored) / 3.0  # the Output folded: its mean, then the decode
+                self.assertEqual(mask, tx.Constant(colors.srgb_to_linear(want)), "the mean, then the decode")
+                _t, mask = self.mask(colors.GAMMA_ON, *objects)
+                self.assertEqual(mask, adjust, "gamma on: the color; the builder takes the mean")
+
+    def test_image_below_a_tint_in_a_mask(self):
+        _t, mask = self.mask(colors.GAMMA_OFF, _bw_mix(1, 2), _wtint(2, 3), _bitmap(3))
+        self.assertTrue(isinstance(mask, tx.Decode) and mask.mean, "the mean through the exact sRGB curve")
+        self.image(mask.input.input, "a.png", tx.NON_COLOR)  # V-Ray holds a gamma-off Bitmap as stored
+        self.close(mask.input.red, STORED_ROWS[0])
+        _t, mask = self.mask(colors.GAMMA_ON, _bw_mix(1, 2), _wtint(2, 3), _bitmap(3))
+        self.assertIsInstance(mask, tx.Tint)
+        self.image(mask.input, "a.png", tx.SRGB)
+
+    def test_color_correction_in_a_mask_takes_the_color(self):
+        # maxdrop-6n0.6.18: a Color Correction in a mask acts on the color V-Ray holds, the mask the mean of it, as a
+        # Tint's (saturation -50 % over that VRayColor renders 0.4739 in both modes: the mean of the HSL saturation
+        # the builder draws, (0.637 + 0.441 + 0.343) / 3)
+        cc = FakeMap(2, tx.COLOR_CORRECTION, {1: Ref(3), 8: -50.0}, [3], cls="Color Correction")
+        corrected = tx.ColorCorrect(tx.Constant(PROBE_COLOR), saturation=0.5)
+        _t, mask = self.mask(colors.GAMMA_OFF, _bw_mix(1, 2), cc, _vcolor(3, PROBE_COLOR))
+        self.assertEqual(mask, tx.Decode(corrected, mean=True), "the mean, then the decode")
+        _t, mask = self.mask(colors.GAMMA_ON, _bw_mix(1, 2), cc, _vcolor(3, PROBE_COLOR))
+        self.assertEqual(mask, corrected, "gamma on: the color; the builder takes the mean")
+
+    def test_identity_wrapper_in_a_mask(self):
+        identity = {0: (1.0, 0.0, 0.0), 1: (0.0, 1.0, 0.0), 2: (0.0, 0.0, 1.0)}
+        for rule in RULES:
+            with self.subTest(linear=rule.linear):
+                _t, bare = self.mask(rule, _bw_mix(1, 3), _vcolor(3, PROBE_COLOR))
+                _t, tint = self.mask(rule, _bw_mix(1, 2), _wtint(2, 3, identity), _vcolor(3, PROBE_COLOR))
+                _t, out = self.mask(rule, _bw_mix(1, 2), _wout(2, 3, 1.0), _vcolor(3, PROBE_COLOR))
+                self.assertEqual(bare, tx.Constant(rule.channel(sum(PROBE_COLOR) / 3.0)))
+                self.assertEqual(tint, bare)
+                self.assertEqual(out, bare)
+
+    def test_composite_layer_mask(self):
+        # gamma on: a Composite stays a Composite in a color graph, its layer mask a MASK graph
+        comp = FakeMap(1, tx.COMPOSITE, {9: [Ref(5), Ref(6)], 10: [Ref(None), Ref(2)]}, [5, 6, 2], cls="Composite")
+        tex = tx.TexmapConverter(FakeGraph(comp, _vcolor(5, (0.0,) * 3), _vcolor(6, (1.0,) * 3), _wtint(2, 3),
+                                           _vcolor(3, PROBE_COLOR)), _table(), swatches=colors.GAMMA_ON)
+        mask = tex.convert(mat.MapRef(1), tx.COLOR).root.layers[1].mask
+        self.assertEqual(mask.input, tx.Constant(PROBE_COLOR))
+        self.assertAlmostEqual(_tinted_mean(mask), 0.1722, delta=0.0001, msg="V-Ray 5.2")
+        self.close((mask.red, mask.green, mask.blue), STORED_ROWS)
+
+    def test_color_correction_below_a_wrapper_in_a_mask(self):
+        # below a Tint or Output in a mask a Color Correction gets the color (the wrapper's kind, maxdrop-6n0.6.38)
+        cc = FakeMap(3, tx.COLOR_CORRECTION, {1: Ref(4), 8: -50.0}, [4], cls="Color Correction")
+        _t, mask = self.mask(colors.GAMMA_ON, _bw_mix(1, 2), _wout(2, 3), cc, _vcolor(4, PROBE_COLOR))
+        self.assertEqual(mask, tx.Adjust(tx.ColorCorrect(tx.Constant(PROBE_COLOR), saturation=0.5),
+                                         tx.TexOutput(level=0.5)))
+
+    def test_data_graph_is_unchanged(self):
+        # em3.128: a data input keeps the Tint's stored channels with no Decode, in both modes
+        for rule in RULES:
+            with self.subTest(linear=rule.linear):
+                tex = tx.TexmapConverter(FakeGraph(_wtint(1, 2), _vcolor(2, PROBE_COLOR)), _table(), swatches=rule)
+                root = tex.convert(mat.MapRef(1), tx.DATA).root
+                self.assertEqual(root.input, tx.Constant(PROBE_COLOR))
+
+
 class SwatchRule(Checks):
     """Every swatch of a map goes through the scene's rule: linear with the gamma on (or unknown), sRGB with it off;
-    the HDR color does not, CoronaColor's temperature only with the gamma off."""
+    the HDR color is decoded only with the gamma off (maxdrop-em3.165), CoronaColor's temperature too."""
 
     def _root(self, swatches, *objects, kind=tx.COLOR):
         tex = tx.TexmapConverter(FakeGraph(*objects), _table(), swatches=swatches)
@@ -2310,9 +2549,11 @@ class SwatchRule(Checks):
                 else:
                     self.close(root.a.value, (want,) * 3)
                     self.close(root.b.value, (want,) * 3)
-                self.close(self._root(rule, falloff).a.value, (want,) * 3)
+                held = rule is colors.GAMMA_OFF  # a Falloff or Color Correction on the held values (6n0.6.18)
+                fo, c = self._root(rule, falloff), self._root(rule, cc)
+                self.close((self.held(fo) if held else fo).a.value, (g if held else want,) * 3)
                 self.close(self._root(rule, dirt).value, (want,) * 3)
-                self.close(self._root(rule, cc).input.value, (want,) * 3)
+                self.close((self.held(c) if held else c).input.value, (g if held else want,) * 3)
                 for m in (vc, cco, hexed):
                     self.close(self._root(rule, m).value, (want,) * 3, m.cls)
                 self.close(self._root(rule, vc, kind=tx.MASK).value, want, "a mask: the rule of the mean")
@@ -2335,19 +2576,29 @@ class SwatchRule(Checks):
                 with self.subTest(rule=rule, rgb=rgb, cls=m.cls, method=m.param(50, 0)):
                     mask, color = self._root(rule, m, kind=tx.MASK), self._root(rule, m, kind=tx.COLOR)
                     data = self._root(rule, m, kind=tx.DATA)
-                    if m.cls == "Mix":  # a color Mix of two constants with the gamma off: folded (em3.158)
-                        mask, data = mask.a, data.a
+                    if m.cls == "Mix":  # a Mix of two constants with the gamma off: folded (em3.158, 6n0.6.18)
+                        mask, data = mask.a if isinstance(mask, tx.Mix) else mask, data.a
                         color = color.a if isinstance(color, tx.Mix) else color
                     self.close(mask.value, want)
                     self.close(data.value, sum(rgb) / 3.0, "a data input: as stored")
                     self.close(color.value, rule.color(rgb), "a color input: the linear color")
 
-    def test_hdr_color_whatever_the_rule(self):
-        # the HDR color is linear already: no rule (not measured with the gamma off), the mean on a data input
+    def test_hdr_color_by_the_gamma(self):
+        # maxdrop-em3.165, Corona 12 renders: the HDR color renders as stored (0.25 / 0.5 / 2.0; 0.5 x multiplier 2:
+        # 1.0) with the gamma on and off, linear with it on; with it off the display-referred scene shows it decoded,
+        # above 1 on the extended curve (2.0: 4.954), as V-Ray 5.2 renders it too; a data input takes the mean as stored
         hdr = _ccolor(1, p50=1, p58=(0.25, 0.5, 2.0))
-        for rule in (colors.GAMMA_ON, colors.GAMMA_OFF):
+        for rule in (colors.GAMMA_ON, colors.UNKNOWN):
             with self.subTest(rule):
                 self.close(self._root(rule, hdr).value, (0.25, 0.5, 2.0))
+                self.close(self._root(rule, hdr, kind=tx.MASK).value, 2.75 / 3.0)
+        self.close(self._root(colors.GAMMA_OFF, hdr).value, (0.0508760, 0.2140411, 4.9538457))
+        self.close(self._root(colors.GAMMA_OFF, _ccolor(1, p50=1, p57=2.0, p58=(0.5, 0.5, 0.5))).value,
+                   (1.0, 1.0, 1.0), "the multiplier before the decode")
+        self.close(self._root(colors.GAMMA_OFF, hdr, kind=tx.MASK).value, colors.srgb_to_linear(2.75 / 3.0),
+                   "a mask: the mean decoded, as a swatch's")
+        for rule in (colors.GAMMA_ON, colors.GAMMA_OFF):
+            with self.subTest(rule):
                 self.close(self._root(rule, _ccolor(1, p50=1, p58=(1.5, 0.0, 0.0)), kind=tx.DATA).value, 0.5)
 
     def test_kelvin_by_the_rule(self):
@@ -2372,10 +2623,10 @@ class SwatchRule(Checks):
 class SceneGammaImages(Checks):
     """maxdrop-em3.38: an image on a color input as 3ds Max 2020 + V-Ray 5.2 read a 128 grey PNG (docs/FORMAT.md,
     Scene gamma): with the gamma on a Bitmap with automatic gamma (and a VRayBitmap From 3ds Max) takes the file
-    input gamma; with it off a Bitmap is read as stored whatever its gamma; CoronaBitmap keeps its own (Corona not
-    measured). maxdrop-em3.123 (the same renders, greys 64 / 128 / 192, EXRs 0.25 / 0.5 / 2.0): with the gamma off
-    V-Ray shows a VRayBitmap's own decode, and a float file read as stored, decoded once more on a color input or
-    a mask (the internal value v as srgb_to_linear(v))."""
+    input gamma; with it off a Bitmap is read as stored whatever its gamma; CoronaBitmap applies its own in both.
+    maxdrop-em3.123 (the same renders, greys 64 / 128 / 192, EXRs 0.25 / 0.5 / 2.0): with the gamma off V-Ray shows a
+    VRayBitmap's own decode, and a float file read as stored, decoded once more on a color input or a mask (the
+    internal value v as srgb_to_linear(v)); maxdrop-em3.165: Corona 12 a CoronaBitmap's alike."""
 
     ON_10 = colors.Swatches(True, file_in=1.0)
     ON_18 = colors.Swatches(True, file_in=1.8)
@@ -2390,6 +2641,10 @@ class SceneGammaImages(Checks):
         return tx.TexmapConverter(FakeGraph(m), _table(), swatches=rule).convert(mat.MapRef(1), kind).root
 
     def check(self, image, gamma, space, msg=None):
+        if space == MEAN:  # an image read as stored as a gamma-off mask: its mean decoded (maxdrop-6n0.6.36)
+            self.assertIsInstance(image, tx.Decode, msg)
+            self.assertTrue(image.mean, msg)
+            image, space = image.input, tx.NON_COLOR
         self.assertEqual(image.colorspace, space, msg)
         if gamma is None:
             self.assertIsNone(image.gamma, msg)
@@ -2420,7 +2675,7 @@ class SceneGammaImages(Checks):
                 self.check(self._bitmap(rule, table=table), 1.0 if rule.linear else None,
                            tx.LINEAR if rule.linear else tx.SRGB, "an EXR: linear")
                 self.check(self._bitmap(rule, table=table, kind=tx.MASK), 1.0 if rule.linear else None,
-                           tx.NON_COLOR if rule.linear else tx.SRGB, "an EXR as a mask: the color rule")
+                           tx.NON_COLOR if rule.linear else MEAN, "an EXR as a mask: the color rule")
                 self.check(self._bitmap(rule, table=table, kind=tx.DATA), 1.0 if rule.linear else None,
                            tx.NON_COLOR, "an EXR: as stored")
                 # a data input: decoded as a color input with the gamma on, as stored with it off (em3.122)
@@ -2458,10 +2713,10 @@ class SceneGammaImages(Checks):
                  ({"p25": 1, "p8": 2.2}, None, (1.0, tx.LINEAR), (1.0, tx.NON_COLOR), (1 / 2.2, tx.LINEAR)),
                  ({"p25": 2}, None, (tx.SRGB_TWICE, tx.LINEAR), (tx.SRGB_TWICE, tx.LINEAR), (None, tx.SRGB)),
                  ({"p25": 0}, None, (2.2, tx.SRGB), (2.2, tx.SRGB), (1.0, tx.NON_COLOR)),
-                 ({"p25": 3}, None, (None, tx.SRGB), (None, tx.SRGB), (None, tx.NON_COLOR)),
+                 ({"p25": 3}, None, (None, tx.SRGB), (None, MEAN), (None, tx.NON_COLOR)),
                  ({"p25": 4}, exr, (2.2, tx.SRGB), (2.2, tx.SRGB), (1.0, tx.NON_COLOR)),
                  ({"p25": 0}, exr, (2.2, tx.SRGB), (2.2, tx.SRGB), (1.0, tx.NON_COLOR)),
-                 ({"p25": 3}, exr, (None, tx.SRGB), (None, tx.SRGB), (1.0, tx.NON_COLOR)),
+                 ({"p25": 3}, exr, (None, tx.SRGB), (None, MEAN), (1.0, tx.NON_COLOR)),
                  ({"p25": 2}, exr, (tx.SRGB_TWICE, tx.LINEAR), (tx.SRGB_TWICE, tx.LINEAR), (None, tx.SRGB)))
         for params, table, color, mask, data in cases:
             with self.subTest(params=params, exr=table is not None):
@@ -2497,13 +2752,48 @@ class SceneGammaImages(Checks):
         inverse = self._map(colors.GAMMA_OFF, _vbitmap(1, p25=1, p8=0.5))  # inverse gamma 0.5: 128 -> 0.252
         self.assertLess(abs(drawn(128 / 255.0, inverse.gamma) - colors.srgb_to_linear(0.251965)), 0.02)
 
-    def test_corona_bitmap_keeps_its_own(self):
-        for rule in (colors.GAMMA_ON, self.ON_10, colors.GAMMA_OFF):
+    def test_corona_bitmap_keeps_its_own_with_the_gamma_on(self):
+        for rule in (colors.GAMMA_ON, self.ON_10, colors.UNKNOWN):
             with self.subTest(rule):
-                self.check(self._map(rule, _cbitmap(1)), None, tx.SRGB, "automatic: 2.2 whatever the scene")
+                self.check(self._map(rule, _cbitmap(1)), None, tx.SRGB, "automatic: 2.2 whatever the input gamma")
                 self.check(self._map(rule, _cbitmap(1, p125=1.0)), 1.0, tx.LINEAR)
-                self.check(self._map(rule, _cbitmap(1), kind=tx.MASK), None, tx.SRGB,
-                           "a mask too: whether Corona shows it decoded once more is not measured")
+                self.check(self._map(rule, _cbitmap(1), kind=tx.MASK), None, tx.SRGB)
+
+    def test_corona_bitmap_gamma_off_is_shown_decoded(self):
+        # maxdrop-em3.165, Corona 12 renders: a CoronaBitmap's internal value is its own decode with the gamma on and
+        # off, as a VRayBitmap's in V-Ray: shown decoded once more on a color input or a mask; data keeps its own
+        exr = assets.AssetTable([assets.AssetEntry(G1, "Bitmap", "maps\\sky.exr", "")])
+        cases = (({}, None, (tx.SRGB_TWICE, tx.LINEAR), (None, tx.SRGB)),
+                 ({"p125": 2.2}, None, (2.2 * 2.2, tx.LINEAR), (2.2, tx.SRGB)),
+                 ({"p125": 1.0}, None, (2.2, tx.SRGB), (1.0, tx.NON_COLOR)),
+                 ({}, exr, (2.2, tx.SRGB), (1.0, tx.NON_COLOR)),
+                 ({"p125": 2.2}, exr, (2.2 * 2.2, tx.LINEAR), (2.2, tx.SRGB)))
+        for params, table, shown, data in cases:
+            with self.subTest(params=params, exr=table is not None):
+                for kind, (gamma, space) in ((tx.COLOR, shown), (tx.MASK, shown), (tx.DATA, data)):
+                    tex = tx.TexmapConverter(FakeGraph(_cbitmap(1, **params)), _table() if table is None else table,
+                                             swatches=colors.GAMMA_OFF)
+                    self.check(tex.convert(mat.MapRef(1), kind).root, gamma, space, kind)
+
+    def test_corona_shown_values_agree_with_corona(self):
+        # Corona 12 internal values (gamma on and off alike), shown as srgb_to_linear in Blender with the gamma off:
+        # what Blender draws (pixel ^ gamma, the sRGB curve for 2.2, extended above 1) is within 0.02 of it
+        def drawn(pixel, gamma):
+            return colors.srgb_to_linear(pixel) if gamma is None or abs(gamma - 2.2) < 1e-9 else pixel ** gamma
+        exr = assets.AssetTable([assets.AssetEntry(G1, "Bitmap", "maps\\sky.exr", "")])
+        cases = (({}, None, 64, 0.0477758), ({}, None, 128, 0.21952), ({}, None, 192, 0.535642),
+                 ({"p125": 2.2}, None, 128, 0.21952), ({"p125": 1.0}, None, 64, 0.25098),
+                 ({"p125": 1.0}, None, 192, 0.752941), ({}, exr, 0.25 * 255, 0.25), ({}, exr, 0.5 * 255, 0.5),
+                 ({"p125": 2.2}, exr, 0.5 * 255, 0.217653))
+        for params, table, grey, internal in cases:
+            with self.subTest(params=params, grey=grey):
+                tex = tx.TexmapConverter(FakeGraph(_cbitmap(1, **params)), _table() if table is None else table,
+                                         swatches=colors.GAMMA_OFF)
+                image = tex.convert(mat.MapRef(1), tx.COLOR).root
+                self.assertLess(abs(drawn(grey / 255.0, image.gamma) - colors.srgb_to_linear(internal)), 0.02)
+        tex = tx.TexmapConverter(FakeGraph(_cbitmap(1)), exr, swatches=colors.GAMMA_OFF)
+        self.assertAlmostEqual(drawn(2.0, tex.convert(mat.MapRef(1), tx.COLOR).root.gamma),
+                               colors.srgb_to_linear(2.0), delta=1e-9, msg="an EXR of 2.0: the extended curve")
 
 
 class DataAndMaskRule(Checks):
@@ -2559,17 +2849,96 @@ class DataAndMaskRule(Checks):
     def test_bitmap_mask(self):
         mix = FakeMap(1, tx.MIX, {8: Ref(2)}, [2], cls="Mix")
         for rule, info, space in ((colors.GAMMA_ON, None, tx.SRGB), (colors.GAMMA_ON, _info(1.0, 5), tx.NON_COLOR),
-                                  (colors.GAMMA_OFF, None, tx.SRGB), (colors.GAMMA_OFF, _info(1.0, 5), tx.SRGB)):
+                                  (colors.GAMMA_OFF, None, MEAN), (colors.GAMMA_OFF, _info(1.0, 5), MEAN)):
             with self.subTest(rule=rule, info=info):
                 b, chunk_map = _placed(index=2, info=info)
-                self.assertEqual(self._root(rule, mix, b, chunk_map=chunk_map).mask.colorspace, space)
+                mask = self._root(rule, mix, b, chunk_map=chunk_map).mask
+                if space == MEAN:  # gamma off: its stored mean, decoded (maxdrop-6n0.6.36)
+                    self.assertTrue(isinstance(mask, tx.Decode) and mask.mean)
+                    mask, space = mask.input, tx.NON_COLOR
+                self.assertEqual(mask.colorspace, space)
         b, chunk_map = _placed(index=2)
         self.assertEqual(self._root(colors.GAMMA_OFF, mix, b, kind=tx.DATA, chunk_map=chunk_map).mask.colorspace,
                          tx.NON_COLOR, "a mask in a data graph: data")
         cmix = _cmix(1, [2], p200=6, p210=Ref(2))
-        for kind, space in ((tx.COLOR, tx.SRGB), (tx.DATA, tx.NON_COLOR)):
+        for kind in (tx.COLOR, tx.DATA):  # COLOR: on stored values under a Decode, the mask as data (em3.165)
             root = self._root(colors.GAMMA_OFF, cmix, _bitmap(2), kind=kind)
-            self.assertEqual(tx.first_image(root.mask).colorspace, space, "CoronaMix mask")
+            root = root.input if kind == tx.COLOR else root
+            self.assertEqual(tx.first_image(root.mask).colorspace, tx.NON_COLOR, "CoronaMix mask")
+        root = self._root(colors.GAMMA_ON, cmix, _bitmap(2))
+        self.assertEqual(tx.first_image(root.mask).colorspace, tx.SRGB, "gamma on: decoded")
+
+    def test_colored_image_as_a_gamma_off_mask_is_its_decoded_mean(self):
+        """maxdrop-6n0.6.36 (measured in maxdrop-6n0.6.2, V-Ray 5.2): with the gamma off a (200, 100, 50) PNG as the
+        mask of a Mix black -> white renders 0.4575 internal (the mean of the stored pixel), shown 0.1768 linear; the
+        mean of its decoded channels (0.2456) masked too much. Gamma on: the decoded mean (0.2456 vs 0.2471)."""
+        mix = FakeMap(1, tx.MIX, {8: Ref(2)}, [2], cls="Mix")
+        stored = (_bitmap(2), _vbitmap(2, p25=3))  # a Bitmap, a VRayBitmap From 3ds Max: read as stored
+        for leaf in stored:
+            with self.subTest(leaf.cls):
+                mask = self._root(colors.GAMMA_OFF, mix, leaf).mask
+                self.assertIsInstance(mask, tx.Decode)
+                self.assertTrue(mask.mean)
+                self.assertEqual((mask.input.colorspace, mask.input.gamma, mask.input.name), (tx.NON_COLOR, None,
+                                                                                            "a.png"))
+                self.assertIsInstance(self._root(colors.GAMMA_ON, mix, leaf).mask, tx.Image, "gamma on: as before")
+                self.assertIsInstance(self._root(colors.GAMMA_OFF, mix, leaf, kind=tx.DATA).mask, tx.Image,
+                                      "a mask in a data graph: data")
+        # their own decode, shown decoded once more (_shown), is kept: no mean
+        for leaf in (_vbitmap(2, p25=2), _vbitmap(2, p25=0), _cbitmap(2)):
+            with self.subTest(leaf.cls, params=leaf.blocks[0]._params):
+                self.assertIsInstance(self._root(colors.GAMMA_OFF, mix, leaf).mask, tx.Image)
+        # a mono output of alpha: Blender never decodes an alpha, left as it was
+        alpha = FakeMap(2, classids.BITMAP_TEX, {13: pblock.Asset(G1), tx.BM_MONO: 1}, cls="Bitmap")
+        mask = self._root(colors.GAMMA_OFF, mix, alpha).mask
+        self.assertIsInstance(mask, tx.Image)
+        self.assertTrue(mask.alpha)
+
+    def test_image_below_a_mask_wrapper_is_unchanged(self):
+        # below an RGB Tint or an Output in a gamma-off mask the image is STORED (_wrapper_input) and the wrapper's
+        # mean decoded (_mask_mean): one mean, the wrapper's
+        mix = FakeMap(1, tx.MIX, {8: Ref(2)}, [2], cls="Mix")
+        mask = self._root(colors.GAMMA_OFF, mix, _wtint(2, 3), _bitmap(3)).mask
+        self.assertTrue(isinstance(mask, tx.Decode) and mask.mean)
+        self.assertIsInstance(mask.input, tx.Tint)
+        self.assertIsInstance(tx.first_image(mask), tx.Image)
+        self.assertEqual(len(_decodes(mask)), 1)
+
+    def test_stored_image_inside_a_mask_graph(self):
+        """maxdrop-6n0.6.36 inside a mask: with the gamma off a stored image below a map that keeps the MASK kind
+        (RGB Multiply) is its decoded mean, as a swatch there is the rule of its mean (not measured); a Falloff is
+        computed on the held values, the mean of it decoded, and a Color Correction picks from the stored color
+        (STORED), its mean decoded after it, as a Tint does (V-Ray 5.2, maxdrop-6n0.6.18); with the gamma on each is
+        as before (the image sRGB)."""
+        mix = FakeMap(1, tx.MIX, {8: Ref(2)}, [2], cls="Mix")
+
+        def cc(rewire):
+            params = {1: Ref(3)}
+            if rewire:
+                params.update({tx.CC_REWIRE_MODE: 3, 3: 0, 4: 0, 5: 0})  # custom: red, red, red
+            return FakeMap(2, tx.COLOR_CORRECTION, params, [3], cls="Color Correction", name="cc")
+        mul = FakeMap(2, tx.RGB_MULTIPLY, {2: Ref(3), 4: 1}, [3], cls="RGB Multiply")
+        off = self._root(colors.GAMMA_OFF, mix, mul, _bitmap(3)).mask.a
+        self.assertTrue(isinstance(off, tx.Decode) and off.mean, off)
+        self.assertEqual(off.input.colorspace, tx.NON_COLOR)
+        off = self._root(colors.GAMMA_OFF, mix, _falloff(2, 3), _bitmap(3)).mask
+        self.assertTrue(isinstance(off, tx.Decode) and off.mean, off)
+        self.assertEqual((type(off.input.a), off.input.a.colorspace), (tx.Image, tx.NON_COLOR), "as stored")
+        off = self._root(colors.GAMMA_OFF, mix, cc(False), _bitmap(3)).mask
+        self.assertTrue(isinstance(off, tx.Decode) and off.mean, off)
+        self.assertEqual(off.input.input.colorspace, tx.NON_COLOR, "the mean of the held color, decoded")
+        for what, wrapper, field in (("RGB Multiply", mul, "a"), ("Falloff", _falloff(2, 3), "a"),
+                                     ("Color Correction", cc(False), "input")):
+            with self.subTest(what):
+                on = getattr(self._root(colors.GAMMA_ON, mix, wrapper, _bitmap(3)).mask, field)
+                self.assertEqual((type(on), on.colorspace), (tx.Image, tx.SRGB))
+        off = self._root(colors.GAMMA_OFF, mix, cc(True), _bitmap(3)).mask
+        self.assertTrue(isinstance(off, tx.Decode) and off.mean, off)
+        picked = off.input
+        self.assertEqual((type(picked), picked.rewire), (tx.ColorCorrect, (0, 0, 0)))
+        self.assertEqual((type(picked.input), picked.input.colorspace), (tx.Image, tx.NON_COLOR), "as stored")
+        on = self._root(colors.GAMMA_ON, mix, cc(True), _bitmap(3)).mask
+        self.assertEqual((type(on), on.rewire, on.input.colorspace), (tx.ColorCorrect, (0, 0, 0), tx.SRGB))
 
     def test_composite_mask_follows_the_graph(self):
         comp = FakeMap(1, tx.COMPOSITE, {9: [Ref(2), Ref(3)], 10: [Ref(None), Ref(4)]}, [2, 3, 4], cls="Composite")
@@ -2724,6 +3093,9 @@ def _drawn(n, pixel=128 / 255):
     return pixel ** (n.gamma or 1.0) if n.colorspace == tx.LINEAR else pixel
 
 
+MEAN = "mean"  # SceneGammaImages.check: Decode(mean) over the image read as stored (Non-Color)
+
+
 def _decodes(root):
     """The Decode nodes of a graph."""
     seen, stack, out = set(), [root], []
@@ -2783,13 +3155,17 @@ class GammaOffMixes(Checks):
                 self.assertEqual(_decodes(root), [])
                 self.assertIsInstance(self._root(rule, comp, _bitmap(2), _vcolor(3, (0.5,) * 3)), tx.Composite)
 
-    def test_data_and_mask_graphs_are_unchanged(self):
+    def test_data_graph_is_unchanged_and_a_mask_holds(self):
         mix = self._mix(p0=0.5, p4=self.G40, p5=self.G220, p6=Ref(2))
-        for kind in (tx.DATA, tx.MASK):
-            with self.subTest(kind):
-                root = self._root(colors.GAMMA_OFF, mix, _bitmap(2), kind=kind)
-                self.assertIsInstance(root, tx.Mix)
-                self.assertEqual(_decodes(root), [])
+        root = self._root(colors.GAMMA_OFF, mix, _bitmap(2), kind=tx.DATA)
+        self.assertIsInstance(root, tx.Mix)
+        self.assertEqual(_decodes(root), [])
+        # in a mask the Mix is computed on the held values and its mean decoded (maxdrop-6n0.6.18)
+        root = self._root(colors.GAMMA_OFF, mix, _bitmap(2), kind=tx.MASK)
+        self.assertTrue(isinstance(root, tx.Decode) and root.mean, root)
+        self.assertEqual(root.input.a.colorspace, tx.NON_COLOR)
+        self.close(root.input.b.value, self.G220)
+        self.assertEqual(len(_decodes(root)), 1)
 
     def test_mix_with_a_map_is_decoded_once(self):
         mix = self._mix(p0=0.25, p4=self.G40, p5=self.G220, p6=Ref(2), p8=Ref(3))
@@ -2824,7 +3200,8 @@ class GammaOffMixes(Checks):
         self.close(root.b.value, (1.0,) * 3)
         self.close(root.mask.value, _lin(128))
         root = self._root(colors.GAMMA_OFF, self._mix(p8=Ref(2)), _bitmap(2))
-        self.assertEqual(root.mask.colorspace, tx.SRGB)
+        self.assertTrue(isinstance(root.mask, tx.Decode) and root.mask.mean, "its stored mean decoded (6n0.6.36)")
+        self.assertEqual(root.mask.input.colorspace, tx.NON_COLOR)
         root = self._root(colors.GAMMA_OFF, self._mix(p0=0.5))
         self.assertIsInstance(root, tx.Mix)
         self.close(root.factor, _lin(127.5))
@@ -2836,8 +3213,8 @@ class GammaOffMixes(Checks):
                  ("VRayBitmap sRGB", _vbitmap(2, p25=2), None, tx.SRGB),
                  ("VRayBitmap From 3ds Max", _vbitmap(2, p25=3), None, tx.NON_COLOR),
                  ("VRayBitmap None", _vbitmap(2, p25=0), None, tx.NON_COLOR),
-                 ("CoronaBitmap auto", _cbitmap(2), None, tx.NON_COLOR),
-                 ("CoronaBitmap 1.0", _cbitmap(2, p125=1.0), None, tx.LINEAR))
+                 ("CoronaBitmap auto", _cbitmap(2), None, tx.SRGB),  # its own decode (maxdrop-em3.165)
+                 ("CoronaBitmap 1.0", _cbitmap(2, p125=1.0), None, tx.NON_COLOR))
         for what, leaf, table, space in cases:
             with self.subTest(what):
                 mix = self._mix(p0=0.5, p6=Ref(2), p7=Ref(2))
@@ -2851,7 +3228,8 @@ class GammaOffMixes(Checks):
                                            msg="%s at %g" % (what, pixel))
         hdr = _ccolor(2, p50=1, p58=(0.5, 2.0, 0.0))
         self.close(self._root(colors.GAMMA_OFF, self._mix(p0=0.5, p6=Ref(2), p7=Ref(2)), hdr).value,
-                   (0.5, 2.0, 0.0), "CoronaColor HDR: as at a color root (linear)")
+                   (0.2140411, 4.9538458, 0.0), "CoronaColor HDR: as at a color root (decoded, maxdrop-em3.165)")
+        self.close(self._root(colors.GAMMA_OFF, hdr).value, (0.2140411, 4.9538458, 0.0))
         vc = _vcolor(2, (128 / 255,) * 3)
         self.close(self._root(colors.GAMMA_OFF, self._mix(p0=0.5, p6=Ref(2), p7=Ref(2)), vc).value,
                    (_lin(128),) * 3)
@@ -2883,8 +3261,32 @@ class GammaOffMixes(Checks):
         mix = self._mix(p4=self.G40, p5=self.G220, p8=Ref(2))
         self.close(self._root(colors.GAMMA_OFF, mix, hdr).value, (_lin(220),) * 3)
 
+    def test_corona_mix_on_stored_values(self):
+        # maxdrop-em3.165, Corona 12 renders: a CoronaMix is computed on the values Corona holds, the same in both
+        # modes (a 50 % mix of CoronaBitmaps 64 and 192 renders 0.2917): STORED under a Decode with the gamma off
+        both = _cmix(1, [2, 3], p200=6, p201=0.5, p206=Ref(2), p207=Ref(3))
+        root = self._root(colors.GAMMA_OFF, both, _cbitmap(2), _cbitmap(3))
+        self.assertIsInstance(root, tx.Decode)
+        self.assertIsInstance(root.input, tx.Mix)
+        self.assertEqual([(i.gamma, i.colorspace) for i in (root.input.a, root.input.b)], [(None, tx.SRGB)] * 2,
+                         "each CoronaBitmap by its own decode")
+        self.assertIsInstance(self._root(colors.GAMMA_ON, both, _cbitmap(2), _cbitmap(3)), tx.Mix, "gamma on: as is")
+        hdr = _cmix(1, [2, 3], p200=10, p206=Ref(2), p207=Ref(3))  # overlay of two HDR colors, folded
+        value = self._root(colors.GAMMA_OFF, hdr, _ccolor(2, p50=1, p58=(0.6, 0.2, 0.75)),
+                           _ccolor(3, p50=1, p58=(0.05, 0.4, 0.9))).value
+        held = tx.blend_value(tx.BLEND_OVERLAY, (0.05, 0.4, 0.9), (0.6, 0.2, 0.75), tx.CM_SRGB_GAMMA)
+        self.close(value, tuple(colors.srgb_to_linear(c) for c in held))
+        # a peel (an operation not drawn) and a lost side give the image again as a color: shown decoded once more
+        peel = _cmix(1, [2, 3], p200=15, p206=Ref(2), p207=Ref(3))
+        lost = _cmix(1, [2, 3], p200=6, p201=0.5, p207=Ref(2), p206=Ref(3))
+        for what, objects in (("peel", (peel, _cbitmap(2), _noise(3))), ("lost", (lost, _noise(2), _cbitmap(3)))):
+            with self.subTest(what):
+                image = self._root(colors.GAMMA_OFF, *objects)
+                self.assertIsInstance(image, tx.Image)
+                self.assertEqual((image.gamma, image.colorspace), (tx.SRGB_TWICE, tx.LINEAR))
+
     def test_maps_below_a_gamma_off_mix_compute_on_stored_values(self):
-        # not measured (maxdrop-6n0.6.18): pinned so a change is deliberate
+        # measured since maxdrop-6n0.6.18 (a Falloff on the stored values; Corona 12 a CoronaMix, em3.165)
         g = (128 / 255,) * 3
         falloff = _falloff(2, color1=g)
         cmix = _cmix(3, p200=0, p208=g, p209=g)  # an add in sRGB mode of two greys 128
@@ -2901,6 +3303,151 @@ class GammaOffMixes(Checks):
         root = self._root(colors.GAMMA_OFF, *objects)
         self.assertIsInstance(root, tx.Image)
         self.assertEqual(root.colorspace, tx.SRGB)
+
+
+class GammaOffWrappers(Checks):
+    """maxdrop-6n0.6.18, V-Ray 5.2 renders (docs/FORMAT.md, Scene gamma): with the gamma off V-Ray computes a Falloff,
+    a Color Correction, an Output, an RGB Tint, a slot's amount and a mix inside a mask on the stored values too (the
+    same internal value as with the gamma on), which the display-referred scene shows decoded. At a color root such a
+    map is converted in STORED under one Decode; in a mask the mean of it is decoded; a slot's amount mixes the
+    stored value."""
+
+    G40, G220 = (40 / 255,) * 3, (220 / 255,) * 3
+    X_ROWS = {0: (200 / 255, 50 / 255, 0.0), 1: (0.0, 150 / 255, 100 / 255), 2: (30 / 255, 0.0, 1.0)}
+
+    def _root(self, rule, *objects, kind=tx.COLOR, ref=None, value=None):
+        tex = tx.TexmapConverter(FakeGraph(*objects), _table(), swatches=rule)
+        g = tex.convert(ref or mat.MapRef(objects[0].index), kind, value)
+        return None if g is None else g.root
+
+    def _cc(self, index, below, **params):
+        p = {1: Ref(below)}
+        p.update({int(k[1:]): v for k, v in params.items()})
+        return FakeMap(index, tx.COLOR_CORRECTION, p, [below], cls="Color Correction")
+
+    def test_falloff_on_stored_values(self):
+        # Falloff Perpendicular / Parallel of greys 40 / 220 on a plane at facing ratio 0.5: 0.5098 in both modes
+        fo = FakeMap(1, tx.FALLOFF, {0: self.G40, 4: self.G220, 8: 1}, cls="Falloff")
+        root = self._root(colors.GAMMA_OFF, fo)
+        self.assertIsInstance(root, tx.Decode)
+        mix = root.input
+        self.assertIsInstance(mix.mask, tx.Facing)
+        self.close(mix.a.value, self.G40, "color 1 as stored")
+        self.close(mix.b.value, self.G220, "color 2 as stored")
+        held = 40 / 255 + (220 - 40) / 255 * 0.5
+        self.assertAlmostEqual(held, 0.509804, delta=1e-5, msg="V-Ray 5.2 at ratio 0.5")
+        self.assertAlmostEqual(held ** tx.SRGB_GAMMA, _dec(0.509804), delta=0.005, msg="the Decode's power")
+        on = self._root(colors.GAMMA_ON, fo)
+        self.assertIsInstance(on, tx.Mix, "gamma on: as before")
+        self.close(on.a.value, self.G40)
+
+    def test_color_correction_on_stored_values(self):
+        # brightness 20 over a VRayColor 128 renders 0.702 in both modes; over a Bitmap of 128 grey with the gamma off
+        # 0.702 too (the Bitmap as stored)
+        root = self._root(colors.GAMMA_OFF, self._cc(1, 2, p11=0, p12=20.0), _vcolor(2, (128 / 255,) * 3))
+        self.assertEqual(root, tx.Decode(tx.ColorCorrect(tx.Constant((128 / 255,) * 3), brightness=0.2)))
+        root = self._root(colors.GAMMA_OFF, self._cc(1, 2, p11=0, p12=20.0), _bitmap(2))
+        self.assertIsInstance(root, tx.Decode)
+        self.image(root.input.input, "a.png", tx.NON_COLOR)
+        on = self._root(colors.GAMMA_ON, self._cc(1, 2, p11=0, p12=20.0), _bitmap(2))
+        self.assertIsInstance(on, tx.ColorCorrect)
+        self.image(on.input, "a.png", tx.SRGB)
+
+    def test_wrappers_over_constants_fold(self):
+        # Output level 0.5 over a VRayColor 200 renders 0.392 (shown 0.1274); RGB Tint of rows (200, 50, 0) /
+        # (0, 150, 100) / (30, 0, 255) over a VRayColor (200, 100, 50) (0.638, 0.384, 0.350): both modes
+        root = self._root(colors.GAMMA_OFF, _wout(1, 2), _vcolor(2, (200 / 255,) * 3))
+        self.assertIsInstance(root, tx.Constant)
+        self.close(root.value, (_dec(0.392157),) * 3)
+        root = self._root(colors.GAMMA_OFF, _wtint(1, 2, self.X_ROWS), _vcolor(2, PROBE_COLOR))
+        self.assertIsInstance(root, tx.Constant)
+        for got, held in zip(root.value, (0.638216, 0.384467, 0.349866)):
+            self.assertAlmostEqual(got, _dec(held), delta=0.001)
+        for rule in (colors.GAMMA_ON, colors.UNKNOWN):
+            with self.subTest(rule):
+                self.assertIsInstance(self._root(rule, _wout(1, 2), _vcolor(2, (200 / 255,) * 3)), tx.Adjust)
+                self.assertIsInstance(self._root(rule, _wtint(1, 2, self.X_ROWS), _vcolor(2, PROBE_COLOR)), tx.Tint)
+
+    def test_wrapper_over_an_image(self):
+        root = self._root(colors.GAMMA_OFF, _wout(1, 2), _bitmap(2))
+        self.assertIsInstance(root, tx.Decode)
+        self.assertIsInstance(root.input, tx.Adjust)
+        self.image(root.input.input, "a.png", tx.NON_COLOR)
+        root = self._root(colors.GAMMA_OFF, _wtint(1, 2, self.X_ROWS), _bitmap(2))
+        self.assertIsInstance(root, tx.Decode)
+        self.close(root.input.red, self.X_ROWS[0], "the rows as stored")
+
+    def test_mix_in_a_mask(self):
+        # a Mix black -> white whose mask is a Mix of greys 40 / 220 at 50 % renders 0.5098 (both modes)
+        inner = FakeMap(2, tx.MIX, {0: 0.5, 4: self.G40, 5: self.G220}, cls="Mix")
+        root = self._root(colors.GAMMA_OFF, _bw_mix(1, 2), inner)
+        self.assertIsInstance(root.mask, tx.Constant)
+        self.close(root.mask.value, _dec(0.509804), "the held value decoded")
+        by_image = FakeMap(2, tx.MIX, {0: 0.0, 4: self.G40, 5: self.G220, 8: Ref(3)}, [3], cls="Mix")
+        root = self._root(colors.GAMMA_OFF, _bw_mix(1, 2), by_image, _bitmap(3))
+        mask = root.mask
+        self.assertTrue(isinstance(mask, tx.Decode) and mask.mean, "the mean decoded")
+        self.close(mask.input.a.value, self.G40, "as stored")
+        self.image(mask.input.mask, "a.png", tx.NON_COLOR)
+        on = self._root(colors.GAMMA_ON, _bw_mix(1, 2), inner)
+        self.assertIsInstance(on.mask, tx.Mix, "gamma on: as before")
+        self.assertEqual(_decodes(on), [])
+
+    def test_composite_and_falloff_in_a_mask(self):
+        comp = FakeMap(2, tx.COMPOSITE, {8: [100.0, 50.0], 9: [Ref(3), Ref(4)]}, [3, 4], cls="Composite")
+        root = self._root(colors.GAMMA_OFF, _bw_mix(1, 2), comp, _vcolor(3, self.G40), _vcolor(4, self.G220))
+        self.assertTrue(isinstance(root.mask, tx.Decode) and root.mask.mean)
+        self.close(root.mask.input.layers[1].node.value, self.G220, "as stored")
+        fo = FakeMap(2, tx.FALLOFF, {0: self.G40, 4: self.G220, 8: 1}, cls="Falloff")
+        root = self._root(colors.GAMMA_OFF, _bw_mix(1, 2), fo)
+        self.assertTrue(isinstance(root.mask, tx.Decode) and root.mask.mean)
+        self.assertIsInstance(root.mask.input.mask, tx.Facing)
+
+    def test_black_to_white_in_a_mask_stays(self):
+        # em3.36's exact rule holds inside a mask too: the decoded mask of a decoded mask, or its decoded amount
+        root = self._root(colors.GAMMA_OFF, _bw_mix(1, 2), _bw_mix(2, 3), _vcolor(3, (128 / 255,) * 3))
+        self.assertIsInstance(root.mask, tx.Mix)
+        self.close(root.mask.mask.value, _lin(128))
+        by_amount = FakeMap(2, tx.MIX, {0: 0.5}, cls="Mix")
+        self.close(self._root(colors.GAMMA_OFF, _bw_mix(1, 2), by_amount).mask.factor, _lin(127.5))
+        self.close(self._root(colors.GAMMA_ON, _bw_mix(1, 2), by_amount).mask.factor, 0.5)
+
+    def test_color_correction_in_a_mask(self):
+        # brightness 20 over a VRayColor 128 as a mask renders 0.702 in both modes; red to all over (200, 100, 50)
+        # 0.784 in both modes
+        bright = self._cc(2, 3, p11=0, p12=20.0)
+        root = self._root(colors.GAMMA_OFF, _bw_mix(1, 2), bright, _vcolor(3, (128 / 255,) * 3))
+        self.assertEqual(root.mask, tx.Decode(tx.ColorCorrect(tx.Constant((128 / 255,) * 3), brightness=0.2),
+                                              mean=True))
+        red = self._cc(2, 3, p2=3, p3=0, p4=0, p5=0)
+        root = self._root(colors.GAMMA_ON, _bw_mix(1, 2), red, _vcolor(3, PROBE_COLOR))
+        self.assertEqual(root.mask, tx.ColorCorrect(tx.Constant(PROBE_COLOR), (0, 0, 0)),
+                         "gamma on: the color, red picked; the builder's mean of it is 0.784")
+
+    def test_slot_amount_on_stored_values(self):
+        # a VRayMtl self-illumination of color 40 with a VRayColor 220 at amount 50 % renders 0.5098 in both modes;
+        # with a Bitmap of 128 grey 0.329 with the gamma off
+        value = (_lin(40),) * 3
+        ref = mat.MapRef(1, amount=0.5)
+        root = self._root(colors.GAMMA_OFF, _vcolor(1, self.G220), ref=ref, value=value)
+        self.assertIsInstance(root, tx.Constant)
+        self.close(root.value, (_dec(0.509804),) * 3)
+        root = self._root(colors.GAMMA_OFF, _bitmap(1), ref=ref, value=value)
+        self.assertIsInstance(root, tx.Decode)
+        self.close(root.input.a.value, self.G40, "the input's own value as stored")
+        self.image(root.input.b, "a.png", tx.NON_COLOR)
+        self.close(root.input.factor, 0.5)
+        on = self._root(colors.GAMMA_ON, _bitmap(1), ref=ref, value=self.G40)
+        self.assertIsInstance(on, tx.Mix, "gamma on: as before")
+        self.assertEqual(_decodes(on), [])
+        self.close(on.a.value, self.G40)
+        full = self._root(colors.GAMMA_OFF, _bitmap(1), ref=mat.MapRef(1), value=value)
+        self.image(full, "a.png", tx.SRGB)
+        scaled = self._root(colors.GAMMA_OFF, _bitmap(1), ref=mat.MapRef(1, amount=0.5, scale=0.8), value=value)
+        self.assertIsInstance(scaled, tx.Mix, "a scale keeps the decoded mix (not measured)")
+        none = self._root(colors.GAMMA_OFF, _bitmap(1), ref=mat.MapRef(1, amount=0.0), value=value)
+        self.assertEqual(_decodes(none), [], "an amount of 0: the value alone, exact")
+        self.close(none.a.value, value)
 
 
 class TexmapWrappers(Checks):
@@ -2928,21 +3475,22 @@ class TexmapWrappers(Checks):
         self.assertEqual((o["type"], o["direction"]), (1, 0))
         g = self.f.irs["FixtureWrapFalloff"].textures["base_color"]
         self.assertFalse(g.approximated)
-        self.assertEqual(g.root.mask, tx.Facing(tx.PERPENDICULAR, 1.6))
-        side1 = g.root.a
+        root = self.held(g.root)  # gamma off: on the held values (maxdrop-6n0.6.18)
+        self.assertEqual(root.mask, tx.Facing(tx.PERPENDICULAR, 1.6))
+        side1 = root.a
         self.close(side1.factor, o["map1Amount"] / 100.0)
-        self.close(side1.a.value, tuple(_lin(c * 255) for c in o["color1"]))
-        self.image(side1.b, "wrap_fo_map.png", tx.SRGB)
-        self.close(g.root.b.value, tuple(_lin(c * 255) for c in o["color2"]))
+        self.close(side1.a.value, tuple(o["color1"]))
+        self.image(side1.b, "wrap_fo_map.png", tx.NON_COLOR)
+        self.close(root.b.value, tuple(o["color2"]))
 
     def test_falloff_fresnel_and_towards(self):
         o = self.params("falloff", "FixtureFoFresnel")
         t = self.f.irs["FixtureWrapFalloff"].textures
-        self.assertEqual(t["specular"].root.mask.mode, tx.FRESNEL)
-        self.close(t["specular"].root.mask.ior, o["ior"])
+        self.assertEqual(self.held(t["specular"].root).mask.mode, tx.FRESNEL)
+        self.close(self.held(t["specular"].root).mask.ior, o["ior"])
         o = self.params("falloff", "FixtureFoTowards")
         self.assertEqual(o["type"], 0)
-        g = t["emission_color"].root
+        g = self.held(t["emission_color"].root)
         self.assertEqual(g.mask, tx.Facing(tx.TOWARDS, 1.6))
         self.close((g.a.value, g.b.value), (tuple(o["color1"]), tuple(o["color2"])))
 
@@ -2984,20 +3532,21 @@ class TexmapWrappers(Checks):
         for slot, name in (("base_color", "FixtureCCMono"), ("specular", "FixtureCCInvert"),
                            ("emission_color", "FixtureCCCustom")):
             o = self.params("Color_Correction", name)
-            self.assertEqual(t[slot].root.rewire, (o["rewireR"], o["rewireG"], o["rewireB"]), name)
+            self.assertEqual(self.held(t[slot].root).rewire, (o["rewireR"], o["rewireG"], o["rewireB"]), name)
             self.assertFalse(t[slot].approximated, name)
-        self.close(t["specular"].root.brightness, 0.2)
+        self.close(self.held(t["specular"].root).brightness, 0.2)
 
     def test_output_and_tint(self):
         t = self.f.irs["FixtureWrapOutput"].textures
-        out = t["base_color"].root.output
+        adjust = self.held(t["base_color"].root)  # gamma off: on the held values (maxdrop-6n0.6.18)
+        out = adjust.output
         self.assertTrue(out.invert)
         self.close((out.amount, out.level, out.offset), (0.5, 2.0, 0.1))
-        self.image(t["base_color"].root.input, "wrap_out.png", tx.SRGB)
+        self.image(adjust.input, "wrap_out.png", tx.NON_COLOR)
         o = self.params("RGB_Tint", "FixtureTint")
-        tint = t["specular"].root
+        tint = self.held(t["specular"].root)
         self.assertIsInstance(tint, tx.Tint)
-        self.close(tint.red, tuple(_lin(c * 255) for c in o["red"]))
+        self.close(tint.red, tuple(o["red"]), "the rows as stored")
         self.close((tint.green, tint.blue), ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0)))
         self.image(t["emission_color"].root, "wrap_out_plain.png", tx.SRGB)  # an Output with its defaults
 
@@ -3098,7 +3647,7 @@ class FalloffCurve(Checks):
     def root(self, name):
         ir = self.f.irs[name]
         self.assertEqual(list(ir.issues), [], name)
-        return ir.textures["base_color"].root
+        return self.held(ir.textures["base_color"].root, name)  # the fixture's gamma is off (maxdrop-6n0.6.18)
 
     def test_every_map_has_a_row(self):
         self.assertEqual(set(self.rows), set(self.f.irs))
@@ -3143,7 +3692,7 @@ class FalloffCurve(Checks):
     def test_mix_curves_match_3ds_max(self):
         for name in ("FixtureMixCurve", "FixtureMixCurveStep"):
             with self.subTest(name):
-                root = self.root(name)
+                root = self.f.irs[name].textures["base_color"].root
                 self.assertIsInstance(root, tx.Decode)  # gamma off: mixed on the stored values (em3.158)
                 mask = root.input.mask
                 self.assertIsInstance(mask, tx.Smoothstep)
@@ -3158,7 +3707,8 @@ class FalloffCurve(Checks):
                 amount = {"FixtureMixCurve": 0.5, "FixtureMixCurveStep": 0.7}[name]  # tools/fixtures/falloff_curve.ms
                 self.assertAlmostEqual(factor, tx.mix_factor(amount, mask.lower, mask.upper), places=6)
                 self.assertAlmostEqual(factor, self.records[name]["amount"], delta=1e-4)
-        root = self.root("FixtureMixCurveAmount")  # black to white through the curve: folded, shown decoded
+        root = self.f.irs["FixtureMixCurveAmount"].textures["base_color"].root  # black to white through the
+        # curve: folded, shown decoded
         self.assertIsInstance(root, tx.Constant)
         self.close(root.value, (colors.srgb_to_linear(self.rows["FixtureMixCurveAmount"][0]),) * 3)
 
@@ -3252,6 +3802,263 @@ class AnimatedRewiring(Checks):
         self.assertEqual(g.root.rewire, tx.REWIRE_NONE)
         self.assertTrue(g.approximated)
         self.assertTrue(any("rewiring" in r for r in g.issues), g.issues)
+
+
+def _cleaf(cid, payload=b""):
+    return struct.pack("<HI", cid, 6 + len(payload)) + payload
+
+
+def _cnode(cid, *children):
+    body = b"".join(children)
+    return struct.pack("<HI", cid, (6 + len(body)) | 0x80000000) + body
+
+
+_BEZIER_FLOAT = (classids.SC_CTRL_FLOAT, classids.BEZIER_FLOAT, "Bezier Float")
+_BEZIER_COLOR = (classids.SC_CTRL_POINT3, classids.BEZIER_COLOR, "Bezier Color")
+_OTHER_FLOAT = (classids.SC_CTRL_FLOAT, (0x7778, 0), "Some Float")
+
+
+class _KeyedScene(FakeScene):
+    """A FakeScene that also holds controllers as real chunks: {object index: ((superclass, ClassId, name), bytes)},
+    and references {object index: {slot: object index}}."""
+    ticks_per_frame = 160
+
+    def __init__(self, objects, controllers, refs=None):
+        super().__init__(objects, {i: chunks.index(data)[0] for i, (_kind, data) in controllers.items()})
+        self.kinds = {i: kind for i, (kind, _data) in controllers.items()}
+        self._refs = refs or {}
+
+    def entry(self, i):
+        if i in self.kinds:
+            return _ControllerEntry(*self.kinds[i])
+        return super().entry(i)
+
+    def refs(self, i):
+        return dict(self._refs.get(i, {}))
+
+
+def _color_keys(before, after, times=(-10, 10)):
+    """A Bezier Color without a saved value at frame 0: its two keys (80 bytes each) around it."""
+    keys = b"".join(struct.pack("<iI3f", t, 0, *v).ljust(80, bytes(1)) for t, v in zip(times, (before, after)))
+    return _cnode(0x9005, _cnode(0x7127, _cleaf(0x2501, struct.pack("<3f", 9, 9, 9)),
+                                 _cleaf(0x2500, struct.pack("<ii", 5, 5)), _cleaf(0x2526, keys)))
+
+
+def _float_saved(value, keys=0):
+    """A Bezier Float whose saved value holds forever, or (keys > 1) has no interval beside that many keys."""
+    if not keys:
+        return _cnode(0x9003, _cnode(0x7127, _cleaf(0x2501, struct.pack("<f", value)),
+                                     _cleaf(0x2500, struct.pack("<ii", -2 ** 31, 2 ** 31 - 1))))
+    body = b"".join(struct.pack("<iIf4f", 160 * k, 0x1690, value, 0, 0, 1 / 3, 1 / 3) for k in range(keys))
+    return _cnode(0x9003, _cnode(0x7127, _cleaf(0x2501, struct.pack("<f", value)), _cleaf(0x2525, body)))
+
+
+class _OldWithControllers(FakeOld):
+    def __init__(self, values, controllers, color=False):
+        super().__init__(values)
+        self._controllers, self._color = controllers, color
+
+    def controller(self, i):
+        return self._controllers.get(i)
+
+    def controller_slots(self):
+        return len(self._controllers)
+
+    def type(self, i):
+        return 2 if self._controllers.get(i) is not None and self._color else 0
+
+
+class ControllerLines(Checks):
+    """What reading a parameter through its controller meets goes to the report and marks the graph approximated
+    (maxdrop-6n0.6.32), once per map and line in stats however many walks read it; a map's Coordinates and Output
+    (old ParamBlock) are read through their controllers too."""
+
+    def falloff(self, controller):
+        fo = _falloff(1, color1=pblock.Animated(20), name="fo")
+        fo.blocks = {0: _TypedBlock(0, fo.blocks[0]._params, {tx.FO_COLOR1: 2})}
+        graph = FakeGraph(fo)
+        graph.scene = _KeyedScene(graph.objects, {20: controller})
+        return tx.TexmapConverter(graph, _table())
+
+    def test_color_between_two_keys(self):
+        tex = self.falloff((_BEZIER_COLOR, _color_keys((0.2, 0.4, 0.6), (0.6, 0.8, 1.0))))
+        color = tex.convert(mat.MapRef(1), tx.COLOR)
+        mask = tex.convert(mat.MapRef(1), tx.MASK)
+        for g in (color, mask):
+            self.assertTrue(g.approximated)
+            lines = [r for r in g.issues if "parameter 0 at frame 0 (controller 20)" in r]
+            self.assertEqual(len(lines), 1, g.issues)
+            self.assertIn(controllers_mod.KEYS_INTERPOLATED, lines[0])
+            self.assertTrue(lines[0].startswith("'fo': "), lines[0])
+            self.assertNotIn("default", lines[0])
+        self.assertEqual([r for _i, r in tex.stats.issues if "controller 20" in r], [lines[0]])
+        self.assertEqual([i for i, r in tex.stats.issues if "controller 20" in r], [1])
+
+    def test_a_cached_map_replays_its_line(self):
+        """The same map in the same kind for another slot value: a second graph from the cached node, which carries
+        the line and the approximation too."""
+        tex = self.falloff((_BEZIER_COLOR, _color_keys((0.2, 0.4, 0.6), (0.6, 0.8, 1.0))))
+        graphs = [tex.convert(mat.MapRef(1), tx.COLOR, value) for value in ((1.0, 1.0, 1.0), (0.5, 0.5, 0.5))]
+        self.assertIsNot(graphs[0], graphs[1])
+        for g in graphs:
+            self.assertTrue(g.approximated)
+            self.assertEqual(len([r for r in g.issues if "controller 20" in r]), 1, g.issues)
+        self.assertEqual(len([r for _i, r in tex.stats.issues if "controller 20" in r]), 1)
+
+    def test_coordinates_of_another_shape(self):
+        """A Coordinates parameter whose block says color: a controller's color is no tiling (the default, a
+        line)."""
+        tex, g = self.placed({30: (_BEZIER_COLOR, _color_keys((1, 2, 3), (1, 2, 3), times=(0, 10)))},
+                             {"uv": {tx.UV_U_TILING: 0}}, {"uv": {0: 30}}, color=True)
+        self.assertEqual(g.root.mapping.tiling, (1.0, 1.0))
+        self.assertTrue(any(params_mod.DEFAULT_USED in r for r in g.issues), g.issues)
+
+    def test_unknown_class_keeps_the_default(self):
+        tex = self.falloff((_OTHER_FLOAT, _cnode(0x7778, _cleaf(0x2501, struct.pack("<f", 9)))))
+        g = tex.convert(mat.MapRef(1), tx.COLOR)
+        self.assertTrue(g.approximated)
+        lines = [r for r in g.issues if "controller 20" in r]
+        self.assertEqual(lines, ["'fo': parameter 0 at frame 0 (controller 20): %s, %s"
+                                 % (controllers_mod.UNKNOWN_CLASS, params_mod.DEFAULT_USED)])
+
+    def test_a_value_read_without_an_issue_gives_no_line(self):
+        tex = self.falloff((_BEZIER_COLOR, _color_keys((0.2, 0.4, 0.6), (0.6, 0.8, 1.0), times=(0, 10))))
+        g = tex.convert(mat.MapRef(1), tx.COLOR)
+        self.assertEqual((g.approximated, g.issues), (False, ()))
+
+    def test_a_dome_map_line_heard_by_the_converter_and_the_dome_once(self):
+        """A VRayBitmap whose mapping type and horizontal rotation controllers hold, as a dome's map: the converter
+        reads the type (its line in the TextureGraphIR's issues), dome_texture reads it again and the rotation, which
+        the converter does not read. Given its own graph or the converter's FrameZeroGraph (rewrapped): the type's
+        line once, the rotation's in the dome's issues, nothing told to the converter's stats."""
+        lights = importlib.import_module(_PKG + ".convert.lights")
+
+        class Index:
+            def find(self, path, resolved=""):
+                return ("found", path)
+
+        vb = _vbitmap(1, p2=pblock.Animated(20), p3=pblock.Animated(21))
+        vb.blocks = {0: _TypedBlock(0, vb.blocks[0]._params, {tx.VB_MAP_TYPE: 1, lights.VB_H_ROTATION: 0})}
+        graph = FakeGraph(vb)
+        graph.scene = _KeyedScene(graph.objects, {20: (_BEZIER_FLOAT, _float_saved(float(lights.VB_SPHERICAL), 2)),
+                                                  21: (_BEZIER_FLOAT, _float_saved(0.5, 2))})
+        head = "'vb': parameter %d at frame 0 (controller %d): " + controllers_mod.ANIMATED
+        kind, turn = head % (tx.VB_MAP_TYPE, 20), head % (lights.VB_H_ROTATION, 21)
+        for which in ("raw", "converter's"):
+            tex = tx.TexmapConverter(graph, _table(), textures=Index())
+            g = tex.convert(mat.MapRef(1), tx.COLOR)
+            self.assertEqual([r for r in g.issues if "at frame 0" in r], [kind], which)
+            told = list(tex.stats.issues)
+            dt, issues = lights.dome_texture(g, graph if which == "raw" else tex.graph)
+            self.assertEqual((dt.turn, issues), (0.5, [kind, turn]), which)
+            self.assertEqual(tex.stats.issues, told, which)
+
+    def placed(self, controllers, old, owned=None, color=False):
+        """A Bitmap with Coordinates (UVGen 50) and Output (70) parts, each an old block (object 51, 71) whose
+        controllers are {parameter index: reference slot}; the blocks' references {slot: controller}."""
+        b = _bitmap(1)
+        b.parts = {0: reader_materials.Part(UVGEN_OBJECT, classids.STD_UVGEN, classids.SC_UVGEN, {},
+                                            {0: _OldWithControllers({}, old.get("uv", {}), color)}),
+                   1: reader_materials.Part(70, classids.STD_TEXOUTPUT, classids.SC_TEXOUTPUT, {},
+                                            {1: _OldWithControllers({}, old.get("out", {}))})}
+        refs = {UVGEN_OBJECT: {0: 51}, 70: {1: 71}, 51: owned.get("uv", {}) if owned else {},
+                71: owned.get("out", {}) if owned else {}}
+        graph = FakeGraph(b)
+        graph.scene = _KeyedScene(graph.objects, controllers, refs)
+        tex = tx.TexmapConverter(graph, _table())
+        return tex, tex.convert(mat.MapRef(1), tx.COLOR)
+
+    def test_coordinates_and_output_held_by_controllers(self):
+        tex, g = self.placed({30: (_BEZIER_FLOAT, _float_saved(4.0)), 31: (_BEZIER_FLOAT, _float_saved(0.5))},
+                             {"uv": {tx.UV_U_TILING: 0}, "out": {tx.OUT_AMOUNT: 0}},
+                             {"uv": {0: 30}, "out": {0: 31}})
+        self.assertEqual(g.root.mapping.tiling, (4.0, 1.0))
+        self.assertEqual(g.root.output.amount, 0.5)
+        self.assertEqual((g.approximated, g.issues), (False, ()))
+
+    def test_coordinates_with_an_approximation_or_no_value(self):
+        tex, g = self.placed({30: (_BEZIER_FLOAT, _float_saved(4.0, keys=2)),
+                              31: (_OTHER_FLOAT, _cnode(0x7778)), 32: (_BEZIER_FLOAT, _float_saved(0.25))},
+                             {"uv": {tx.UV_U_TILING: 0, tx.UV_V_TILING: 1, tx.UV_U_OFFSET: 2}},
+                             {"uv": {0: 30, 1: 31, 2: 32}})
+        self.assertEqual(g.root.mapping.tiling, (4.0, 1.0))  # the saved value (maybe another frame's); unknown: 1
+        self.assertEqual(g.root.mapping.offset, (0.25, 0.0))
+        self.assertTrue(g.approximated)
+        head = "'map' Coordinates: parameter %d at frame 0 (controller %s): "
+        self.assertEqual(sorted(r for r in g.issues if "at frame 0" in r), sorted([
+            head % (tx.UV_U_TILING, 30) + controllers_mod.ANIMATED,
+            head % (tx.UV_V_TILING, 31) + controllers_mod.UNKNOWN_CLASS + ", " + params_mod.DEFAULT_USED]))
+        self.assertEqual({i for i, r in tex.stats.issues if "at frame 0" in r}, {1})  # under the map
+
+    def test_coordinates_whose_block_misses_a_controller_slot(self):
+        """Three animated Coordinates parameters and two references: which parameter lost its slot is not known (a
+        later one would read another's controller), so none is read: each at its default, a line naming the
+        mismatch."""
+        tex, g = self.placed({30: (_BEZIER_FLOAT, _float_saved(4.0)), 31: (_BEZIER_FLOAT, _float_saved(2.0))},
+                             {"uv": {tx.UV_U_TILING: 0, tx.UV_V_TILING: 1, tx.UV_U_OFFSET: 2}},
+                             {"uv": {0: 30, 1: 31}})
+        self.assertEqual((g.root.mapping.tiling, g.root.mapping.offset), ((1.0, 1.0), (0.0, 0.0)))
+        self.assertTrue(g.approximated)
+        line = "'map' Coordinates: parameter %d at frame 0 (controller missing): %s, %s"
+        self.assertEqual(sorted(r for r in g.issues if "at frame 0" in r), sorted(
+            line % (pid, params_mod.SLOTS % (2, 3), params_mod.DEFAULT_USED)
+            for pid in (tx.UV_U_TILING, tx.UV_V_TILING, tx.UV_U_OFFSET)))
+
+
+class CoronaGroup(Checks):
+    """maxdrop-6n0.6.23 and maxdrop-6n0.6.40: Corona 12 renders (local probes, docs/FORMAT.md)."""
+
+    def test_vray_dirt_is_white_under_corona(self):
+        """V-Ray 5.2 renders a VRayDirt's unoccluded map, or its color with the map off; Corona 12 white either way."""
+        for switch in (1, 0):
+            for renderer, want in ((tx.CORONA_RENDERER, None), (None, "map")):
+                with self.subTest(switch=switch, renderer=renderer):
+                    dirt = FakeMap(1, tx.VRAY_DIRT, {13: (0.2, 0.8, 0.2), 17: Ref(2), 18: switch}, [2], cls="VRayDirt")
+                    tex = tx.TexmapConverter(FakeGraph(dirt, _bitmap(2)), _table(), renderer=renderer)
+                    g = tex.convert(mat.MapRef(1), tx.COLOR)
+                    d = tex.convert(mat.MapRef(1), tx.DATA)
+                    if want is None:
+                        self.assertEqual(g.root, tx.Constant((1.0, 1.0, 1.0)))
+                        self.assertEqual(d.root, tx.Constant(1.0))
+                        self.assertFalse(g.approximated, "what Corona renders: exact")
+                        self.assertEqual(tex.stats.peeled, collections.Counter())
+                    elif switch:
+                        self.assertEqual(g.root.name, "a.png")
+                    else:
+                        self.close(g.root.value, (0.2, 0.8, 0.2), "the unoccluded color")
+                    self.assertEqual(tex.stats.issues, [])
+
+    def test_map_switches_are_read_under_corona(self):
+        """Corona honors Mix, RGB Multiply and Falloff switches as V-Ray (6n0.6.23): a switched-off map leaves the
+        map's own color under Corona too (Composite's are table switches, read by the same code in any scene)."""
+        green = (0.2, 0.8, 0.2)
+        cases = (FakeMap(1, tx.MIX, {0: 0.0, 4: green, 5: (0.2, 0.2, 0.8), 6: Ref(2), 9: 0}, [2], cls="Mix"),
+                 FakeMap(1, tx.RGB_MULTIPLY, {0: green, 1: (1.0, 1.0, 1.0), 2: Ref(2), 4: 0}, [2],
+                         cls="RGB Multiply"),
+                 FakeMap(1, tx.FALLOFF, {tx.FO_TYPE: 1, 0: green, 4: green, 2: Ref(2), 3: 0, 6: Ref(2), 7: 0},
+                         [2], cls="Falloff"))
+        for m in cases:
+            with self.subTest(m.cls):
+                tex = tx.TexmapConverter(FakeGraph(m, _bitmap(2)), _table(), renderer=tx.CORONA_RENDERER)
+                root = tex.convert(mat.MapRef(1), tx.COLOR).root
+                self.assertNotIn("a.png", repr(root), "the switched-off map is not drawn")
+                self.assertIn(repr(green), repr(root), "its own color")
+
+    def test_corona_mix_gamma_magnitude(self):
+        """A CoronaMix gamma over a bottom map: in sRGB mode Corona raises the bottom's magnitude (renderMap:
+        multiplierBottom -1 renders the positive bottom's values, 6n0.6.40), so the ColorCorrect takes it; with
+        mix in sRGB off the sign is left as it is. A Color Correction map's own gamma never takes it."""
+        for srgb in (1, 0):
+            with self.subTest(srgb=srgb):
+                cm = _cmix(1, [2], p200=7, p207=Ref(2), p208=(0.5, 0.5, 0.5), p214=srgb)
+                root = _tex(cm, _cbitmap(2)).convert(mat.MapRef(1), tx.COLOR).root
+                self.assertIsInstance(root, tx.ColorCorrect)
+                self.assertEqual(root.magnitude, bool(srgb))
+                self.close(root.gamma, 0.5 ** (1 / 2.2) if srgb else 0.5)
+        cc = FakeMap(1, tx.COLOR_CORRECTION, {1: Ref(2), 11: 1, 22: 2.0}, [2], cls="Color Correction")
+        root = _tex(cc, _bitmap(2)).convert(mat.MapRef(1), tx.COLOR).root
+        self.assertIsInstance(root, tx.ColorCorrect)
+        self.assertFalse(root.magnitude)
 
 
 if __name__ == "__main__":

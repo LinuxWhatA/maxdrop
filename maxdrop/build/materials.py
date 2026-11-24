@@ -23,6 +23,19 @@ channel) and Scale (its radius in meters), Sheen Weight, Tint and Roughness, Thi
 layer's amount times its mask); the render method follows every one of them. A color graph on a float input (specular,
 transmission) goes through the mean of its channels, the measure convert/materials.py uses.
 
+Medium (MaterialIR.medium, the Corona volumes, maxdrop-em3.163): on the Material Output's Volume socket, the sum (Add
+Shader) of a Volume Scatter (density the largest scattering coefficient, color each channel's share of it, anisotropy),
+a Volume Absorption (density the largest absorption coefficient, color 1 - each channel's share) and an Emission
+(color the emission over its largest channel, strength that channel), each where it is above 0: Cycles takes the
+coefficients per meter of world space, which convert/materials.py gives. A volume-only material (CoronaVolumeMtl:
+a medium, alpha 0 without a map, no layers) leaves the Surface unlinked once its Volume is (maxdrop-6n0.6.29): Cycles
+then crosses the box as a volume boundary, where an Alpha-0 Principled BSDF spends two of the 8 transparent bounces
+per box (six stacked boxes render black); its viewport color is VOLUME_VIEWPORT_ALPHA opaque, so Solid view shows the
+scene inside. Without a medium it keeps its Principled BSDF at Alpha 0: an unlinked Surface with nothing on Volume
+renders black in Cycles. A medium that scatters is a builder issue (VOLUME_BOUNCES): Cycles scatters once at its
+default Volume Bounces of 0, and the import changes no scene setting (owner, 2026-11-24); not with Corona's single
+bounce on (Medium.single), which that default renders.
+
 Reflection weight: V-Ray (and 3ds Max's Physical and Corona materials) multiply the whole Fresnel curve by it, where
 Specular IOR Level scales only the reflectance facing the camera and the curve still rises to 1 at grazing. So a
 weight w between 0 and 1, or a map, is a Mix Shader (WEIGHT_LABEL) by w between a twin of the filled Principled BSDF
@@ -49,8 +62,9 @@ white glass keeps 0.999 of the white environment in Cycles (0.83 without the mas
 BSDF has no multiscatter GGX), and a Principled with a metallic, an alpha below 1 or a map, an emission, a coat or a
 sheen (none of which a Refraction BSDF has) keeps em3.119's twin, whose glass still reflects in full. Not measured against V-Ray (no V-Ray render of a glass with a grey reflection).
 An IR whose fresnel is off (VRayMtl Fresnel off) reflects its weight at every angle: the same Mix Shader then has the
-filled BSDF at Specular IOR Level 0 first and a copy of it second (MIRROR_LABEL: Metallic 1, Base Color white, both
-unlinked), a white metal reflecting 1 at every angle, so w + (1 - w) diffuse. Measured on V-Ray 5.2 (bead
+filled BSDF at Specular IOR Level 0 first and a copy of it second (MIRROR_LABEL: Metallic 1, Base Color the IR's
+mirror_color, white unless a VRayMtl's colored swatch tints it, both unlinked), a metal reflecting that color at every
+angle, so w x color + (1 - w) diffuse. Measured on V-Ray 5.2 (bead
 maxdrop-em3.120, the same scene): a 0.2 swatch reflects 0.200 facing the camera, where Specular IOR Level 0.1 gave
 0.011. A reflection map that did not convert, or whose image is not found, keeps the twin (its swatch is a weight with
 Fresnel), so a bright swatch it hid never becomes a mirror. On refracting glass (refracting() above, full or partial)
@@ -78,7 +92,7 @@ to 0 by hand, orthographic camera, a checker world of 0.1 / 0.9): a sphere's mea
 rotated cube's from 0.206-0.221 to 0.196-0.217, both far off), and on a white world half transmission (sphere and
 cube) moves away from Cycles' 0.851-0.853 (0.975-0.983, the default 0.896-0.905).
 Glass that refracting() refuses keeps the filled BSDF under the mirror, its glass Fresnel still reflecting; a
-constant w of at least 1 keeps the lone BSDF (a VRayMtl's bright Fresnel-off reflection is a metal before it gets
+constant w of at least 1 keeps the lone BSDF (a VRayMtl's full Fresnel-off reflection is a metal before it gets
 here). Not measured against V-Ray.
 
 Data maps (a map on roughness, metallic or alpha, a mask, a bump height: a graph drawn as a float) take the mean of
@@ -97,9 +111,10 @@ a CoronaMix Multiply as a Mix mask), red x green gives 1/9 (not 0) and yellow x 
 Texture graphs (convert/texmaps.py) become nodes, a node of the IR shared by several inputs once per material: Image
 -> Image Texture (its image datablock reused per file and color space: one file used in two color spaces is two
 datablocks; see Images below), with its placement as a Mapping node and a UV Map node for a map channel other than
-1; Invert, Decode (a Gamma node of 2.2, a constant through the sRGB curve), Mix, Multiply, Blend (Gamma nodes around a
-Mix node of its operation or Vector Math nodes), ColorCorrect (its rewiring as Invert, the mean or Separate / Combine
-Color, then Hue/Saturation/Value, Bright/Contrast, gain, Gamma), Composite
+1; Invert, Decode (a Gamma node of 2.2, a constant through the sRGB curve; a mean: the sRGB curve in Math nodes), Mix,
+Multiply, Blend (Gamma nodes around a Mix node of its operation or Vector Math nodes), ColorCorrect (its rewiring as
+Invert, the mean or Separate / Combine Color, then Hue/Saturation/Value for the hue, the saturation in HSL (Math
+and Vector Math nodes), Bright/Contrast, gain, Gamma (a Vector Math ABSOLUTE before it with magnitude)), Composite
 (per layer its blend at factor 1, then a Mix by opacity x mask), Facing (Layer Weight Facing, Fresnel, or the
 Geometry node's Normal . Incoming), Remap (Float Curve, its points straight between them, not clipped; the Mix it
 drives does not clamp its factor), Smoothstep (Map Range SMOOTHSTEP, or a step: 1 - LESS_THAN), Adjust (a map's
@@ -128,7 +143,8 @@ Map channel 0 (the vertex color as UVW) has no UV layer: such a map is drawn on 
 A texture file that holds no image (empty, or not starting as its format does: image_has_data) is reported and
 left out as one that does not load. A material whose build raises is removed again and reported: its slot stays
 empty.
-Alpha: Material.surface_render_method only, BLENDED for a constant alpha below 1, DITHERED for an alpha map.
+Alpha: Material.surface_render_method only, BLENDED for a constant alpha below 1, DITHERED for an alpha map; a
+volume-only material keeps the default (no surface: Medium above).
 
 Images: an image already in the file (an earlier import's, or the user's) is reused for the same file and color
 space when it is still that file: a local image (no library), source FILE, not packed, not modified (is_dirty
@@ -153,13 +169,17 @@ from ..convert import texmaps as tx
 
 SPECULAR_LEVEL = 0.5
 TWIN_LABEL, WEIGHT_LABEL = "Without reflection", "Reflection weight"  # reflection_weight()'s nodes
-MIRROR_LABEL = "Mirror reflection"  # reflection_weight()'s copy for a weight without Fresnel
+MIRROR_LABEL = "Mirror reflection"  # reflection_weight()'s copy for a weight without Fresnel (Base Color: its color)
 MIRROR_INPUTS = {"Metallic": 1.0, "Base Color": (1.0, 1.0, 1.0, 1.0), "Specular IOR Level": SPECULAR_LEVEL}
 REFRACTION_LABEL = "Refraction without reflection"  # reflection_weight()'s twin of refracting glass
 TIR_LABEL = "Total internal reflection"  # tir_weight()'s nodes
 TIR_FRESNEL = 0.9999  # a Fresnel above it: the glass reflects totally (the Fresnel node gives 1 there)
 CLIP_LABEL = "Clip"  # the node that masks an image's output (clip_axes)
 MAX_LAYER_DEPTH = 8  # layers within layers drawn (convert/materials.py already stops a deeper or cyclic chain)
+SRGB_CURVE_COLUMNS = 3  # srgb_curve's node columns: its Mix at depth, its Math nodes at depth + 1 and depth + 2
+VOLUME_VIEWPORT_ALPHA = 0.1  # a volume-only material's viewport color alpha: Solid view shows what is inside
+VOLUME_BOUNCES = ("its medium scatters: Cycles scatters once at its default Volume Bounces of 0 (Render Properties > "
+                  "Light Paths); raise them for multiple scattering, as Corona renders it")
 X_STEP, Y_STEP = 300, 280
 COLOR, FLOAT = "color", "float"
 # Blend op -> the Mix node's blend type drawn at factor 1 (A the bottom; hard light swaps them, linear burn is an
@@ -169,7 +189,8 @@ BLEND_OPS = {tx.BLEND_ADD: 'ADD', tx.BLEND_SUBTRACT: 'SUBTRACT', tx.BLEND_DIVIDE
              tx.BLEND_MAX: 'LIGHTEN', tx.BLEND_DIFFERENCE: 'DIFFERENCE', tx.BLEND_SCREEN: 'SCREEN',
              tx.BLEND_OVERLAY: 'OVERLAY', tx.BLEND_HARD_LIGHT: 'OVERLAY', tx.BLEND_LINEAR_BURN: 'ADD',
              tx.BLEND_LINEAR_LIGHT: 'LINEAR_LIGHT'}
-NON_NEGATIVE_BLENDS = (tx.BLEND_SUBTRACT, tx.BLEND_DIFFERENCE, tx.BLEND_LINEAR_BURN, tx.BLEND_BURN)  # no ABSOLUTE
+# never below 0 on the layers' magnitudes: no closing ABSOLUTE
+NON_NEGATIVE_BLENDS = (tx.BLEND_ADD, tx.BLEND_SUBTRACT, tx.BLEND_DIFFERENCE, tx.BLEND_LINEAR_BURN, tx.BLEND_BURN)
 # Composite blend mode -> the Mix node's blend type drawn at factor 1 (texmaps: AVERAGE, SPOTLIGHT, SPOTLIGHT_BLEND
 # and HARD_LIGHT have forms of their own, LINEAR_DODGE is ADD clamped before the opacity, as measured)
 BLEND_TYPES = {tx.ADDITION: 'ADD', tx.SUBTRACT: 'SUBTRACT', tx.DARKEN: 'DARKEN', tx.MULTIPLY_BLEND: 'MULTIPLY',
@@ -431,6 +452,12 @@ def _key(path, colorspace):
     return os.path.normcase(os.path.abspath(path)), colorspace
 
 
+def _volume_only(ir):
+    """Whether a MaterialIR renders no surface but its medium: alpha 0 without a map, no layers (CoronaVolumeMtl)."""
+    return (ir.medium is not None and _mean(ir.alpha.value) == 0.0 and "alpha" not in ir.textures
+            and not ir.layers)
+
+
 class _Tree:
     """The node tree of one material while it is built."""
 
@@ -471,9 +498,13 @@ class _Tree:
             _default(socket, value)
 
     def socket(self, value, space, depth):
-        """A node output for a value: the value itself when it is one, else an RGB or Value node holding it."""
+        """A node output for a value: the value itself when it is one, else an RGB or Value node holding it (a color
+        with a channel below 0 a Combine XYZ node: unclamped)."""
         if isinstance(value, bpy.types.NodeSocket):
             return value
+        held = self.unclamped(value, space, depth)
+        if held is not value:
+            return held
         if space == COLOR:
             n = self.node("ShaderNodeRGB", depth)
             n.outputs[0].default_value = _as(value, COLOR) + (1.0,)
@@ -556,19 +587,20 @@ class _Tree:
         s = self.bsdf.inputs.get(name)
         return s is not None and not s.is_linked and s.default_value >= bound
 
-    def reflection_weight(self, bsdf, weight, mirror=False):
+    def reflection_weight(self, bsdf, weight, mirror=False, color=(1.0, 1.0, 1.0)):
         """bsdf (at the IOR's full Fresnel) mixed by weight over a twin without reflection: the Mix Shader's
         output. The twin has bsdf's links and values, but Specular IOR Level 0; on refracting glass it refracts
         without reflecting (refraction_twin), and the weight is 1 where the glass reflects totally (tir_weight).
-        mirror: the second shader is bsdf's copy as a white metal (MIRROR_LABEL: MIRROR_INPUTS, Specular IOR Level
-        0.5 only for an edit that lowers Metallic), the first bsdf (without reflection), or on refracting glass the
-        refraction twin (bsdf, whose glass still reflects, then feeds nothing)."""
+        mirror: the second shader is bsdf's copy as a metal of color (MIRROR_LABEL: MIRROR_INPUTS with that Base
+        Color, Specular IOR Level 0.5 only for an edit that lowers Metallic), the first bsdf (without reflection), or
+        on refracting glass the refraction twin (bsdf, whose glass still reflects, then feeds nothing)."""
         self.start_row()
         y = self.row - Y_STEP
         self.columns[-1] = self.row - 2 * Y_STEP
         above = _out(bsdf, "BSDF")
         if mirror:
-            above = self.copy_principled(bsdf, MIRROR_LABEL, MIRROR_INPUTS, y)
+            own = dict(MIRROR_INPUTS, **{"Base Color": tuple(color[:3]) + (1.0,)})
+            above = self.copy_principled(bsdf, MIRROR_LABEL, own, y)
         if self.refracting(bsdf):
             if mirror:
                 y -= Y_STEP
@@ -702,15 +734,59 @@ class _Tree:
         alphas = []
         top = self.layered(self.bsdf, ir, alphas, 0)
         out = next(n for n in self.nodes if n.bl_idname == "ShaderNodeOutputMaterial")
-        self.links.new(top, _in(out, "Surface"))
+        surface = self.links.new(top, _in(out, "Surface"))
         m = self.material
-        if any(linked for linked, _v in alphas):
+        linked = ir.medium is not None and self.volume(ir.medium, out)
+        volume_only = linked and _volume_only(ir)
+        if volume_only:  # a volume boundary, no surface (see Medium above)
+            self.links.remove(surface)
+        elif any(linked for linked, _v in alphas):
             m.surface_render_method = 'DITHERED'
         elif any(v is not None and v < 1.0 for _l, v in alphas):
             m.surface_render_method = 'BLENDED'
-        m.diffuse_color = _as(ir.base_color.value, COLOR) + (1.0,)
+        m.diffuse_color = _as(ir.base_color.value, COLOR) + (VOLUME_VIEWPORT_ALPHA if volume_only else 1.0,)
         m.metallic = min(1.0, max(0.0, _mean(ir.metallic.value)))
         m.roughness = min(1.0, max(0.0, _mean(ir.roughness.value)))
+        if linked and max(ir.medium.scattering) > 0.0 and not ir.medium.single:
+            self.builder.issue(self.label, VOLUME_BOUNCES)
+
+    def volume(self, medium, out):
+        """A convert.materials.Medium on out's Volume socket (see Medium above); nothing for an empty one. Whether
+        it linked the socket."""
+        shaders = []
+        y = min(self.columns.values(), default=0.0) - Y_STEP
+        parts = (("ShaderNodeVolumeScatter", medium.scattering, False), ("ShaderNodeVolumeAbsorption",
+                                                                         medium.absorption, True))
+        for kind, coefficients, complement in parts:
+            density = max(coefficients)
+            if density <= 0.0:
+                continue
+            n = self.nodes.new(kind)
+            share = tuple(c / density for c in coefficients)
+            _in(n, "Color").default_value = tuple(1.0 - c if complement else c for c in share) + (1.0,)
+            _in(n, "Density").default_value = density
+            if not complement:
+                _in(n, "Anisotropy").default_value = medium.anisotropy
+            shaders.append(n)
+        strength = max(medium.emission)
+        if strength > 0.0:
+            n = self.nodes.new("ShaderNodeEmission")
+            _in(n, "Color").default_value = tuple(c / strength for c in medium.emission) + (1.0,)
+            _in(n, "Strength").default_value = strength
+            shaders.append(n)
+        if not shaders:
+            return False
+        for i, n in enumerate(shaders):
+            n.location = (0.0, y - i * Y_STEP)
+        top = shaders[0].outputs[0]
+        for n in shaders[1:]:
+            add = self.nodes.new("ShaderNodeAddShader")
+            add.location = (X_STEP * 0.5, n.location[1])
+            self.links.new(top, add.inputs[0])
+            self.links.new(n.outputs[0], add.inputs[1])
+            top = add.outputs[0]
+        self.links.new(top, _in(out, "Volume"))
+        return True
 
     def layered(self, bsdf, ir, alphas, level):
         """Fill bsdf from ir and mix ir's layers over it: the shader output on top. alphas gets (alpha linked, alpha
@@ -780,7 +856,7 @@ class _Tree:
         if ir.thin_walled:
             self.value("Thin Wall", True)
         alpha = self.bsdf_input("Alpha", needed=False)
-        top = _out(bsdf, "BSDF") if weight is None else self.reflection_weight(bsdf, *weight)
+        top = _out(bsdf, "BSDF") if weight is None else self.reflection_weight(bsdf, *weight, color=ir.mirror_color)
         return top, (alpha_map, (None if alpha is None or alpha_map else alpha.default_value))
 
     def graph(self, node, space, depth):
@@ -1095,11 +1171,42 @@ class _Tree:
 
     def decode(self, n, space, depth):
         """A gamma-off scene's display-referred color as linear: its input in color, a constant through the sRGB
-        curve, a socket through a Gamma node of 2.2 (texmaps.Decode); MISSING stays."""
-        v = self.graph(n.input, COLOR, depth + 1)
-        if v is MISSING or isinstance(v, bpy.types.NodeSocket):
-            return v if v is MISSING else self.gamma(v, tx.SRGB_GAMMA, depth)
-        return _as(tuple(colors.srgb_to_linear(c) for c in _as(v, COLOR)), space)
+        curve, a socket through a Gamma node of 2.2 (texmaps.Decode); a mean (Decode.mean) the mean of its channels
+        through the sRGB curve, a socket's in Math nodes (srgb_curve); MISSING stays."""
+        mean = depth + SRGB_CURVE_COLUMNS  # mean_of's column, left of the curve's; the input one further left
+        v = self.graph(n.input, COLOR, mean + 1 if n.mean else depth + 1)
+        if v is MISSING:
+            return v
+        if isinstance(v, bpy.types.NodeSocket):
+            if n.mean:
+                return self.srgb_curve(self.mean_of(v, mean), depth)
+            return self.gamma(v, tx.SRGB_GAMMA, depth)
+        rgb = _as(v, COLOR)
+        if n.mean:
+            return _as(colors.srgb_to_linear(sum(rgb) / 3.0), space)
+        return _as(tuple(colors.srgb_to_linear(c) for c in rgb), space)
+
+    def srgb_curve(self, f, depth):
+        """Float socket f through the sRGB curve (colors.srgb_to_linear), exact: f / 12.92 below 0.04045, else
+        ((f + 0.055) / 1.055) ^ 2.4 (the two agree there within 1e-7); a FLOAT Mix by a LESS_THAN picks one."""
+        def op(operation, col, *inputs):
+            m = self.node("ShaderNodeMath", col)
+            m.operation = operation
+            for k, x in enumerate(inputs):
+                if isinstance(x, bpy.types.NodeSocket):
+                    self.links.new(x, m.inputs[k])
+                else:
+                    m.inputs[k].default_value = x
+            return m.outputs[0]
+        shifted = op('MULTIPLY_ADD', depth + 2, f, 1.0 / 1.055, 0.055 / 1.055)
+        power = op('POWER', depth + 1, shifted, 2.4)
+        linear = op('DIVIDE', depth + 1, f, 12.92)
+        low = op('LESS_THAN', depth + 1, f, colors.SRGB_KNEE)
+        node, a, b, result = self.mix_node(FLOAT, depth)
+        self.links.new(power, a)
+        self.links.new(linear, b)
+        self.links.new(low, _in(node, "Factor_Float"))
+        return result
 
     def mix_node(self, space, depth, blend='MIX'):
         """A Mix node of the space's data type: (node, A, B, Result)."""
@@ -1110,14 +1217,14 @@ class _Tree:
         return n, _in(n, "A_" + kind), _in(n, "B_" + kind), _out(n, "Result_" + kind)
 
     def mix(self, n, space, depth):
-        """A missing side gives the other one; a missing mask the mix amount."""
+        """A missing side gives the other one; a missing mask the mix amount. A constant side below 0: unclamped."""
         va, vb = self.graph(n.a, space, depth + 1), self.graph(n.b, space, depth + 1)
         mask = self.graph(n.mask, FLOAT, depth + 1) if n.mask is not None else MISSING  # its node even when unused
         if va is MISSING or vb is MISSING:
             return vb if va is MISSING else va
         node, a, b, result = self.mix_node(space, depth)
-        self.feed(a, va)
-        self.feed(b, vb)
+        self.feed(a, self.unclamped(va, space, depth + 1))
+        self.feed(b, self.unclamped(vb, space, depth + 1))
         self.feed(_in(node, "Factor_Float"), n.factor if mask is MISSING else mask)
         # Only a Remap mask unclamps: a Smoothstep one's clamped Map Range (or step) never leaves 0..1.
         if isinstance(n.mask, tx.Remap) and mask is not MISSING:
@@ -1125,7 +1232,8 @@ class _Tree:
         return result
 
     def multiply(self, n, space, depth):
-        """A missing side gives the other one when that is a map, else MISSING (a slot amount times a lost map)."""
+        """A missing side gives the other one when that is a map, else MISSING (a slot amount times a lost map). A
+        constant side below 0: unclamped."""
         va, vb = self.graph(n.a, space, depth + 1), self.graph(n.b, space, depth + 1)
         if va is MISSING or vb is MISSING:
             other = vb if va is MISSING else va
@@ -1139,17 +1247,18 @@ class _Tree:
             node = self.node("ShaderNodeMath", depth)
             node.operation = 'MULTIPLY'
             a, b, result = node.inputs[0], node.inputs[1], node.outputs[0]
-        self.feed(a, va)
-        self.feed(b, vb)
+        self.feed(a, self.unclamped(va, space, depth + 1))
+        self.feed(b, self.unclamped(vb, space, depth + 1))
         return result
 
     def arith(self, n, depth):
-        """A Blend (a color socket): with a gamma both sides' magnitudes (a Vector Math ABSOLUTE on a map side, a
-        constant's own) through a Gamma node of 1 / gamma; the operation (a Mix node at factor 1, not clamped, A the
-        bottom: subtract and linear burn floored at 0 by a Vector Math MAXIMUM, linear burn minus 1 first; dodge,
-        burn and exclusion as Vector Math nodes, Corona's unclamped formulas: _dodge_burn, multiply_add); then a Vector
-        Math ABSOLUTE (but for NON_NEGATIVE_BLENDS) and a Gamma node of gamma. A missing side gives the other one when
-        that is a map, else MISSING, as for Multiply."""
+        """A Blend (a color socket): with a gamma both sides' magnitudes to the power 1 / gamma (a map side through a
+        Vector Math ABSOLUTE and a Gamma node, a constant folded); the operation (a Mix node at factor 1, not
+        clamped, A the bottom: subtract and linear burn floored at 0 by a Vector Math MAXIMUM, linear burn minus 1
+        first; dodge, burn and exclusion as Vector Math nodes, Corona's unclamped formulas: _dodge_burn,
+        multiply_add; a constant below 0 on a Mix input: unclamped); then a Vector Math ABSOLUTE (but for
+        NON_NEGATIVE_BLENDS) and a Gamma node of gamma. A missing side gives the other one when that is a map, else
+        MISSING, as for Multiply."""
         va, vb = self.graph(n.a, COLOR, depth + 2), self.graph(n.b, COLOR, depth + 2)
         if va is MISSING or vb is MISSING:
             other = vb if va is MISSING else va
@@ -1160,10 +1269,9 @@ class _Tree:
         for v in (va, vb):
             if n.gamma != 1.0:  # Corona takes a negative layer's magnitude (renderMap, maxdrop-em3.161)
                 if isinstance(v, bpy.types.NodeSocket):
-                    v = self.vector_math('ABSOLUTE', v, None, depth + 2)
+                    v = self.gamma(self.vector_math('ABSOLUTE', v, None, depth + 2), 1.0 / n.gamma, depth + 1)
                 else:
-                    v = tuple(abs(c) for c in _as(v, COLOR))
-                v = self.gamma(self.socket(v, COLOR, depth + 2), 1.0 / n.gamma, depth + 1)
+                    v = tuple(abs(c) ** (1.0 / n.gamma) for c in _as(v, COLOR))
             sides.append(v)
         if n.op == tx.BLEND_DODGE:
             out = self._dodge_burn(sides[0], self.multiply_add(sides[1], -1.0, 1.0, depth), True, depth)
@@ -1177,8 +1285,8 @@ class _Tree:
             node.clamp_result = False
             if n.op == tx.BLEND_HARD_LIGHT:  # overlay with the layers' roles swapped
                 sides.reverse()
-            self.feed(a, sides[0])
-            self.feed(b, sides[1])
+            for socket, v in zip((a, b), sides):
+                self.feed(socket, self.unclamped(v, COLOR, depth + 1))
         if n.op == tx.BLEND_LINEAR_BURN:
             out = self.vector_math('ADD', out, (-1.0, -1.0, -1.0), depth)
         if n.op in (tx.BLEND_SUBTRACT, tx.BLEND_LINEAR_BURN):
@@ -1210,6 +1318,20 @@ class _Tree:
         k = self.vector_math('MAXIMUM', _out(k, "Vector"), (0.0, 0.0, 0.0), depth)
         return self.multiply_add(k, -1.0, 1.0, depth) if dodge else k
 
+    def unclamped(self, value, space, depth):
+        """value for a Mix node's input: in color a constant with a channel below 0 as a Combine XYZ node's output (a
+        color input clamps its own value at 0 in Blender 4.2 to 5.2, maxdrop-6n0.6.26), else value itself."""
+        if space == COLOR and not isinstance(value, bpy.types.NodeSocket) and min(_as(value, COLOR)) < 0.0:
+            return self.combine_xyz(value, depth)
+        return value
+
+    def combine_xyz(self, value, depth):
+        """A constant color as a Combine XYZ node's output, which keeps a channel below 0."""
+        c = self.node("ShaderNodeCombineXYZ", depth)
+        for socket, v in zip(c.inputs, _as(value, COLOR)):
+            socket.default_value = v
+        return c.outputs[0]
+
     def multiply_add(self, v, scale, add, depth):
         """v x scale + add per channel (a Vector Math MULTIPLY_ADD); each a socket or a constant (a float: on every
         channel). Folded when none is a socket."""
@@ -1238,9 +1360,9 @@ class _Tree:
         return _out(g, "Color")
 
     def color_correct(self, n, space, depth):
-        steps = [tuple(n.rewire) != tx.REWIRE_NONE, n.hue % 1.0 != 0.0 or n.saturation != 1.0,
-                 n.brightness != 0.0 or n.contrast != 0.0, n.gain != 1.0, n.gamma != 1.0]
-        d = depth + sum(steps) - 1  # the first step's column; the input one further left
+        steps = [tuple(n.rewire) != tx.REWIRE_NONE, n.hue % 1.0 != 0.0, n.saturation != 1.0,
+                 n.brightness != 0.0 or n.contrast != 0.0, n.gain != 1.0, n.gamma != 1.0 or n.magnitude]
+        d = depth + sum(steps) + (n.gamma != 1.0 and n.magnitude) - 1  # the first step's column; the input further left
         v = self.graph(n.input, COLOR, d + 1)
         if v is MISSING:
             return MISSING
@@ -1253,9 +1375,11 @@ class _Tree:
         if steps[0]:
             h = self.node("ShaderNodeHueSaturation", d)
             _in(h, "Hue").default_value = (0.5 + n.hue) % 1.0
-            _in(h, "Saturation").default_value = max(0.0, n.saturation)
             self.links.new(v, _in(h, "Color"))
             v, d = _out(h, "Color"), d - 1
+        steps = steps[1:]
+        if steps[0]:
+            v, d = self.saturate(v, max(0.0, n.saturation), d), d - 1
         if steps[1]:
             bc = self.node("ShaderNodeBrightContrast", d)
             _in(bc, "Bright").default_value = n.brightness
@@ -1264,12 +1388,46 @@ class _Tree:
             v, d = _out(bc, "Color"), d - 1
         if steps[2]:
             v, d = self.scale(v, n.gain, d), d - 1
-        if steps[3]:
+        if steps[3] and n.magnitude:  # Corona raises a negative channel's magnitude (renderMap, maxdrop-6n0.6.40)
+            v, d = self.vector_math('ABSOLUTE', v, None, d), d - 1
+        if steps[3] and n.gamma != 1.0:
             g = self.node("ShaderNodeGamma", d)
             _in(g, "Gamma").default_value = 1.0 / n.gamma
             self.links.new(v, _in(g, "Color"))
             v = _out(g, "Color")
         return v
+
+    def saturate(self, v, s, depth):
+        """Color socket v with its saturation scaled by s as 3ds Max's Color Correction does, in HSL: each channel
+        lerp(L, c, s), L = (max + min) / 2 (V-Ray 5.2 renders, maxdrop-6n0.6.18: -50 % over (0.784, 0.392, 0.196)
+        gives (0.637, 0.441, 0.343); the Hue/Saturation/Value node's HSV keeps the max, 0.784 / 0.588 / 0.490).
+        Above 0 % (s > 1) a channel below 0 is 0, one above 1 kept (maxdrop-6n0.6.38: +100 % over (0.784, 0.392,
+        0.196) gives 1.078 0.294 0): a Vector Math MAXIMUM of 0 after the lerp; up to 0 % no clamp (not measured;
+        channels in 0..1 stay in 0..1 there)."""
+        sep = self.node("ShaderNodeSeparateColor", depth)
+        self.links.new(v, _in(sep, "Color"))
+
+        def math(operation, a, b):
+            m = self.node("ShaderNodeMath", depth)
+            m.operation = operation
+            for k, x in enumerate((a, b)):
+                if isinstance(x, bpy.types.NodeSocket):
+                    self.links.new(x, m.inputs[k])
+                else:
+                    m.inputs[k].default_value = x
+            return m.outputs[0]
+        r, g, b = (_out(sep, c) for c in ("Red", "Green", "Blue"))
+        top = math('MAXIMUM', math('MAXIMUM', r, g), b)
+        low = math('MINIMUM', math('MINIMUM', r, g), b)
+        rest = math('MULTIPLY', math('ADD', top, low), 0.5 * (1.0 - s))
+        vm = self.node("ShaderNodeVectorMath", depth)
+        vm.operation = 'MULTIPLY_ADD'
+        self.links.new(v, _in(vm, "Vector"))
+        _in(vm, "Vector_001").default_value = (s, s, s)
+        self.links.new(rest, _in(vm, "Vector_002"))
+        if s > 1.0:
+            return self.vector_math('MAXIMUM', _out(vm, "Vector"), (0.0, 0.0, 0.0), depth)
+        return _out(vm, "Vector")
 
     def rewire(self, v, channels, depth):
         """A Color Correction's rewiring of color socket v: Invert, the mean of the channels, or Separate /
@@ -1412,8 +1570,9 @@ class _Tree:
         node.clamp_result = mode == tx.LINEAR_DODGE
         if mode == tx.HARD_LIGHT:  # overlay with the layers' roles swapped
             below, top = top, below
+        below = self.unclamped(below, COLOR, depth + 1)  # one Combine XYZ for both Mix nodes of spotlight blend
         self.feed(a, below)
-        self.feed(b, top)
+        self.feed(b, self.unclamped(top, COLOR, depth + 1))
         if mode == tx.SPOTLIGHT:
             return self.scale(out, 2.0, depth)
         if mode == tx.SPOTLIGHT_BLEND:  # below + below x top
@@ -1439,18 +1598,20 @@ class _Tree:
             if result is MISSING and layer.opacity >= 1.0 and mask is MISSING:
                 result = v
                 continue
+            if result is not MISSING:  # a constant below 0 on one Combine XYZ, for the blend and the opacity Mix
+                result = self.unclamped(result, work, depth + 1)
             blended = result is not MISSING and layer.blend != tx.NORMAL_BLEND
             top = self.blend(layer.blend, result, v, depth + 1) if blended else v
             node, a, b, out = self.mix_node(work, depth)
             node.clamp_result = blended
             self.feed(a, _as(0.0, work) if result is MISSING else result)
-            self.feed(b, top)
+            self.feed(b, self.unclamped(top, work, depth + 1))
             factor = layer.opacity
             if isinstance(mask, bpy.types.NodeSocket):
                 factor = self.times(mask, factor, depth + 1)
             elif mask is not MISSING:
                 factor *= _mean(mask)
-            img = layer.node
+            img = layer.node.input if isinstance(layer.node, tx.Decode) and layer.node.mean else layer.node  # its alpha
             tex = self.texture_nodes.get(id(img)) if isinstance(img, tx.Image) and not img.alpha else None
             if tex is not None and result is not MISSING:
                 factor = self.times(self.masked(img, tex, "Alpha", depth + 1), factor, depth + 1)

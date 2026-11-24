@@ -45,7 +45,8 @@ rules = importlib.import_module(_PKG + ".convert.modifiers")
 
 CAPPED = ("FixtureExtRect", "FixtureExtL", "FixtureExtHole", "FixtureExtIsland", "FixtureExtMirror",
           "FixtureExtAdaptive", "FixtureExtShapeIDs", "FixtureExtShapeIDsRect", "FixtureExtGrid")
-UNCAPPED = ("FixtureExtOpen", "FixtureExtGridCircle")  # no cap; Cap End off (a grid cap at the start)
+UNCAPPED = ("FixtureExtOpen", "FixtureExtGridCircle",  # no cap; Cap End off (a grid cap at the start)
+            "FixtureExtDownStart", "FixtureExtDownEndReal")  # downwards, one cap each
 # V - E + F of each mesh: a box-like solid 2, a solid with a tunnel (the round hole) 0, the island's ring and its
 # core 0 + 2
 EULER = {"FixtureExtRect": 2, "FixtureExtL": 2, "FixtureExtHole": 0, "FixtureExtIsland": 2, "FixtureExtMirror": 2,
@@ -216,7 +217,8 @@ class Fixture(unittest.TestCase):
         mapped = sorted(name for name, o in self.oracle.items()
                         if o["eval_mesh"] and o["eval_mesh"]["map_channel_1"]
                         and o["eval_mesh"]["map_channel_1"]["corners"] is not None)
-        self.assertEqual(mapped, ["FixtureExtAdaptive", "FixtureExtRect"])  # the two with mapping coordinates
+        self.assertEqual(mapped, ["FixtureExtAdaptive", "FixtureExtDownEndReal", "FixtureExtDownStart",
+                                  "FixtureExtRect"])  # the four with mapping coordinates
         for name in mapped:
             _check_corners(self, self.data[name], self.oracle[name], name)
 
@@ -237,7 +239,7 @@ class Fixture(unittest.TestCase):
         off = self.nodes["FixtureExtOff"]  # switched off: the curve, the modifier not applied
         self.assertEqual((off.kind, off.applied, off.modifiers), (conv.CURVE, (), ("Extrude",)))
         rep = importlib.import_module(_PKG + ".convert.report").gather(self.desc)
-        self.assertEqual(dict(rep.modifiers_applied), {"Extrude": 11})
+        self.assertEqual(dict(rep.modifiers_applied), {"Extrude": 13})
         self.assertEqual(dict(rep.modifiers), {"Extrude": 1})
 
     def test_a_modifier_below_the_extrude_keeps_the_curve(self):
@@ -252,14 +254,14 @@ class Fixture(unittest.TestCase):
 
         with mock.patch.object(reader_modifiers.Modifiers, "object_stack", below):
             desc = conv.read(FIXTURE)
-        self.assertEqual([n.kind for n in desc.nodes], [conv.CURVE] * 12)
-        self.assertEqual(len([r for _i, r in desc.issues if r.startswith("extrude: an Extrude above ")]), 11)
+        self.assertEqual([n.kind for n in desc.nodes], [conv.CURVE] * 14)
+        self.assertEqual(len([r for _i, r in desc.issues if r.startswith("extrude: an Extrude above ")]), 13)
 
     def test_an_extrude_that_cannot_be_read_keeps_the_curve(self):
         with mock.patch.object(extrude, "read_params", side_effect=extrude.ExtrudeError("refused")):
             desc = conv.read(FIXTURE)
-        self.assertEqual([n.kind for n in desc.nodes], [conv.CURVE] * 12)
-        self.assertEqual([r for _i, r in desc.issues], ["extrude: refused"] * 11)
+        self.assertEqual([n.kind for n in desc.nodes], [conv.CURVE] * 14)
+        self.assertEqual([r for _i, r in desc.issues], ["extrude: refused"] * 13)
         self.assertEqual(desc.meshes, {})
 
     def test_extruded_data_is_released_after_its_last_node(self):
@@ -279,15 +281,26 @@ class Fixture(unittest.TestCase):
         with mock.patch.object(extrude, "extrude", extruding), mock.patch.object(conv, "mesh_description",
                                                                                  describing):
             conv.read(FIXTURE)
-        self.assertEqual(len(made), 11)
-        self.assertEqual(alive, [1] * 11)  # only the extrusion being described
+        self.assertEqual(len(made), 13)
+        self.assertEqual(alive, [1] * 13)  # only the extrusion being described
 
     def test_a_scene_wide_budget_keeps_the_rest_curves(self):
         with mock.patch.object(conv, "MAX_BUILT_CORNERS", 1):
             desc = conv.read(FIXTURE)
-        self.assertEqual(sorted(n.kind for n in desc.nodes), [conv.CURVE] * 11 + [conv.MESH])
+        self.assertEqual(sorted(n.kind for n in desc.nodes), [conv.CURVE] * 13 + [conv.MESH])
         spent = [r for _i, r in desc.issues if r.startswith("extrude: not made: the primitives and extrusions ")]
-        self.assertEqual(len(spent), 10)
+        self.assertEqual(len(spent), 12)
+
+    def test_a_refused_extrude_is_charged_to_the_scene_budget(self):
+        """An Extrude refused after its work (Adaptive's points) counts against MAX_BUILT_CORNERS: the next ones
+        are not made."""
+        refused = extrude.ExtrudeError("more than 1 vertices", conv.MAX_BUILT_CORNERS)
+        with mock.patch.object(extrude, "extrude", side_effect=refused):
+            desc = conv.read(FIXTURE)
+        self.assertEqual([n.kind for n in desc.nodes], [conv.CURVE] * 14)
+        self.assertEqual(len([r for _i, r in desc.issues if r == "extrude: more than 1 vertices"]), 1)
+        spent = [r for _i, r in desc.issues if r.startswith("extrude: not made: the primitives and extrusions ")]
+        self.assertEqual(len(spent), 12)
 
     def test_conversion_issues_wait_for_a_made_extrude(self):
         """A converted modifier's issues are named on the first node whose Extrude is made: one whose Extrude
@@ -587,6 +600,39 @@ STRAIGHT_PROBES = [
 ]
 
 
+_F3, _F6 = 3.33299994, 6.66699982  # 3.333 and 6.667 as float32, the vectors 3ds Max stored
+
+# One curve segment probed in 3ds Max 2020 under Adaptive (an open SplineShape of two Bezier-corner knots under an
+# Extrude; maxdrop-6n0.6.11): name, p0, c1, c2, p3, steps between the knots. Every point sits where a recursive split
+# at the middle puts it, each piece split while its points at 0.4 and 0.6 of it turn the path by more than 2 degrees
+# and it is wider than 1/2048 of the segment (cusp13: a cusp at t 1/3, kept in a piece of that width).
+ADAPTIVE_PROBES = [
+    ("collinear 1.75", (0, 0, 0), (17.5, 0, 0), (_F6, 0, 0), (10, 0, 0), 5),
+    ("collinear 2", (0, 0, 0), (20, 0, 0), (_F6, 0, 0), (10, 0, 0), 3),
+    ("collinear -0.7", (0, 0, 0), (-7, 0, 0), (_F6, 0, 0), (10, 0, 0), 4),
+    ("both past", (0, 0, 0), (46, 0, 0), (-36, 0, 0), (10, 0, 0), 3),
+    ("off 0.2", (0, 0, 0), (_F3, 0.200000003, 0), (_F6, 0, 0), (10, 0, 0), 2),
+    ("off 1", (0, 0, 0), (_F3, 1, 0), (_F6, 0, 0), (10, 0, 0), 9),
+    ("S 1", (0, 0, 0), (_F3, 1, 0), (_F6, -1, 0), (10, 0, 0), 19),
+    ("S 2", (0, 0, 0), (_F3, 2, 0), (_F6, -2, 0), (10, 0, 0), 35),
+    ("loop", (0, 0, 0), (10, 30, 0), (0, 30, 0), (10, 0, 0), 15),
+    ("xloop", (0, 0, 0), (30, 30, 0), (-20, 30, 0), (10, 0, 0), 97),
+    ("cusp", (0, 0, 0), (10, 10, 0), (0, 10, 0), (10, 0, 0), 29),
+    ("hook", (0, 0, 0), (0, 40, 0), (10, 0, 0), (10, 0, 0), 60),
+    ("big", (0, 0, 0), (100, 100, 0), (-90, 100, 0), (10, 0, 0), 103),
+    ("knee", (0, 0, 0), (5, 0, 0), (10, 10, 0), (10, 0, 0), 55),
+    ("cusp13", (0, 0, 0), (4, 6, 0), (-3, 0, 0), (9, 0, 0), 49),
+]
+# 3ds Max computes in float32: next to a cusp, or far from the origin, its rounding splits pieces the test keeps
+# (and the other way round by a hair at 2 degrees); MaxDrop computes in double. These got 129, 73 and 50 steps in 3ds
+# Max (cusp13 x1000: one more piece split next to the cusp); the double rule's own counts are pinned.
+ADAPTIVE_FLOAT32 = [
+    ("zz", (0, 0, 0), (40, 20, 0), (-30, -20, 0), (10, 0, 0), 131),
+    ("tight", (0, 0, 0), (10, 1, 0), (0, 1, 0), (10, 0, 0), 63),
+    ("cusp13 x1000", (0, 0, 0), (4000, 6000, 0), (-3000, 0, 0), (9000, 0, 0), 49),
+]
+
+
 class Interpolation(unittest.TestCase):
     """Point counts 3ds Max 2020's Extrude makes (half its vertex count on one segment)."""
 
@@ -647,11 +693,51 @@ class Interpolation(unittest.TestCase):
 
     def test_adaptive_takes_the_same_straight_test(self):
         """3ds Max 2020, Adaptive: a segment straight for Optimize gets no steps, also one whose vectors run past
-        the chord's end or lie a little off it (a curved one gets steps, counted by a rule MaxDrop only
-        approximates: maxdrop-6n0.6.11; only the straight half is asserted)."""
+        the chord's end or lie a little off it; a curved one gets at least one."""
         for name, p0, c1, c2, p3, points in STRAIGHT_PROBES:
+            got = _points(_shape([_segment(p0, c1, c2, p3)], adaptive=True))
             if points == 2:
-                self.assertEqual(_points(_shape([_segment(p0, c1, c2, p3)], adaptive=True)), 2, name)
+                self.assertEqual(got, 2, name)
+            else:
+                self.assertGreater(got, 2, name)
+
+    def test_adaptive_equals_3ds_max(self):
+        for name, p0, c1, c2, p3, steps in ADAPTIVE_PROBES + ADAPTIVE_FLOAT32:
+            for optimize in (True, False):  # Adaptive ignores Optimize (3ds Max: the same counts)
+                got = _points(_shape([_segment(p0, c1, c2, p3)], optimize=optimize, adaptive=True))
+                self.assertEqual(got, steps + 2, (name, optimize))
+
+    def test_adaptive_puts_the_points_where_3ds_max_does(self):
+        """The parameters of 3ds Max's points on the segment (read back from its vertices): not uniform steps."""
+        cases = (("off 1", [1, 2, 3, 4, 5, 6, 8, 12, 14], 16),
+                 ("S 1", [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 22, 24, 26, 27, 28, 29, 30, 31], 32))
+        probes = {c[0]: c for c in ADAPTIVE_PROBES}
+        for name, numerators, denominator in cases:
+            _n, p0, c1, c2, p3, _steps = probes[name]
+            want = [extrude._bezier(p0, c1, c2, p3, k / float(denominator)) for k in numerators]
+            pl = extrude.polylines(_shape([_segment(p0, c1, c2, p3)], adaptive=True))[0]
+            self.assertEqual(pl.points[1:-1], want, name)
+
+    def test_adaptive_is_counted_against_a_budget(self):
+        """2047 steps a segment at most: an adaptive shape is counted as it is made, and one whose points pass the
+        budget is refused: an open spline (its last knot too), the room left after another spline, a closed one."""
+        many = _shape([shapes.Spline(_knots([(k, k % 2, 0) for k in range(1000)]), False)], adaptive=True)
+        self.assertEqual(sum(len(pl.points) for pl in extrude.polylines(many, 1000)), 1000)
+        with self.assertRaises(extrude.ExtrudeError):
+            extrude.polylines(many, 999)
+        loop = _segment((0, 0, 0), (10, 30, 0), (0, 30, 0), (10, 0, 0))  # 15 steps: 17 points
+        for most, splines in ((17, [loop]), (34, [loop, loop])):
+            shape = _shape(splines, adaptive=True)
+            self.assertEqual(sum(len(pl.points) for pl in extrude.polylines(shape, most)), most)
+            with self.assertRaises(extrude.ExtrudeError):
+                extrude.polylines(shape, most - 1)
+        k = shapes.Knot
+        drop = shapes.Spline((k(shapes.BEZIER_CORNER, shapes.CURVE, (0, 0, 0), (0, 0, 0), (10, 30, 0)),
+                              k(shapes.BEZIER_CORNER, shapes.CURVE, (10, 0, 0), (0, 30, 0), (10, 0, 0))), True)
+        closed = _shape([drop], adaptive=True)  # the loop, then a straight line back: 17 points
+        self.assertEqual([len(pl.points) for pl in extrude.polylines(closed, 17)], [17])
+        with self.assertRaises(extrude.ExtrudeError):
+            extrude.polylines(closed, 16)
 
     def test_a_doubled_knot_with_its_vectors_on_it(self):
         """A zero-length curve segment whose vectors lie on its point is straight under Adaptive too (no steps from
@@ -842,15 +928,18 @@ class Synthetic(unittest.TestCase):
         self.assertAlmostEqual(_volume(data.positions, data), 80.0, places=4)
         self.assertAlmostEqual(float(data.positions[:, 2].min()), -5.0)
 
-    def test_a_lone_cap_of_a_downward_extrusion_faces_as_upwards(self):
-        """3ds Max 2020 (a Circle extruded -4): Cap Start alone faces -Z (ID 2), Cap End alone +Z (ID 1), into the
-        solid; with both on they face out (ID 1 at the shape); the sides face out in every case."""
-        for start, end, want in ((True, False, [(extrude.BOTTOM_ID, False)]), (False, True, [(extrude.TOP_ID, True)]),
-                                 (True, True, [(extrude.TOP_ID, True), (extrude.BOTTOM_ID, False)])):
+    def test_a_lone_cap_of_a_downward_extrusion_faces_out(self):
+        """3ds Max 2020 (a Circle extruded -4; maxdrop-6n0.6.10's rectangles at -5): Cap Start lies at the far level
+        (z = amount) facing -Z (ID 2), Cap End at the shape facing +Z (ID 1), alone or together; the sides face
+        out in every case."""
+        for start, end, want in ((True, False, [(extrude.BOTTOM_ID, False, -4.0)]),
+                                 (False, True, [(extrude.TOP_ID, True, 0.0)]),
+                                 (True, True, [(extrude.TOP_ID, True, 0.0), (extrude.BOTTOM_ID, False, -4.0)])):
             data, _issues = extrude.extrude(_shape([self.square(4)]), self.params(amount=-4.0, cap_start=start,
                                                                                   cap_end=end))
-            caps = sorted({(int(_mats(data)[f]), _face_area_z(data, f) > 0) for f in range(len(data.loop_starts))
-                           if int(_mats(data)[f]) != extrude.SIDE_ID})
+            caps = sorted({(int(_mats(data)[f]), _face_area_z(data, f) > 0,
+                            float(data.positions[data.loop_vertices[int(data.loop_starts[f])]][2]))
+                           for f in range(len(data.loop_starts)) if int(_mats(data)[f]) != extrude.SIDE_ID})
             self.assertEqual(caps, sorted(want), (start, end))
             sides = [f for f in range(len(data.loop_starts)) if int(_mats(data)[f]) == extrude.SIDE_ID]
             p = data.positions.astype(numpy.float64)
@@ -859,6 +948,27 @@ class Synthetic(unittest.TestCase):
                 q = p[data.loop_vertices[s:s + t]]
                 n = numpy.cross(q[1] - q[0], q[2] - q[0])
                 self.assertGreater(float(numpy.dot(n[:2], q.mean(axis=0)[:2] - (2.0, 2.0))), 0, (start, end))
+
+    def test_a_lone_grid_cap_of_a_downward_extrusion_lies_at_its_level(self):
+        """Grid caps alike (maxdrop-6n0.6.10's probe, amount -5 in 2 segments): every cap vertex, the grid points
+        too, lies at z -5 for Cap Start and z 0 for Cap End, with the cap's ID and facing."""
+        for start, end, want in ((True, False, {(extrude.BOTTOM_ID, False, -5.0)}),
+                                 (False, True, {(extrude.TOP_ID, True, 0.0)}),
+                                 (True, True, {(extrude.TOP_ID, True, 0.0), (extrude.BOTTOM_ID, False, -5.0)})):
+            data, issues = extrude.extrude(_shape([self.square(20)]), self.params(
+                amount=-5.0, segments=2, cap_start=start, cap_end=end, cap_type=extrude.CAP_GRID))
+            self.assertEqual(issues, [], (start, end))
+            got, grid = set(), 0
+            for f in range(len(data.loop_starts)):
+                if int(_mats(data)[f]) == extrude.SIDE_ID:
+                    continue
+                s, t = int(data.loop_starts[f]), int(data.loop_totals[f])
+                zs = {float(data.positions[v][2]) for v in data.loop_vertices[s:s + t].tolist()}
+                self.assertEqual(len(zs), 1, (start, end))
+                got.add((int(_mats(data)[f]), _face_area_z(data, f) > 0, zs.pop()))
+                grid = max(grid, int(data.loop_vertices[s:s + t].max()))
+            self.assertEqual(got, want, (start, end))
+            self.assertGreaterEqual(grid, 4 * 3)  # the caps use grid points, past the sides' 4 x 3 vertices
 
     def test_no_caps_and_flat_sides(self):
         data, _issues = extrude.extrude(_shape([self.square(4)]), self.params(cap_start=False, cap_end=False,
@@ -1048,6 +1158,22 @@ class Synthetic(unittest.TestCase):
         self.assertEqual(issues, ["an outline overlaps another: its hole is left open"])
         self.assertGreater(len(data.loop_starts), 0)
 
+    def test_adaptive_points_past_the_budget(self):
+        """An adaptive shape the up-front estimate lets through (one point a knot) is refused once its points are
+        made, and the refusal is charged like the sides it would have made; 1,000 knots of 2047 steps at most each
+        are not refused up front."""
+        many = _shape([shapes.Spline(_knots([(k, k % 2, 0) for k in range(1000)]), False)], adaptive=True)
+        data, _issues = extrude.extrude(many, self.params())
+        self.assertEqual(len(data.positions), 2000)
+        loop = _shape([_segment((0, 0, 0), (10, 30, 0), (0, 30, 0), (10, 0, 0))], adaptive=True)  # 17 points
+        with mock.patch.object(extrude, "MAX_VERTICES", 33):
+            with self.assertRaises(extrude.ExtrudeError) as caught:
+                extrude.extrude(loop, self.params(segments=2))
+        self.assertEqual((str(caught.exception), caught.exception.spent), ("more than 33 vertices", 11 * 2 * 4))
+        with mock.patch.object(extrude, "MAX_VERTICES", 34):
+            data, _issues = extrude.extrude(loop, self.params())
+        self.assertEqual(len(data.positions), 34)
+
     def test_flat_amount_is_an_issue(self):
         _data, issues = extrude.extrude(_shape([self.square(4)]), self.params(amount=0.0))
         self.assertEqual(len(issues), 1)
@@ -1153,6 +1279,149 @@ class Synthetic(unittest.TestCase):
             mid = (a + b) / 2.0
             normal = numpy.array([b[1] - a[1], a[0] - b[0]])  # the right of a -> b: where the face looks
             self.assertLess(numpy.dot(normal, mid[:2] - (5.0, 5.0)), 0)  # towards the center of the small square
+
+
+_RECT = [(0, 0, 0), (20, 0, 0), (20, 10, 0), (0, 10, 0)]
+_NEG_SHAPES = {
+    "rect": lambda: [shapes.Spline(_knots(_RECT), True)],
+    "open": lambda: [shapes.Spline(_knots(_RECT[:3]), False)],
+    "z3": lambda: [shapes.Spline(_knots([(x, y, 3) for x, y, _z in _RECT]), True)],
+    "cw": lambda: [shapes.Spline(_knots(_RECT[::-1]), True)],
+    "hole": lambda: [shapes.Spline(_knots(_RECT), True),
+                     shapes.Spline(_knots([(5, 3, 0), (15, 3, 0), (15, 7, 0), (5, 7, 0)]), True)],
+}
+# maxdrop-6n0.6.10, 3ds Max 2020 (3dsmaxbatch, snapshotAsMesh, object space): node: (shape, amount, segments,
+# cap start, cap end, Real-World Map Size); every corner as "x y z u v" (W 0), then each triangle as "ID:corners".
+NEG_PROBES = {
+    "PosS3RW": ("rect", 5.0, 3, True, True, True),
+    "NegS1": ("rect", -5.0, 1, True, True, False),
+    "NegS3RW": ("rect", -5.0, 3, True, True, True),
+    "NegS3Start": ("rect", -5.0, 3, True, False, False),
+    "NegS3EndRW": ("rect", -5.0, 3, False, True, True),
+    "NegS2Open": ("open", -5.0, 2, True, True, False),
+    "NegS2Z3RW": ("z3", -5.0, 2, True, True, True),
+    "NegS2CW": ("cw", -5.0, 2, True, True, False),
+    "MNegHoleStart": ("hole", -5.0, 1, True, False, False),
+}
+NEG_MESHES = {
+    'PosS3RW': (
+        '0 0 0 0 0, 20 0 0 20 0, 20 0 1.66667 20 1.66667, 0 0 1.66667 0 1.66667, 20 10 0 30 0, '
+        '20 10 1.66667 30 1.66667, 0 10 0 50 0, 0 10 1.66667 50 1.66667, 0 0 0 60 0, 0 0 1.66667 60 1.66667, '
+        '20 0 3.33333 20 3.33333, 0 0 3.33333 0 3.33333, 20 10 3.33333 30 3.33333, 0 10 3.33333 50 3.33333, '
+        '0 0 3.33333 60 3.33333, 20 0 5 20 5, 0 0 5 0 5, 20 10 5 30 5, 0 10 5 50 5, 0 0 5 60 5, 20 10 0 20 10, '
+        '0 10 0 0 10, 20 10 5 20 10, 0 10 5 0 10, 0 0 5 0 0, 20 0 5 20 0',
+        '3:0,1,2 3:0,2,3 3:1,4,5 3:1,5,2 3:4,6,7 3:4,7,5 3:6,8,9 3:6,9,7 3:3,2,10 3:3,10,11 3:2,5,12 3:2,12,10 '
+        '3:5,7,13 3:5,13,12 3:7,9,14 3:7,14,13 3:11,10,15 3:11,15,16 3:10,12,17 3:10,17,15 3:12,13,18 3:12,18,17 '
+        '3:13,14,19 3:13,19,18 2:20,0,21 2:20,1,0 1:22,23,24 1:22,24,25'),
+    'NegS1': (
+        '0 0 -5 0 0, 20 0 -5 0.333333 0, 20 0 0 0.333333 1, 0 0 0 0 1, 20 10 -5 0.5 0, 20 10 0 0.5 1, '
+        '0 10 -5 0.833333 0, 0 10 0 0.833333 1, 0 0 -5 1 0, 0 0 0 1 1, 20 10 -5 1 1, 0 10 -5 0 1, 20 0 -5 1 0, '
+        '20 10 0 1 1, 0 10 0 0 1, 0 0 0 0 0, 20 0 0 1 0',
+        '3:0,1,2 3:0,2,3 3:1,4,5 3:1,5,2 3:4,6,7 3:4,7,5 3:6,8,9 3:6,9,7 2:10,0,11 2:10,12,0 1:13,14,15 1:13,15,16'),
+    'NegS3RW': (
+        '0 0 -5 0 0, 20 0 -5 20 0, 20 0 -3.33333 20 -1.66667, 0 0 -3.33333 0 -1.66667, 20 10 -5 30 0, '
+        '20 10 -3.33333 30 -1.66667, 0 10 -5 50 0, 0 10 -3.33333 50 -1.66667, 0 0 -5 60 0, 0 0 -3.33333 60 -1.66667, '
+        '20 0 -1.66667 20 -3.33333, 0 0 -1.66667 0 -3.33333, 20 10 -1.66667 30 -3.33333, 0 10 -1.66667 50 -3.33333, '
+        '0 0 -1.66667 60 -3.33333, 20 0 0 20 -5, 0 0 0 0 -5, 20 10 0 30 -5, 0 10 0 50 -5, 0 0 0 60 -5, 20 10 -5 20 10, '
+        '0 10 -5 0 10, 20 10 0 20 10, 0 10 0 0 10, 0 0 0 0 0, 20 0 0 20 0',
+        '3:0,1,2 3:0,2,3 3:1,4,5 3:1,5,2 3:4,6,7 3:4,7,5 3:6,8,9 3:6,9,7 3:3,2,10 3:3,10,11 3:2,5,12 3:2,12,10 '
+        '3:5,7,13 3:5,13,12 3:7,9,14 3:7,14,13 3:11,10,15 3:11,15,16 3:10,12,17 3:10,17,15 3:12,13,18 3:12,18,17 '
+        '3:13,14,19 3:13,19,18 2:20,0,21 2:20,1,0 1:22,23,24 1:22,24,25'),
+    'NegS3Start': (
+        '0 0 -5 0 0, 20 0 -5 0.333333 0, 20 0 -3.33333 0.333333 0.333333, 0 0 -3.33333 0 0.333333, 20 10 -5 0.5 0, '
+        '20 10 -3.33333 0.5 0.333333, 0 10 -5 0.833333 0, 0 10 -3.33333 0.833333 0.333333, 0 0 -5 1 0, '
+        '0 0 -3.33333 1 0.333333, 20 0 -1.66667 0.333333 0.666667, 0 0 -1.66667 0 0.666667, '
+        '20 10 -1.66667 0.5 0.666667, 0 10 -1.66667 0.833333 0.666667, 0 0 -1.66667 1 0.666667, 20 0 0 0.333333 1, '
+        '0 0 0 0 1, 20 10 0 0.5 1, 0 10 0 0.833333 1, 0 0 0 1 1, 20 10 -5 1 1, 0 10 -5 0 1, 20 0 -5 1 0',
+        '3:0,1,2 3:0,2,3 3:1,4,5 3:1,5,2 3:4,6,7 3:4,7,5 3:6,8,9 3:6,9,7 3:3,2,10 3:3,10,11 3:2,5,12 3:2,12,10 '
+        '3:5,7,13 3:5,13,12 3:7,9,14 3:7,14,13 3:11,10,15 3:11,15,16 3:10,12,17 3:10,17,15 3:12,13,18 3:12,18,17 '
+        '3:13,14,19 3:13,19,18 2:20,0,21 2:20,22,0'),
+    'NegS3EndRW': (
+        '0 0 -5 0 0, 20 0 -5 20 0, 20 0 -3.33333 20 -1.66667, 0 0 -3.33333 0 -1.66667, 20 10 -5 30 0, '
+        '20 10 -3.33333 30 -1.66667, 0 10 -5 50 0, 0 10 -3.33333 50 -1.66667, 0 0 -5 60 0, 0 0 -3.33333 60 -1.66667, '
+        '20 0 -1.66667 20 -3.33333, 0 0 -1.66667 0 -3.33333, 20 10 -1.66667 30 -3.33333, 0 10 -1.66667 50 -3.33333, '
+        '0 0 -1.66667 60 -3.33333, 20 0 0 20 -5, 0 0 0 0 -5, 20 10 0 30 -5, 0 10 0 50 -5, 0 0 0 60 -5, 20 10 0 20 10, '
+        '0 10 0 0 10, 0 0 0 0 0, 20 0 0 20 0',
+        '3:0,1,2 3:0,2,3 3:1,4,5 3:1,5,2 3:4,6,7 3:4,7,5 3:6,8,9 3:6,9,7 3:3,2,10 3:3,10,11 3:2,5,12 3:2,12,10 '
+        '3:5,7,13 3:5,13,12 3:7,9,14 3:7,14,13 3:11,10,15 3:11,15,16 3:10,12,17 3:10,17,15 3:12,13,18 3:12,18,17 '
+        '3:13,14,19 3:13,19,18 1:20,21,22 1:20,22,23'),
+    'NegS2Open': (
+        '0 0 -5 0 0, 20 0 -5 0.666667 0, 20 0 -2.5 0.666667 0.5, 0 0 -2.5 0 0.5, 20 10 -5 1 0, 20 10 -2.5 1 0.5, '
+        '20 0 0 0.666667 1, 0 0 0 0 1, 20 10 0 1 1',
+        '3:0,1,2 3:0,2,3 3:1,4,5 3:1,5,2 3:3,2,6 3:3,6,7 3:2,5,8 3:2,8,6'),
+    'NegS2Z3RW': (
+        '0 0 -2 0 0, 20 0 -2 20 0, 20 0 0.5 20 -2.5, 0 0 0.5 0 -2.5, 20 10 -2 30 0, 20 10 0.5 30 -2.5, 0 10 -2 50 0, '
+        '0 10 0.5 50 -2.5, 0 0 -2 60 0, 0 0 0.5 60 -2.5, 20 0 3 20 -5, 0 0 3 0 -5, 20 10 3 30 -5, 0 10 3 50 -5, '
+        '0 0 3 60 -5, 20 10 -2 20 10, 0 10 -2 0 10, 20 10 3 20 10, 0 10 3 0 10, 0 0 3 0 0, 20 0 3 20 0',
+        '3:0,1,2 3:0,2,3 3:1,4,5 3:1,5,2 3:4,6,7 3:4,7,5 3:6,8,9 3:6,9,7 3:3,2,10 3:3,10,11 3:2,5,12 3:2,12,10 '
+        '3:5,7,13 3:5,13,12 3:7,9,14 3:7,14,13 2:15,0,16 2:15,1,0 1:17,18,19 1:17,19,20'),
+    'NegS2CW': (
+        '0 0 -5 0 0, 20 0 -5 0.333333 0, 20 0 -2.5 0.333333 0.5, 0 0 -2.5 0 0.5, 20 10 -5 0.5 0, 20 10 -2.5 0.5 0.5, '
+        '0 10 -5 0.833333 0, 0 10 -2.5 0.833333 0.5, 0 0 -5 1 0, 0 0 -2.5 1 0.5, 20 0 0 0.333333 1, 0 0 0 0 1, '
+        '20 10 0 0.5 1, 0 10 0 0.833333 1, 0 0 0 1 1, 20 10 -5 1 1, 0 10 -5 0 1, 20 0 -5 1 0, 20 10 0 1 1, 0 10 0 0 1, '
+        '0 0 0 0 0, 20 0 0 1 0',
+        '3:0,1,2 3:0,2,3 3:1,4,5 3:1,5,2 3:4,6,7 3:4,7,5 3:6,8,9 3:6,9,7 3:3,2,10 3:3,10,11 3:2,5,12 3:2,12,10 '
+        '3:5,7,13 3:5,13,12 3:7,9,14 3:7,14,13 2:15,0,16 2:15,17,0 1:18,19,20 1:18,20,21'),
+    'MNegHoleStart': (
+        '0 0 -5 0 0, 20 0 -5 0.333333 0, 20 0 0 0.333333 1, 0 0 0 0 1, 20 10 -5 0.5 0, 20 10 0 0.5 1, '
+        '0 10 -5 0.833333 0, 0 10 0 0.833333 1, 0 0 -5 1 0, 0 0 0 1 1, 5 7 -5 0 0, 15 7 -5 0.357143 0, '
+        '15 7 0 0.357143 1, 5 7 0 0 1, 15 3 -5 0.5 0, 15 3 0 0.5 1, 5 3 -5 0.857143 0, 5 3 0 0.857143 1, 5 7 -5 1 0, '
+        '5 7 0 1 1, 5 3 -5 0.25 0.3, 5 7 -5 0.25 0.7, 20 0 -5 1 0, 15 3 -5 0.75 0.3, 0 10 -5 0 1, 20 10 -5 1 1, '
+        '15 7 -5 0.75 0.7',
+        '3:0,1,2 3:0,2,3 3:1,4,5 3:1,5,2 3:4,6,7 3:4,7,5 3:6,8,9 3:6,9,7 3:10,11,12 3:10,12,13 3:11,14,15 3:11,15,12 '
+        '3:14,16,17 3:14,17,15 3:16,18,19 3:16,19,17 2:20,0,21 2:20,22,0 2:23,22,20 2:24,21,0 2:25,21,24 2:25,26,21 '
+        '2:22,26,25 2:23,26,22'),
+}
+
+
+def _probe_faces(corners, triangles):
+    """[(positions, uvws, material ID)] of a NEG_MESHES entry: 3ds Max's triangles."""
+    pts = [[float(x) for x in c.split()] for c in corners.split(", ")]
+    out = []
+    for t in triangles.split():
+        mat, ids = t.split(":")
+        cs = [pts[int(i)] for i in ids.split(",")]
+        out.append(([c[:3] for c in cs], [c[3:5] + [0.0] for c in cs], int(mat)))
+    return out
+
+
+@unittest.skipIf(numpy is None, "numpy missing")
+class NegativeAmount(unittest.TestCase):
+    """An Extrude downwards (maxdrop-6n0.6.10): the sides' V runs from the far level, with Real-World Map Size times
+    the signed amount, and Cap Start lies at the far level, lone or not."""
+
+    def test_every_corner_equals_3ds_max(self):
+        """Position, facing, UVW and material ID of every corner, both ways, against 3ds Max 2020's triangles."""
+        for name, (shape, amount, segs, start, end, real) in NEG_PROBES.items():
+            params = extrude.DEFAULT._replace(amount=amount, segments=segs, cap_start=start, cap_end=end,
+                                              mapping=True, material_ids=True, real_world=real)
+            data, issues = extrude.extrude(_shape(_NEG_SHAPES[shape]()), params)
+            self.assertEqual(issues, [], name)
+            self.assertEqual(int((data.loop_totals - 2).sum()), len(NEG_MESHES[name][1].split()), name)
+            theirs = _corners(_probe_faces(*NEG_MESHES[name]))
+            got = _corners(_reader_faces(data))
+            self.assertEqual(_unmatched(theirs, got), [], name)
+            self.assertEqual(_unmatched(got, theirs), [], name)
+
+    def test_side_v_by_level(self):
+        """V of each level from the shape (level 0) to the far one, as the probes give it (amount -0.75 in 4
+        segments: 1, 0.75, 0.5, 0.25, 0; Real-World -0.75 .. 0)."""
+        for amount, real, want in ((-0.75, False, [1, 0.75, 0.5, 0.25, 0]), (-0.75, True, [-0.75, -0.5625, -0.375,
+                                                                                           -0.1875, 0]),
+                                   (0.75, False, [0, 0.25, 0.5, 0.75, 1]), (0.75, True, [0, 0.1875, 0.375, 0.5625,
+                                                                                         0.75])):
+            params = extrude.DEFAULT._replace(amount=amount, segments=4, mapping=True, real_world=real)
+            data, _issues = extrude.extrude(_shape(_NEG_SHAPES["rect"]()), params)
+            ch = data.maps[1]
+            vs = {}
+            for f in range(len(data.loop_starts)):
+                s, t = int(data.loop_starts[f]), int(data.loop_totals[f])
+                if int(data.material_ids[f]) != extrude.SIDE_ID:
+                    continue
+                for v, i in zip(data.loop_vertices[s:s + t].tolist(), ch.indices[s:s + t].tolist()):
+                    level = round(float(data.positions[v][2]) / amount * 4)
+                    vs.setdefault(level, set()).add(round(float(ch.uvw[i][1]), 6))
+            self.assertEqual([sorted(vs[k]) for k in range(5)], [[w] for w in want], (amount, real))
 
 
 def _f32(v):
@@ -1585,6 +1854,79 @@ class SelfCrossing(unittest.TestCase):
         self.assertEqual(issues, [])
         self.assertEqual(len(data.positions), 60)  # 3ds Max: 64, both copies of the two doubled knots
         self.assertEqual(int((data.loop_totals - 2).sum()), 60 + 2 * 28)
+
+    def test_zero_length_segments_without_optimize(self):
+        """maxdrop-6n0.6.9's 3ds Max 2020 probe: a doubled knot between line segments without Optimize, steps 6 and
+        0, gets no cap either (DupCorner 70 / 70, DupMid 84 / 84, CloseDup 70 / 70 at steps 6: every point kept).
+        MaxDrop merges the zero-length segment's steps, which lie exactly on its point, and finds the touch from the
+        straight segments on either side, whatever their steps."""
+        cases = {
+            "DupCorner": ([(0, 0, 0), (20, 0, 0), (20, 0, 0), (20, 10, 0), (0, 10, 0)], 4),
+            "DupMid": ([(0, 0, 0), (10, 0, 0), (10, 0, 0), (20, 0, 0), (20, 10, 0), (0, 10, 0)], 5),
+            "CloseDup": ([(0, 0, 0), (20, 0, 0), (20, 10, 0), (0, 10, 0), (0, 0, 0)], 4),
+            "CloseDupOff": ([(3.3, -7.77, 0), (23.3, -7.77, 0), (23.3, 2.23, 0), (3.3, 2.23, 0), (3.3, -7.77, 0)], 4),
+        }
+        for name, (pts, corners) in cases.items():
+            for steps in (6, 0):
+                shape = _shape([_poly(pts)], steps=steps, optimize=False)
+                pl = extrude.polylines(shape)[0]
+                self.assertEqual((len(pl.points), pl.doubled), (corners * (steps + 1), True), (name, steps))
+                data, issues = self.make([_poly(pts)], steps=steps, optimize=False)
+                self.assertTrue((data.loop_totals == 4).all(), (name, steps))  # the sides alone
+                self.assertEqual(issues, ["1 closed spline that crosses or touches itself: no cap, as in 3ds Max"],
+                                 (name, steps))
+
+    def test_a_straight_edge_into_a_doubled_knot(self):
+        """maxdrop-6n0.6.9's later 3ds Max 2020 probes: two or three knots on one spot after a straight edge get no
+        cap whatever leaves them (a line into (20, 0) and a curve out: no cap at four scales and offsets, tilted, at
+        steps 1, 6 and 10, without Optimize). After a curve's step 3ds Max's rounding decides, a line out or not:
+        a curve in and a line out capped at scales 1.37, 3.3 and 1000 and at steps 10, not at scales 1 and 0.1, steps
+        1 or without Optimize; the last knot on the first after a curve likewise; curves on both sides capped in the
+        two shapes probed, also with three knots. MaxDrop caps those. Curves 1 % of their chord off it count as
+        straight (no cap in 3ds Max with and without Optimize). Knots as 3ds Max gave them back: (type, the segment
+        leaving it, point, in, out)."""
+        bc, c, ln, cv = shapes.BEZIER_CORNER, shapes.CORNER, shapes.LINE, shapes.CURVE
+        a = (20.0, 0.0, 0.0)
+        top = ((c, ln, (20, 10, 0), (23, 7, 0), (13.3333, 10, 0)), (c, ln, (0, 10, 0), (6.66667, 10, 0), (0, 5, 0)))
+        line_in = ((c, ln, (0, 0, 0), (0, 3.33333, 0), (10, 0, 0)),)
+        curve_in = ((bc, cv, (0, 0, 0), (0, 0, 0), (6, -4, 0)), (bc, ln, a, (14, -4, 0), a))
+        curve_out = ((bc, cv, a, a, (26, 4, 0)),)
+        line_out = ((bc, ln, a, a, a), (c, ln, (20, 10, 0), (20, 5, 0), (13.3333, 10, 0)), top[1])
+        mix = line_in + ((bc, ln, a, a, a),) + curve_out + top
+        rev = curve_in + line_out
+        near = ((bc, cv, (0, 0, 0), (0, 0, 0), (6.6667, 0.2, 0)), (bc, ln, a, (13.3333, 0.2, 0), a),
+                (bc, cv, a, a, (20.2, 3.3333, 0)), (c, ln, (20, 10, 0), (20.1, 6.66665, 0), (13.3333, 10, 0)), top[1])
+        close_mix = ((c, ln, (0, 0, 0), (0, 0, 0), (0, 0, 0)), (c, ln, a, a, a), (c, ln, (20, 10, 0),) + ((20, 10, 0),) * 2,
+                     (bc, cv, (0, 10, 0), (0, 10, 0), (-3, 7, 0)), (bc, ln, (0, 0, 0), (-3, 3, 0), (0, 0, 0)))
+        cases = [  # (name, knots, steps, Optimize, scale, offset, capped by MaxDrop)
+            ("Mix", mix, 6, True, 1, (0, 0), False),
+            ("Mix_1.37", mix, 6, True, 1.37, (0.123, 4.56), False),
+            ("Mix_1000", mix, 6, True, 1000, (3, 7), False),
+            ("Mix_steps1", mix, 1, True, 1, (0, 0), False),
+            ("Mix_steps10", mix, 10, True, 1, (0, 0), False),
+            ("Mix_noopt", mix, 6, False, 1, (0, 0), False),
+            ("Tilt", ((c, ln, (0, -3, 0), (0, -3, 0), (0, -3, 0)),) + mix[1:], 6, True, 1, (0, 0), False),
+            ("TripleLines", line_in + ((c, ln, a, a, a),) * 3 + ((c, ln) + ((20, 10, 0),) * 3, top[1]), 6, True, 1,
+             (0, 0), False),
+            ("TripleCurveOpt", line_in + ((bc, cv, a, a, (21, 3, 0)), (bc, cv, a, (19, -3, 0), a)) + curve_out + top,
+             6, True, 1, (0, 0), False),
+            ("NearNoOpt", near, 6, False, 1, (0, 0), False),
+            ("NearOpt", near, 6, True, 1, (0, 0), False),
+            # 3ds Max's rounding decides: a cap in MaxDrop
+            ("Rev", rev, 6, True, 1, (0, 0), True),
+            ("Rev_1.37", rev, 6, True, 1.37, (0.123, 4.56), True),
+            ("CloseMix", close_mix, 6, True, 1, (0, 0), True),
+            ("DoubleCurves", curve_in + curve_out + top, 6, True, 1, (0, 0), True),
+            ("TripleCurves", curve_in + ((bc, ln, a, a, a),) + curve_out + top, 6, True, 1, (0, 0), True),
+        ]
+        for name, knots, steps, optimize, f, (ox, oy), capped in cases:
+            def put(p):
+                return (_f32(p[0] * f + ox), _f32(p[1] * f + oy), 0.0)
+            spline = shapes.Spline(tuple(shapes.Knot(k, g, put(p), put(i), put(o)) for k, g, p, i, o in knots), True)
+            shape = _shape([spline], steps=steps, optimize=optimize)
+            self.assertEqual(extrude.polylines(shape)[0].doubled, not capped, name)
+            data, issues = self.make([spline], steps=steps, optimize=optimize)
+            self.assertEqual(bool((data.loop_totals != 4).any()), capped, (name, issues))
 
     def test_optimize_gives_a_segment_back_to_its_knot_no_steps(self):
         """The 10 x 20 r 5 pill: its short sides run from a knot to another on the same spot, curve segments with

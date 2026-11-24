@@ -30,13 +30,15 @@ a hidden bevel object in the import's collection, its corners where 3ds Max's re
 Standard material and FixtureCurveMulti's Multi/Sub-Object entry for ID 1 in one slot on their curves,
 FixtureCurveIds' two splines (IDs 2 and 1) each on the slot of its entry, FixtureCurveMixed (IDs 2, 1, 1) on ID 2's,
 no slot on the other curves; on every fixture each spline's material index is its slot.
-Converted modifiers (TurboSmooth, MeshSmooth, Shell, Symmetry): each object's Blender modifiers in 3ds Max's order with
-the description's settings and mirror empties, creases where a smoother separates by smoothing groups (none on open
+Converted modifiers (TurboSmooth, MeshSmooth, Shell, Symmetry): each object's Blender modifiers in the converted order
+(3ds Max's, but a Symmetry moved below the Shell whose rim lies on its plane) with the description's settings and
+mirror empties, creases where a smoother separates by smoothing groups (none on open
 edges), and the evaluated mesh with 3ds Max's vertex and triangle counts, world box and shading (flat faces, smooth
 regions and hard edges, the oracle's eval_mesh.smoothing; SMOOTHING_DIFFERS pins Blender's where it differs: two
 Shell rims, a weld); under a Solidify its triangles facing up, down and sideways in object space as 3ds Max's
 (stack_shell: Shells on one side of the original and inside out, their rims) (stack_convert, stack_shell,
-stack_basic, modifier_pivot; not FixtureOrder, whose seam 3ds Max leaves unwelded: EVAL_COUNT_DIFFERS); stack_convert
+stack_basic, modifier_pivot; not FixtureOrder, whose seam 3ds Max leaves unwelded, nor FixtureShellUnderSymNoWeld,
+whose cut it leaves open: EVAL_COUNT_DIFFERS); stack_convert
 imported with Modifiers: Ignore gets none.
 primitives (convert/primitives.py): each node a mesh with 3ds Max's vertex and triangle counts (eval_verts, eval_faces)
 and world box, its UV layer (none without Generate Mapping Coords), sharp edges, the unsmoothed GeoSphere flat, normals
@@ -68,7 +70,9 @@ the new one; a World that cannot be built leaves the scene imported, a line in t
 the first gives the World. vray_mesh_light and vray_dome's mesh light: each emitter a mesh object of its mesh at the
 light's place (EMITTER_BOXES), its only material an Emission of the radiance V-Ray gives it (EMITTER_RADIANCE)
 times the Light Strength, one side through a Backfacing mix (flipped for Flip normals) or both, its camera, shadow,
-diffuse and glossy visibility; the mesh light without a mesh an empty. lights_standard, lights_photometric (and lookat's
+diffuse and glossy visibility; the mesh light without a mesh an empty; FixtureEmitterOwn's Shell a Solidify of 2 mm
+on its emitter, the radiance spread over the shelled area, measured the same with the emitter hidden or its
+collection excluded. lights_standard, lights_photometric (and lookat's
 target spot): each light of the type, spot cone, power and color of the rules (STOCK_LIGHTS), its -Z axis along the
 oracle's, its flags, its shadow switch (STOCK_SHADOWS); the Skylight an empty.
 Cameras (cameras, lookat): each camera node a camera object of the description's type, sensor fit HORIZONTAL, sensor,
@@ -119,6 +123,7 @@ The performance budget of one big mesh (tests/blender/bench.py) runs last, witho
 Prints `FIXTURES PASSED` (exit 0) or `FIXTURES FAILED` (exit 1).
 """
 import collections
+import dataclasses
 import glob
 import importlib.util
 import json
@@ -193,6 +198,7 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
     "cameras": [],  # its box, without Generate Mapping Coords
     "controllers": [],  # boxes without Generate Mapping Coords
     "controllers_tangents": [],  # boxes without Generate Mapping Coords
+    "controllers_ranges": [],  # boxes without Generate Mapping Coords
     "vray_wrappers": ["UVMap"],
     "uvwmap": {"FixtureUVWGizmo": ["UVMap", "UVChannel_2"], "FixtureUVWTwo": ["UVMap", "UVChannel_3"]},  # else UVMap
     "uvwmap_oblique": ["UVMap"],
@@ -203,14 +209,19 @@ UV_LAYERS = {  # mapcoords:true in the script gives channel 1; kept literal: tes
 # a converted TurboSmooth or MeshSmooth with Smooth Result leaves no sharp edge
 SHARP_EDGES = {"editable_mesh": 8, "modifier_pivot": {"FixtureSmooth": 0, None: 24},
                "stack_basic": {"FixtureTurbo": 0, None: 12},
-               "stack_convert": {"FixtureTurboOne": 0, "FixtureMeshSmooth": 0, "FixtureOrder": 0, None: 12},
+               "stack_convert": {"FixtureTurboOne": 0, "FixtureMeshSmooth": 0, "FixtureOrder": 0,
+                                 "FixtureTurboSymHalf": 0, None: 12},
                # boxes without their top: the 4 vertical and the 4 bottom edges, and the 4 open edges a hardened Shell
                # rim makes sharp; the plane's open edges; a TurboSmooth below the Shell clears the groups, not the
                # open edges; one above it smooths the rim too
                "stack_shell": {"FixtureShellPlane": 4, "FixtureShellTurbo": 4, "FixtureShellSmoothed": 0, None: 12,
                                # half and quarter boxes below a Symmetry: the edges between their sides and the
                                # top's open edges, not the cut's (on the mirror plane: the weld shuts them)
-                               "FixtureShellSymHalf": 10, "FixtureShellSymClosed": 10, "FixtureShellSymQuarter": 5},
+                               "FixtureShellSymHalf": 10, "FixtureShellSymClosed": 10, "FixtureShellSymQuarter": 5,
+                               # below a Symmetry whose plane holds their cut: the Mirror moved below the Shell welds
+                               # it; a TurboSmooth with Smooth Result above clears them; weld off: the cut's sharp too
+                               "FixtureShellUnderSym": 10, "FixtureShellUnderSymTurbo": 0,
+                               "FixtureShellBetweenSym": 5, "FixtureShellUnderSymNoWeld": 14},
                "vray_mesh_light": 0,  # Planes: open edges only
                # boxes of 3 x 2 x 2 segments: 28; the cylinder's rims 2 x 16; the sphere is smooth
                "uvwmap": {"FixtureUVWCyl": 32, "FixtureUVWSphere": 0, "FixtureUVWSharedB": 12, None: 28},
@@ -287,10 +298,14 @@ BARE_MESHES = {"FixtureMeshSource", "FixtureEmitterSource"}  # meshes a fixture 
 # mesh lights (tools/fixtures/vray_mesh_light.ms, vray_dome.ms): the radiance in W/m2/sr by hand (docs/FORMAT.md,
 # "VRayLight": default units m 1500 / (683 pi); W m / (pi a), a double-sided one over 2 a; lm m / (683 pi a); a the
 # object-space mesh area), the world box of the emitter's mesh in file units from the scripts (the source's mesh at
-# the light's place: its position, turn, scale and object offset), double-sided, flip, camera, shadow, diffuse, glossy
+# the light's place: its position, turn, scale and object offset), double-sided, flip, camera, shadow, diffuse, glossy.
+# The box is the mesh's below the modifiers on the emitter (EMITTER_SOLIDIFY: FixtureEmitterOwn's Shell, in file units)
+EMITTER_SOLIDIFY = {"FixtureEmitterOwn": 2.0}
+EMITTER_SHELLED = 760.0  # FixtureEmitterOwn's evaluated area in file units squared (EMITTER_RADIANCE)
 EMITTER_RADIANCE = {"FixtureEmitter": 2.0 * 1500.0 / (683.0 * math.pi),
                     "FixtureEmitterW": 5.0 / (2.0 * math.pi * 0.0008),
-                    "FixtureEmitterOwn": 100.0 / 683.0 / (math.pi * 0.0003),
+                    "FixtureEmitterOwn": 100.0 / 683.0 / (math.pi * 0.00076),  # the 30 x 10 plane under a 2 mm
+                    # Shell: both surfaces and the rim, 2 x 300 + 80 x 2 mm^2
                     "FixtureMeshLight": 10.0 / (math.pi * 0.0016)}
 EMITTER_BOXES = {"FixtureEmitter": ((-20.0, -10.0, 50.0), (20.0, 10.0, 50.0)),
                  "FixtureEmitterW": ((60.0, -10.0, 50.0), (140.0, 10.0, 50.0)),
@@ -365,28 +380,40 @@ HOLLOW = {"FixtureTube", "FixtureTubeSwap", "FixtureTubeDown", "FixtureTorus", "
 EXTRUDE_UV_LAYERS = {"FixtureExtRect": ["UVMap"], "FixtureExtAdaptive": ["UVMap"],
                      "FixtureUVWExtrude": ["UVMap"],  # uvwmap: no mapping from the Extrude, the UVW Map's
                      "FixturePieRevExt": ["UVMap"], "FixturePieRevWrapExt": ["UVMap"], "FixturePieExt": ["UVMap"],
-                     "FixtureArcRevExt": ["UVMap"], "FixtureClockwiseExt": ["UVMap"], "FixtureHoleExt": ["UVMap"]}
+                     "FixtureArcRevExt": ["UVMap"], "FixtureClockwiseExt": ["UVMap"], "FixtureHoleExt": ["UVMap"],
+                     "FixtureShellUnderSymExtrude": ["UVMap"],
+                     "FixtureExtDownStart": ["UVMap"], "FixtureExtDownEndReal": ["UVMap"]}
 EXTRUDE_SHARP_EDGES = {"FixtureExtRect": 16, "FixtureExtL": 18, "FixtureExtHole": 68, "FixtureExtIsland": 36,
                        "FixtureExtOpen": 0, "FixtureExtMirror": 72, "FixtureExtAdaptive": 256,
                        "FixtureExtShapeIDs": 41, "FixtureExtShapeIDsRect": 12, "FixtureUVWExtrude": 12,
                        "FixtureExtGrid": 36, "FixtureExtGridCircle": 16,
                        "FixturePieRevExt": 52, "FixturePieRevWrapExt": 52, "FixturePieExt": 52,
-                       "FixtureArcRevExt": 0, "FixtureClockwiseExt": 16, "FixtureHoleExt": 72}
+                       "FixtureArcRevExt": 0, "FixtureClockwiseExt": 16, "FixtureHoleExt": 72,
+                       # stack_shell: an open Line's two corner columns and the rim the Shell above hardens (top and
+                       # bottom, not the ends on the Symmetry's plane, which its Mirror welds below the Shell)
+                       "FixtureShellUnderSymExtrude": 8,
+                       "FixtureExtDownStart": 16, "FixtureExtDownEndReal": 12}
 EXTRUDE_EULER = {"FixtureExtRect": 2, "FixtureExtL": 2, "FixtureExtHole": 0, "FixtureExtIsland": 2,
                  "FixtureExtOpen": None, "FixtureExtMirror": 2, "FixtureExtAdaptive": 2, "FixtureExtShapeIDs": 0,
                  "FixtureExtShapeIDsRect": 2, "FixtureUVWExtrude": 2, "FixturePieRevExt": 2,
                  "FixtureExtGrid": 0, "FixtureExtGridCircle": None,  # grid caps: a holed solid; one cap
                  "FixturePieRevWrapExt": 2, "FixturePieExt": 2, "FixtureArcRevExt": None, "FixtureClockwiseExt": 2,
-                 "FixtureHoleExt": 0}
+                 "FixtureHoleExt": 0, "FixtureShellUnderSymExtrude": None,
+                 "FixtureExtDownStart": None, "FixtureExtDownEndReal": None}  # one cap each
 VALUE_TOLERANCE = 1e-4
 SPECULAR_LEVEL = 0.5  # the IR's specular is a reflection weight: 1 is Blender's Specular IOR Level 0.5
 TWIN_LABEL, WEIGHT_LABEL = "Without reflection", "Reflection weight"  # a weight between 0 and 1 (maxdrop-em3.119)
-MIRROR_LABEL = "Mirror reflection"  # the white metal of a weight without Fresnel (maxdrop-em3.120)
+MIRROR_LABEL = "Mirror reflection"  # the metal (white, or tinted) of a weight without Fresnel (maxdrop-em3.120)
 MIRROR_INPUTS = {"Metallic": 1.0, "Base Color": (1.0, 1.0, 1.0, 1.0), "Specular IOR Level": SPECULAR_LEVEL}
 REFRACTION_LABEL = "Refraction without reflection"  # refracting glass's twin (maxdrop-em3.135)
 TIR_LABEL = "Total internal reflection"  # the weight's mask where glass reflects totally (maxdrop-em3.135)
 DEG = math.pi / 180.0
 failures = []
+
+
+def _mirror_inputs(color):
+    """MIRROR_INPUTS with the Base Color of the IR's mirror_color (a VRayMtl's tinted mirror, maxdrop-6n0.6.16)."""
+    return dict(MIRROR_INPUTS, **{"Base Color": tuple(color[:3]) + (1.0,)})
 
 
 def check(name, cond, detail=""):
@@ -523,7 +550,7 @@ def run_fixture(path, modules):
             want = (True, o["hidden"], True, o["frozen"])
         check(label + ": hidden, renderable and frozen flags", flags == want, str(flags))
         if node.emitter is not None:
-            check_emitter(label, ob, desc.emitters[node.emitter], o, meters)
+            check_emitter(label, ob, desc.emitters[node.emitter], o, meters, bool(node.converted))
             continue
         if node.kind in (convert_scene.MESH, convert_scene.CURVE):
             check(label + ": casts shadows as in 3ds Max", ob.visible_shadow == o["cast_shadows"],
@@ -536,6 +563,8 @@ def run_fixture(path, modules):
             continue
         if o["shape"] is not None and node.kind == convert_scene.MESH:
             check_extruded(label, ob, node, o, meters, plan)
+            if node.converted:
+                check_converted(label, ob, node, o, meters, desc)
             continue
         if o["shape"] is not None:
             check_curve(label, ob, o["shape"], meters)
@@ -626,8 +655,8 @@ def run_fixture(path, modules):
         check_modifier_pivot(obs, meters)
     if name == "extrude":
         kinds = [ob.type for ob in obs]
-        check("extrude: eleven meshes, the switched-off Extrude a curve",
-              kinds == ['MESH'] * 7 + ['CURVE'] + ['MESH'] * 4, str(kinds))
+        check("extrude: thirteen meshes, the switched-off Extrude a curve",
+              kinds == ['MESH'] * 7 + ['CURVE'] + ['MESH'] * 6, str(kinds))
     if name == "shapes":
         curves = sorted(c.name for c in bpy.data.curves)
         shaped = sum(1 for o in nodes if o["shape"] is not None)
@@ -688,7 +717,8 @@ def run_fixture(path, modules):
     # the report counts each modifier class once per node whose stack holds it, applied (an Extrude on a shape, the
     # UVW Maps right above it or a mesh) or not (the rest: the base mesh is built); every modifier of the oracle is
     # one or the other
-    split = [len(n.applied) + len(n.converted) + len(n.modifiers) for n in desc.nodes]
+    split = [len(n.applied) + (len(n.converted) if n.emitter is None else 0) + len(n.modifiers)
+             for n in desc.nodes]  # an emitter's converted modifiers are its mesh object's, not the light node's
     check("%s: each modifier applied or not" % name, split == [len(o["modifiers"]) for o in nodes], str(split))
     modified = sum(len(set(n.modifiers)) for n in desc.nodes)
     applied = sum(len(set(n.applied)) for n in desc.nodes)
@@ -744,6 +774,7 @@ def run_fixture(path, modules):
         check("vray_mesh_light: three emitters, three Emission materials, the mesh light without a mesh an empty",
               lit == ["FixtureEmitter", "FixtureEmitterOwn", "FixtureEmitterW"] and len(bpy.data.materials) == 3
               and none is not None and none.type == 'EMPTY', "%s %d" % (lit, len(bpy.data.materials)))
+        check_spread(desc, meters)
     if name in ("lights_standard", "lights_photometric"):
         lit = [ob for ob in obs if ob.type == 'LIGHT']
         shared = {"lights_standard": ("StdOmni", "StdOmniInst"), "lights_photometric": ("PhPoint", "PhPointInst")}
@@ -817,12 +848,209 @@ def check_render(name, oracle, obs, desc):
               str(desc.camera_note))
 
 
-def check_emitter(label, ob, ed, o, meters):
+def check_spread(desc, meters):
+    """vray_mesh_light's FixtureEmitterOwn: its Shell a Solidify of 2 mm on the emitter (EMITTER_SOLIDIFY), the mesh
+    under it measured at 760 mm^2 by build.emitters.evaluated_area, the same with the emitter hidden (an emitter that
+    is off) and with its collection excluded, and no object left behind. Then a bench of the other modifiers: a
+    1 x 1 plane beside a hidden mirror empty under a Subdivision Surface off in the viewport at level 0 (render level
+    2) and a Mirror, measured as Blender renders it (check_spread_bench)."""
+    from maxdrop.build import emitters as build_emitters
+    name = "FixtureEmitterOwn"
+    ob = bpy.data.objects.get(name)
+    node = next((n for n in desc.nodes if n.name == name), None)
+    mods = [(m.type, m.thickness / meters) for m in ob.modifiers if m.type == 'SOLIDIFY'] if ob is not None else []
+    check("vray_mesh_light: %s's Shell a Solidify of %g mm on its emitter" % (name, EMITTER_SOLIDIFY[name]),
+          ob is not None and len(ob.modifiers) == 1 and len(mods) == 1 and
+          abs(mods[0][1] - EMITTER_SOLIDIFY[name]) < 1e-6, str(mods))
+    if ob is None or node is None:
+        return
+    scene, view_layer = bpy.context.scene, bpy.context.view_layer
+    count = len(bpy.data.objects)
+    areas = [build_emitters.evaluated_area(ob, node.converted, scene.collection, view_layer)]
+    ob.hide_viewport = True
+    areas.append(build_emitters.evaluated_area(ob, node.converted, scene.collection, view_layer))
+    ob.hide_viewport = False
+    layer = next(lc for lc in _layer_collections(view_layer.layer_collection) if lc.collection in ob.users_collection)
+    layer.exclude = True
+    areas.append(build_emitters.evaluated_area(ob, node.converted, scene.collection, view_layer))
+    layer.exclude = False
+    got = [(base / meters ** 2, under / meters ** 2) for base, under in areas]
+    check("vray_mesh_light: %s's mesh 300 mm^2, under its Solidify %g, shown, hidden or excluded" % (
+        name, EMITTER_SHELLED), all(abs(b - 300.0) < 1e-3 and abs(u - EMITTER_SHELLED) < 1e-3 for b, u in got) and
+        len(bpy.data.objects) == count, "%s, %d objects (%d before)" % (got, len(bpy.data.objects), count))
+    check_spread_bench(scene, view_layer)
+    check_spread_steps(scene, view_layer)
+
+
+def check_spread_bench(scene, view_layer):
+    """build.emitters.evaluated_area of a Subdivision Surface at its render levels (2; viewport 0 and hidden there)
+    and a Mirror whose mirror empty is hidden: the area Blender evaluates at level 2 with the copy shown (1 < a < 2:
+    the plane shrunk by the subdivision, its copy counted), no object left behind."""
+    from maxdrop.build import emitters as build_emitters
+    from maxdrop.convert import modifiers as rules
+    mesh = bpy.data.meshes.new("SpreadBench")
+    mesh.from_pydata([(1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (2.0, 1.0, 0.0), (1.0, 1.0, 0.0)], [], [(0, 1, 2, 3)])
+    ob = bpy.data.objects.new("SpreadBench", mesh)
+    empty = bpy.data.objects.new("SpreadBenchMirror", None)
+    for x in (ob, empty):
+        scene.collection.objects.link(x)
+    empty.hide_viewport = True
+    smooth = ob.modifiers.new("TurboSmooth", 'SUBSURF')
+    smooth.levels, smooth.render_levels, smooth.show_viewport = 0, 2, False
+    mirror = ob.modifiers.new("Symmetry", 'MIRROR')
+    mirror.mirror_object, mirror.use_mirror_merge = empty, False
+    converted = (rules.ModifierDescription(1, rules.SUBSURF, "TurboSmooth", "TurboSmooth", False,
+                                           (("levels", 0), ("render_levels", 2)), None, None),
+                 rules.ModifierDescription(2, rules.MIRROR, "Symmetry", "Symmetry", True, (), None, None))
+    count = len(bpy.data.objects)
+    _base, under = build_emitters.evaluated_area(ob, converted, scene.collection, view_layer)
+    left = len(bpy.data.objects)
+    smooth.levels, smooth.show_viewport, empty.hide_viewport = 2, True, False
+    view_layer.update()
+    ev = ob.evaluated_get(view_layer.depsgraph)
+    want = build_emitters._area(ev.to_mesh())
+    ev.to_mesh_clear()
+    for x in (ob, empty):
+        bpy.data.objects.remove(x)
+    bpy.data.meshes.remove(mesh)
+    check("evaluated_area: a Subdivision Surface at its render levels and a Mirror by a hidden empty",
+          1.0 < under < 2.0 and abs(under - want) < 1e-6 and left == count, "%r vs %r, %d objects (%d before)" % (
+              under, want, left, count))
+
+
+class _CountedViewLayer:
+    """A view layer whose update() calls are counted."""
+
+    def __init__(self, view_layer):
+        self.view_layer, self.updates = view_layer, 0
+
+    def update(self):
+        self.updates += 1
+        self.view_layer.update()
+
+    @property
+    def depsgraph(self):
+        return self.view_layer.depsgraph
+
+
+def check_spread_steps(scene, view_layer):
+    """build.emitters.spread as import steps over two hand-made emitters in W (a rectangle and a trapezoid described
+    at 0.5 and 0.8 m^2, under a Subdivision Surface at level 0, render level 2): it yields (0, 2) with both copies
+    linked, then (1, 2) and (2, 2), with one view-layer update for both; each emitter's area is the description's times the evaluated mesh's over the
+    mesh's, as evaluated_area measures it, and no object is left. Closed after its second step: the first emitter
+    spread, the second not, no object left. Both emitters carry their Emission material (make_material, on their
+    meshes and in built.emitters; maxdrop-6n0.8.1): spread at strength 2 writes each one's radiance x 2 between the
+    measurements, with no update of its own, and the areas stay the evaluated ones; closed early, the second keeps
+    its first strength."""
+    import types
+    from maxdrop.build import emitters as build_emitters
+    from maxdrop.convert import lights
+    from maxdrop.convert import modifiers as rules
+    converted = (rules.ModifierDescription(1, rules.SUBSURF, "TurboSmooth", "TurboSmooth", False,
+                                           (("levels", 0), ("render_levels", 2)), None, None),)
+    obs = []
+    for i, top in ((1, (0.0, 1.0)), (2, (0.8, 1.2))):
+        mesh = bpy.data.meshes.new("SpreadSteps%d" % i)
+        mesh.from_pydata([(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (top[1] * 2.0 - top[0], 1.0, 0.0), (top[0], 1.0, 0.0)],
+                         [], [(0, 1, 2, 3)])
+        ob = bpy.data.objects.new("SpreadSteps%d" % i, mesh)
+        scene.collection.objects.link(ob)
+        smooth = ob.modifiers.new("TurboSmooth", 'SUBSURF')
+        smooth.levels, smooth.render_levels, smooth.show_viewport = 0, 2, False
+        obs.append(ob)
+    try:
+        described = {1: 0.5, 2: 0.8}
+        want = []
+        for k, ob in zip((1, 2), obs):
+            base, under = build_emitters.evaluated_area(ob, converted, scene.collection, view_layer)
+            want.append(described[k] * under / base)
+
+        def run(stop_after=None):
+            eds = {k: lights.EmitterDescription(k, "SpreadSteps%d" % k, area=described[k], units=lights.UNITS_W,
+                                                multiplier=10.0) for k in (1, 2)}
+            for k, ed in eds.items():
+                ed.users = [k]
+            desc = types.SimpleNamespace(nodes=[types.SimpleNamespace(index=k, emitter=k, converted=converted)
+                                                for k in (1, 2)], emitters=eds, issues=[])
+            materials = {k: build_emitters.make_material(eds[k], 2.0) for k in (1, 2)}
+            first = {k: eds[k].radiance * 2.0 for k in (1, 2)}
+            for k, ob in zip((1, 2), obs):
+                ob.data.materials.append(materials[k])
+            built = types.SimpleNamespace(objects={1: obs[0], 2: obs[1]}, emitters=materials)
+            counted = _CountedViewLayer(view_layer)
+            count = len(bpy.data.objects)
+            steps, copies = [], []
+            try:
+                gen = build_emitters.spread(desc, built, scene.collection, view_layer=counted, strength=2.0)
+                for step in gen:
+                    steps.append(step)
+                    copies.append(len(bpy.data.objects) - count)
+                    if stop_after is not None and len(steps) == stop_after:
+                        gen.close()
+                        break
+                strengths = [(materials[k].node_tree.nodes[build_emitters.EMISSION].inputs["Strength"].default_value,
+                              eds[k].radiance * 2.0, first[k]) for k in (1, 2)]
+            finally:
+                for ob in obs:
+                    ob.data.materials.clear()
+                for material in materials.values():
+                    bpy.data.materials.remove(material)
+            return (steps, copies, counted.updates, [eds[k].area for k in (1, 2)], len(bpy.data.objects) - count,
+                    strengths)
+
+        steps, copies, updates, areas, left, strengths = run()
+        check("spread steps: (0, 2), (1, 2), (2, 2) with both copies linked, one update, the evaluated areas, "
+              "no object left", steps == [(0, 2), (1, 2), (2, 2)] and copies == [2, 2, 2] and updates == 1 and
+              close(areas, want, 1e-9) and left == 0, "%s %s %d %s vs %s, %d left" % (
+                  steps, copies, updates, areas, want, left))
+        check("spread steps: both emitters' Emission Strength = their spread radiance x 2, changed",
+              all(w > 0 and abs(g - w) <= w * 1e-6 and abs(w - f) > w * 1e-3 for g, w, f in strengths),
+              str(strengths))
+        steps, copies, updates, areas, left, strengths = run(stop_after=2)
+        check("spread steps: closed after its second step: the first emitter spread, the second not, no object left",
+              steps == [(0, 2), (1, 2)] and abs(areas[0] - want[0]) < 1e-9 and areas[1] == 0.8 and left == 0,
+              "%s %s %d left" % (steps, areas, left))
+        (g1, w1, f1), (g2, _w2, f2) = strengths
+        check("spread steps: closed early: the first Strength spread, the second its first one",
+              w1 > 0 and abs(g1 - w1) <= w1 * 1e-6 and abs(w1 - f1) > w1 * 1e-3 and abs(g2 - f2) <= max(f2, 1.0) * 1e-6,
+              str(strengths))
+    finally:
+        for ob in obs:
+            mesh = ob.data
+            bpy.data.objects.remove(ob)
+            bpy.data.meshes.remove(mesh)
+
+
+def check_spread_cancel(path):
+    """vray_mesh_light through the run's steps (ops._Run), closed while it measures its mesh lights (their copies
+    linked to the scene's collection, the run's text saying so): nothing is left, the copies neither."""
+    empty_scene()
+    before = _state()
+    scene = bpy.context.scene
+    run = _cancel_run([path])
+    steps = run.steps()
+    held = _advance(steps, lambda: run.text.startswith("measuring the mesh lights of ") and
+                    len(scene.collection.objects) > 0)
+    text, copies = run.text, len(scene.collection.objects)
+    steps.close()
+    check("spread cancel: closed while it measures the mesh lights: nothing left, its copies neither",
+          held and _state() == before and not scene.collection.objects, "%s %r, %d copies | %s | %s" % (
+              held, text, copies, _state(), before))
+
+
+def _layer_collections(lc):
+    yield lc
+    for child in lc.children:
+        yield from _layer_collections(child)
+
+
+def check_emitter(label, ob, ed, o, meters, spread=False):
     """A mesh light's node: a mesh object at the light's place whose box is the script's (EMITTER_BOXES), its mesh's
     only material an Emission of the radiance by hand (EMITTER_RADIANCE) times the operator's default Light Strength
     and the light's color; one side: a Mix Shader by Geometry Backfacing between it and a black Emission, in the order
     flip says; double-sided: the Emission alone; its flags (EMITTER_FLAGS: double-sided, flip, camera, shadow,
-    diffuse, glossy)."""
+    diffuse, glossy). spread: its node has converted modifiers, so the radiance is the evaluated mesh's
+    (build.emitters.spread), not the description's (convert.scene.read's, of the mesh below them)."""
     from maxdrop import ops
     check(label + ": an emitter mesh object", ob.type == 'MESH', ob.type)
     if ob.type != 'MESH':
@@ -847,7 +1075,7 @@ def check_emitter(label, ob, ed, o, meters):
     want = EMITTER_RADIANCE.get(name, -1.0) * ops.LIGHT_STRENGTH
     got = lit[0].inputs["Strength"].default_value if len(lit) == 1 else None
     check(label + ": Emission strength = the radiance x Light Strength", got is not None and
-          abs(got - want) <= want * 1e-5 and abs(got - ed.radiance * ops.LIGHT_STRENGTH) <= want * 1e-6,
+          abs(got - want) <= want * 1e-5 and (spread or abs(got - ed.radiance * ops.LIGHT_STRENGTH) <= want * 1e-6),
           "%s vs %g" % (got, want))
     check(label + ": Emission color = the light's", len(lit) == 1 and
           close(tuple(lit[0].inputs["Color"].default_value)[:3], ed.color, 1e-6), str(ed.color))
@@ -1112,8 +1340,9 @@ def check_light_strength(path):
 
 
 def check_extruded(label, ob, node, o, meters, plan):
-    """A shape under an Extrude: a mesh with the oracle's world box, vertex count and triangle count, closed with
-    normals outward as rendered (the signed volume of the world mesh, times the sign of the world matrix's
+    """A shape under an Extrude: a mesh with the oracle's world box, vertex count and triangle count (with converted
+    modifiers above the Extrude, the oracle's are after them: check_converted compares the evaluated mesh), closed
+    with normals outward as rendered (the signed volume of the world mesh, times the sign of the world matrix's
     determinant, is positive) when capped, its UV layers, sharp edges and material slots."""
     check(label + ": mesh object", ob.type == 'MESH', ob.type)
     if ob.type != 'MESH':
@@ -1122,12 +1351,13 @@ def check_extruded(label, ob, node, o, meters, plan):
     world = [mw @ v.co for v in mesh.vertices]
     lo = [min(p[k] for p in world) / meters for k in range(3)]
     hi = [max(p[k] for p in world) / meters for k in range(3)]
-    check(label + ": world bounding box", close(lo, o["bbox_min"], BBOX_TOLERANCE)
-          and close(hi, o["bbox_max"], BBOX_TOLERANCE),
-          "%s..%s vs %s..%s" % (["%.6g" % v for v in lo], ["%.6g" % v for v in hi], o["bbox_min"], o["bbox_max"]))
-    triangles = sum(len(p.vertices) - 2 for p in mesh.polygons)
-    check(label + ": vertex and triangle counts", (len(mesh.vertices), triangles) == (o["eval_verts"], o["eval_faces"]),
-          "%d, %d" % (len(mesh.vertices), triangles))
+    if not node.converted:
+        check(label + ": world bounding box", close(lo, o["bbox_min"], BBOX_TOLERANCE)
+              and close(hi, o["bbox_max"], BBOX_TOLERANCE),
+              "%s..%s vs %s..%s" % (["%.6g" % v for v in lo], ["%.6g" % v for v in hi], o["bbox_min"], o["bbox_max"]))
+        triangles = sum(len(p.vertices) - 2 for p in mesh.polygons)
+        check(label + ": vertex and triangle counts", (len(mesh.vertices), triangles) ==
+              (o["eval_verts"], o["eval_faces"]), "%d, %d" % (len(mesh.vertices), triangles))
     name = o["name"]
     euler = EXTRUDE_EULER[name]
     if euler is not None:
@@ -1153,7 +1383,9 @@ def check_extruded(label, ob, node, o, meters, plan):
 
 # 3ds Max leaves the seam of FixtureOrder's shelled boxes unwelded (32 vertices before the TurboSmooth, 100 after);
 # Blender's Mirror welds it (84): the same surface, so only the box is compared there
-EVAL_COUNT_DIFFERS = {"FixtureOrder"}
+# FixtureShellUnderSymNoWeld: 3ds Max's slice drops the Shell's rim on the plane and leaves the cut open (44 vertices,
+# 64 triangles), Blender's Mirror without its weld keeps both copies of that rim (80 triangles): the report names it
+EVAL_COUNT_DIFFERS = {"FixtureOrder", "FixtureShellUnderSymNoWeld"}
 # Blender's evaluated (flat, regions, hard edges) where it is not 3ds Max's, pinned so that a change shows. 3ds Max
 # gives a Shell's rim smoothing groups of its own, hard against both surfaces, which the open edges marked sharp give
 # Blender too, but for two cases the report names: auto smooth also splits the rim where its faces turn by more than
@@ -1255,7 +1487,7 @@ def check_converted(label, ob, node, o, meters, desc):
     else:
         check(label + ": no crease", crease is None or not any(d.value for d in crease.data))
     mods = list(ob.modifiers)
-    check(label + ": Blender modifiers in 3ds Max's order", [(m.type, m.name) for m in mods] ==
+    check(label + ": Blender modifiers in the converted order", [(m.type, m.name) for m in mods] ==
           list(zip([c.kind for c in node.converted], _unique_names([c.name for c in node.converted]))),
           str([(m.type, m.name) for m in mods]))
     if not node.converted:
@@ -1326,7 +1558,7 @@ def check_ignore_option(path, modules):
         ob.type == 'MESH' for ob in bpy.data.objects), str(mods))
     text = bpy.data.texts.get(modules[4].TEXT_NAME)
     check("stack_convert: Ignore: the report counts them as not applied", text is not None and
-          "nodes by class: Symmetry 4, TurboSmooth 4, Shell 2, Bend 1, MeshSmooth 1" in text.as_string()
+          "nodes by class: Symmetry 5, TurboSmooth 5, Shell 2, Bend 1, MeshSmooth 1" in text.as_string()
           and "converted to a Blender modifier" not in text.as_string())
 
 
@@ -1611,7 +1843,8 @@ def _weight_mix(p):
         copy = _from(n.inputs[2]) if n.bl_idname == "ShaderNodeMixShader" and n.label == WEIGHT_LABEL else None
         below = _from(n.inputs[1]) if copy is not None else None
         if getattr(copy, "label", "") == MIRROR_LABEL and below is not None \
-                and below.bl_idname != "ShaderNodeBsdfPrincipled" and _same_inputs(p, copy, MIRROR_INPUTS) == []:
+                and below.bl_idname != "ShaderNodeBsdfPrincipled" \
+                and _same_inputs(p, copy, _mirror_inputs(copy.inputs["Base Color"].default_value)) == []:
             found.append(n)
     return found[0] if found else None
 
@@ -1665,8 +1898,10 @@ def check_specular(label, p, ir, present):
           and (linked or _value_ok(fac, w)),
           "mix %s, level %r, factor %r vs %r" % (mix is not None, s.default_value,
                                                   None if fac is None else fac.default_value, w))
-    if mix is not None:
-        (check_mirror if mirror else check_refraction_twin if _refracting(p) else check_twin)(label, p, mix)
+    if mix is not None and mirror:
+        check_mirror(label, p, mix, ir.mirror_color)
+    elif mix is not None:
+        (check_refraction_twin if _refracting(p) else check_twin)(label, p, mix)
 
 
 def _same_inputs(p, copy, own):
@@ -1691,16 +1926,18 @@ def _same_inputs(p, copy, own):
     return bad
 
 
-def check_mirror(label, p, mix):
+def check_mirror(label, p, mix, color=(1.0, 1.0, 1.0)):
     """A weight without Fresnel: the Mix Shader's first shader is p (Specular IOR Level 0), its second p's copy as
-    a white metal: p's links and values but Metallic 1, Base Color white (both unlinked), Specular IOR Level 0.5.
-    On refracting glass (bead maxdrop-6n0.7.2) the first shader is the refraction twin (check_refraction_twin)."""
+    a metal of color (the IR's mirror_color: white, or a VRayMtl's tint, bead maxdrop-6n0.6.16): p's links and
+    values but Metallic 1, Base Color color (both unlinked), Specular IOR Level 0.5. On refracting glass (bead
+    maxdrop-6n0.7.2) the first shader is the refraction twin (check_refraction_twin)."""
     copy = _from(mix.inputs[2])
     refracts = _refracting(p)
     ok = copy is not None and copy.bl_idname == "ShaderNodeBsdfPrincipled" and copy.label == MIRROR_LABEL \
         and (refracts or _from(mix.inputs[1]) == p)
-    bad = _same_inputs(p, copy, MIRROR_INPUTS) if ok else []
-    check(label + ": the mirror is the Principled BSDF as a white metal", ok and bad == [], str(bad))
+    bad = _same_inputs(p, copy, _mirror_inputs(color)) if ok else []
+    tint = "white" if tuple(color[:3]) == (1.0, 1.0, 1.0) else "color %s" % (tuple(round(c, 3) for c in color[:3]),)
+    check(label + ": the mirror is the Principled BSDF as a metal of " + tint, ok and bad == [], str(bad))
     if ok and refracts:
         check_refraction_twin(label, p, mix, copy)
 
@@ -1876,6 +2113,8 @@ def _fold(n, present):
         v = _fold(n.input, present)
         if v in (MAP, LOST):
             return v
+        if n.mean:  # the mean through the sRGB curve (maxdrop-6n0.6.36)
+            return colors.srgb_to_linear(sum(v) / 3.0 if isinstance(v, tuple) else v)
         return tuple(colors.srgb_to_linear(c) for c in (v if isinstance(v, tuple) else (v,) * 3))
     if isinstance(n, tx.Mix):
         a, b = _fold(n.a, present), _fold(n.b, present)
@@ -1989,7 +2228,10 @@ def check_principled(label, material, ir, present=False):
     check(label + ": Thin Wall", (thin is None and bpy.app.version < (5, 0, 0)) or
           (thin is not None and bool(thin.default_value) == ir.thin_walled))
     alphas = [(alpha is None, alpha)] + [_alpha_of(layer.ir, present) for layer in layers]
-    method = 'DITHERED' if any(linked for linked, _v in alphas) else \
+    from maxdrop.build import materials as build_materials
+    output = next(n for n in material.node_tree.nodes if n.bl_idname == "ShaderNodeOutputMaterial")
+    volume_only = build_materials._volume_only(ir) and output.inputs["Volume"].is_linked  # no surface: maxdrop-6n0.6.29
+    method = 'DITHERED' if volume_only or any(linked for linked, _v in alphas) else \
         'BLENDED' if any(v is not None and v < 1.0 for _l, v in alphas) else 'DITHERED'
     check(label + ": surface_render_method", material.surface_render_method == method,
           "%s vs %s" % (material.surface_render_method, method))
@@ -2003,6 +2245,192 @@ def check_principled(label, material, ir, present=False):
     mixed = _color_into_float(material)
     check(label + ": no color output linked into a float input (a data map is the mean of its channels)",
           mixed == [], str(mixed))
+    check_medium(label, material, ir)
+
+
+def _medium_of(material):
+    """The medium a material's Volume socket draws (maxdrop-em3.163): (scattering, absorption, anisotropy, emission)
+    per channel and per meter, summed over its Add Shaders; None when the socket is not linked."""
+    out = next((n for n in material.node_tree.nodes if n.bl_idname == "ShaderNodeOutputMaterial"), None)
+    socket = out.inputs["Volume"] if out is not None else None
+    if socket is None or not socket.is_linked:
+        return None
+    sums = {"scattering": [0.0] * 3, "absorption": [0.0] * 3, "emission": [0.0] * 3, "anisotropy": [0.0],
+            "other": []}
+    stack = [_from(socket)]
+    while stack:
+        n = stack.pop()
+        kind = getattr(n, "bl_idname", None)
+        if kind == "ShaderNodeAddShader":
+            stack.extend(_from(i) for i in n.inputs if i.is_linked)
+            continue
+        color = list(n.inputs["Color"].default_value)[:3] if kind else None
+        if kind == "ShaderNodeVolumeScatter":
+            d = n.inputs["Density"].default_value
+            sums["scattering"] = [a + c * d for a, c in zip(sums["scattering"], color)]
+            sums["anisotropy"] = [n.inputs["Anisotropy"].default_value]
+        elif kind == "ShaderNodeVolumeAbsorption":
+            d = n.inputs["Density"].default_value
+            sums["absorption"] = [a + (1.0 - c) * d for a, c in zip(sums["absorption"], color)]
+        elif kind == "ShaderNodeEmission":
+            d = n.inputs["Strength"].default_value
+            sums["emission"] = [a + c * d for a, c in zip(sums["emission"], color)]
+        else:
+            sums["other"].append(kind)
+    return sums
+
+
+def check_medium(label, material, ir):
+    """The Volume socket is linked iff the IR has a medium, and its nodes give back the IR's coefficients (relative
+    1e-5: Blender stores float32) and anisotropy."""
+    got = _medium_of(material) if material is not None and material.node_tree else None
+    want = ir.medium
+    check(label + ": Volume linked iff the IR has a medium", (got is None) == (want is None),
+          "%s vs %s" % (got, want))
+    if got is None or want is None:
+        return
+    check(label + ": the medium's nodes are Volume Scatter, Volume Absorption, Emission and Add Shaders",
+          got["other"] == [], str(got["other"]))
+    for field in ("scattering", "absorption", "emission"):
+        g, w = got[field], list(getattr(want, field))
+        check("%s: medium %s" % (label, field), all(abs(a - b) <= max(1e-6, 1e-5 * abs(b)) for a, b in zip(g, w)),
+              "%s vs %s" % (g, w))
+    if max(want.scattering) > 0:
+        check(label + ": medium anisotropy", abs(got["anisotropy"][0] - want.anisotropy) <= 1e-6,
+              "%s vs %s" % (got["anisotropy"], want.anisotropy))
+
+
+def check_builder_volume():
+    """Corona media (bead maxdrop-em3.163) drawn by MaterialBuilder and rendered in Cycles: a slab 10 m thick over an
+    emitter of radiance 1, seen straight through by an orthographic camera, lets 0.8 / 0.5 / 0.2 through for an
+    absorption color of 0.8 / 0.5 / 0.2 at 10 m (Corona 12 renders the color at its distance); an emission-only slab
+    of 1 / 0.5 / 0.25 over 10 m adds that over 10 m and 0.5 times it over 5 m; a volume-only material (alpha 0, no
+    medium) lets the emitter through unchanged; a medium of all three parts is built as check_medium reads it.
+    maxdrop-6n0.6.29: a volume-only material with a medium leaves Surface unlinked, keeps the default render method
+    and a viewport alpha of VOLUME_VIEWPORT_ALPHA; one with a surface, or alpha 0 without a medium, keeps its
+    Principled BSDF on Surface and a viewport alpha of 1, as does alpha 0 with a medium under an alpha map or with a
+    layer (not volume-only); a medium that scatters is a VOLUME_BOUNCES issue, not with single bounce on; six
+    stacked 1 m slabs of a near-clear volume-only material let 0.9^0.06 through (an Alpha-0 Principled BSDF spends
+    two of Cycles' 8 transparent bounces per slab: black)."""
+    import dataclasses
+    from maxdrop.build import materials as build_materials
+    from maxdrop.convert import materials as cm
+    from maxdrop.convert import texmaps as tx
+    empty_scene()
+    class Meters:  # the converter's one attribute corona_medium reads: 1 m per world unit
+        meters = 1.0
+    absorb = cm.corona_medium(Meters, (0.8, 0.5, 0.2), 10.0, (0.0, 0.0, 0.0), 0.0)
+    emit = cm.corona_medium(Meters, (1.0, 1.0, 1.0), 0.0, (0.0, 0.0, 0.0), 0.0, (1.0, 0.5, 0.25), 10.0)
+    full = cm.corona_medium(Meters, (0.5, 0.25, 0.75), 2.0, (0.5, 1.0, 0.0), 0.4, (0.1, 0.2, 0.3), 4.0)
+    irs = {"absorb": cm.MaterialIR(70, "MediumAbsorb", "test", base_color=cm.Input((1.0, 1.0, 1.0)),
+                                       roughness=cm.Input(0.0), transmission=cm.Input(1.0), ior=1.0, medium=absorb),
+           "emit": cm.MaterialIR(71, "MediumEmit", "test", alpha=cm.Input(0.0), medium=emit),
+           "full": cm.MaterialIR(72, "MediumFull", "test", alpha=cm.Input(0.0), medium=full),
+           "none": cm.MaterialIR(73, "MediumNone", "test", alpha=cm.Input(0.0)),
+           "thin": cm.MaterialIR(74, "MediumThin", "test", alpha=cm.Input(0.0),
+                                 medium=cm.corona_medium(Meters, (0.9, 0.9, 0.9), 100.0, (0.0, 0.0, 0.0), 0.0)),
+           "single": cm.MaterialIR(75, "MediumSingle", "test", alpha=cm.Input(0.0),
+                                   medium=dataclasses.replace(full, single=True)),
+           "mapped": cm.MaterialIR(76, "MediumMapped", "test", alpha=cm.Input(0.0, cm.MapRef(1)), medium=absorb),
+           "layered": cm.MaterialIR(77, "MediumLayered", "test", alpha=cm.Input(0.0), medium=absorb,
+                                    layers=[cm.Layer(cm.MaterialIR(78, "MediumLayer", "test"), 0.5)])}
+    irs["mapped"].textures = {"alpha": tx.TextureGraphIR(tx.Invert(tx.Constant(0.5)), tx.DATA)}
+    builder = build_materials.MaterialBuilder()
+    built = {k: builder.make(ir) for k, ir in irs.items()}
+    scene = bpy.context.scene
+    settings = ((scene.render, ("engine", "resolution_x", "resolution_y", "resolution_percentage", "filepath")),
+                (scene.render.image_settings, ("file_format",)), (scene.view_settings, ("view_transform",)),
+                (scene.cycles, ("samples", "use_denoising")))
+    saved = (scene.camera, scene.world, [(o, a, getattr(o, a)) for o, names in settings for a in names])
+    scratch = tempfile.mkdtemp(prefix="maxdrop-volume-")
+    path = os.path.join(scratch, "slabs.exr")
+    try:
+        for k, ir in irs.items():
+            check("volume (%s): material built" % k, built[k] is not None)
+            if built[k] is not None:
+                check_medium("volume (%s)" % k, built[k], ir)
+        if any(m is None for m in built.values()):
+            return
+        for k, m in built.items():
+            out = next(n for n in m.node_tree.nodes if n.bl_idname == "ShaderNodeOutputMaterial")
+            surface = _from(out.inputs["Surface"])
+            if k in ("emit", "full", "thin", "single"):
+                check("volume (%s): volume-only: Surface unlinked, the default render method, viewport alpha %g"
+                      % (k, build_materials.VOLUME_VIEWPORT_ALPHA), surface is None and m.surface_render_method
+                      == 'DITHERED' and abs(m.diffuse_color[3] - build_materials.VOLUME_VIEWPORT_ALPHA) < 1e-6,
+                      "%s %s %s" % (surface, m.surface_render_method, tuple(m.diffuse_color)))
+            else:
+                shader = "ShaderNodeMixShader" if k == "layered" else "ShaderNodeBsdfPrincipled"
+                check("volume (%s): its %s on Surface, viewport alpha 1" % (k, shader[10:]), surface is not None
+                      and surface.bl_idname == shader and m.diffuse_color[3] == 1.0,
+                      "%s %s" % (surface, tuple(m.diffuse_color)))
+        lines = [(label, r) for label, r in builder.issues() if r == build_materials.VOLUME_BOUNCES]
+        check("volume: the Volume Bounces line for the medium that scatters only, not with single bounce on",
+              lines == [("material " + built["full"].name, build_materials.VOLUME_BOUNCES)], str(builder.issues()))
+        from maxdrop import compat
+        world = bpy.data.worlds.new("MediumWorld")
+        compat.node_tree(world).nodes["Background"].inputs[0].default_value = (0.0, 0.0, 0.0, 1.0)
+        scene.world = world
+        light = bpy.data.materials.new("MediumEmitter")
+        tree = compat.node_tree(light)
+        tree.nodes.clear()
+        e = tree.nodes.new("ShaderNodeEmission")
+        e.inputs["Strength"].default_value = 1.0
+        tree.links.new(e.outputs[0], tree.nodes.new("ShaderNodeOutputMaterial").inputs["Surface"])
+        mesh = bpy.data.meshes.new("MediumEmitter")
+        mesh.from_pydata([(-200, -100, -50), (200, -100, -50), (200, 100, -50), (-200, 100, -50)], [], [(0, 1, 2, 3)])
+        mesh.materials.append(light)
+        bpy.context.collection.objects.link(bpy.data.objects.new("MediumEmitter", mesh))
+        slabs = (("absorb", 10.0, -150.0), ("emit", 10.0, -75.0), ("emit", 5.0, 0.0), ("none", 10.0, 75.0))
+        for k, h, x in slabs:
+            box = bpy.data.meshes.new("MediumSlab")
+            v = [(x - 20 + 40 * i, -20 + 40 * j, h * z) for z in (0, 1) for j in (0, 1) for i in (0, 1)]
+            box.from_pydata(v, [], [(0, 2, 3, 1), (4, 5, 7, 6), (0, 1, 5, 4), (2, 6, 7, 3), (0, 4, 6, 2),
+                                    (1, 3, 7, 5)])
+            box.materials.append(built[k])
+            bpy.context.collection.objects.link(bpy.data.objects.new("MediumSlab", box))
+        for z in range(0, 12, 2):  # six 1 m slabs, 12 crossings: past Cycles' 8 transparent bounces
+            box = bpy.data.meshes.new("MediumStack")
+            v = [(130 + 40 * i, -20 + 40 * j, z + c) for c in (0, 1) for j in (0, 1) for i in (0, 1)]
+            box.from_pydata(v, [], [(0, 2, 3, 1), (4, 5, 7, 6), (0, 1, 5, 4), (2, 6, 7, 3), (0, 4, 6, 2),
+                                    (1, 3, 7, 5)])
+            box.materials.append(built["thin"])
+            bpy.context.collection.objects.link(bpy.data.objects.new("MediumStack", box))
+        cam = bpy.data.cameras.new("MediumCamera")
+        cam.type, cam.ortho_scale, cam.clip_end = 'ORTHO', 400.0, 1000.0
+        cob = bpy.data.objects.new("MediumCamera", cam)
+        cob.location = (0.0, 0.0, 300.0)
+        bpy.context.collection.objects.link(cob)
+        scene.camera = cob
+        scene.render.engine = 'CYCLES'
+        scene.cycles.samples, scene.cycles.use_denoising = 16, False
+        scene.render.resolution_x, scene.render.resolution_y, scene.render.resolution_percentage = 80, 20, 100
+        scene.view_settings.view_transform = 'Standard'
+        scene.render.image_settings.file_format = 'OPEN_EXR'
+        scene.render.filepath = path
+        bpy.ops.render.render(write_still=True)
+        img = bpy.data.images.load(path)
+        px = list(img.pixels)
+        bpy.data.images.remove(img)
+
+        def at(x):  # the frame is 400 m wide on 80 px, 5 m a pixel; row 10 of 20 is y 0 to 5
+            col = int(round(40 + x / 5.0))
+            k = (10 * 80 + col) * 4
+            return px[k:k + 3]
+        wants = ((-150.0, [0.8, 0.5, 0.2], "absorption 0.8 / 0.5 / 0.2 at 10 m: the color"),
+                 (-75.0, [2.0, 1.5, 1.25], "emission 1 / 0.5 / 0.25 over 10 m on the emitter's 1"),
+                 (0.0, [1.5, 1.25, 1.125], "the same emission over 5 m: half"),
+                 (75.0, [1.0, 1.0, 1.0], "a volume-only material without a medium: nothing"),
+                 (150.0, [0.9 ** 0.06] * 3, "six stacked 1 m slabs of absorption 0.9 at 100 m: 0.9^0.06"))
+        for x, want, what in wants:
+            got = at(x)
+            check("volume Cycles render: " + what, close(list(got), want, 0.01), "%s vs %s" % (list(got), want))
+    finally:
+        scene.camera, scene.world = saved[:2]
+        for o, a, v in saved[2]:
+            setattr(o, a, v)
+        shutil.rmtree(scratch, ignore_errors=True)
+        empty_scene()
 
 
 def check_layers(label, material, layers, present=False):
@@ -2096,8 +2524,8 @@ def check_fixture_materials(name, plan, desc, obs):
 
 
 def _decoded(node):
-    """The node a Decode's Gamma node of 2.2 is drawn over (a gamma-off color Mix or Composite, maxdrop-em3.158), None
-    when node is not such a Gamma node."""
+    """The node a Decode's Gamma node of 2.2 is drawn over (a gamma-off color Mix or Composite, maxdrop-em3.158; a
+    Falloff, Color Correction, Output or Tint, maxdrop-6n0.6.18), None when node is not such a Gamma node."""
     if node is None or node.bl_idname != "ShaderNodeGamma" or abs(_input(node, "Gamma").default_value - 2.2) > 1e-6:
         return None
     return _from(_input(node, "Color"))
@@ -2119,7 +2547,11 @@ def check_falloff_curve(textured):
               "FixtureCurveOvershoot": "ShaderNodeFresnel", "FixtureCurveClamped": "ShaderNodeLayerWeight",
               "FixtureCurveJump": "ShaderNodeLayerWeight"}
     for name, ratio in ratios.items():
-        mix = _from(_principled(bpy.data.materials[name]).inputs["Base Color"])
+        # the gamma-off fixture: the Falloff mixed as stored under a Gamma node of 2.2 (maxdrop-6n0.6.18)
+        mix = _decoded(_from(_principled(bpy.data.materials[name]).inputs["Base Color"]))
+        check("falloff_curve/%s: under a Gamma node of 2.2" % name, mix is not None and mix.bl_idname == "ShaderNodeMix")
+        if mix is None:
+            continue
         fc = _from(_input(mix, "Factor_Float"))
         ok = fc is not None and fc.bl_idname == "ShaderNodeFloatCurve"
         check("falloff_curve/%s: a Float Curve drives the Mix, unclamped" % name,
@@ -2137,7 +2569,7 @@ def check_falloff_curve(textured):
     linear = bpy.data.materials["FixtureCurveLinear"]
     check("falloff_curve: the default curve makes no Float Curve",
           not any(n.bl_idname == "ShaderNodeFloatCurve" for n in linear.node_tree.nodes)
-          and _from(_input(_from(_principled(linear).inputs["Base Color"]), "Factor_Float")).bl_idname
+          and _from(_input(_decoded(_from(_principled(linear).inputs["Base Color"])), "Factor_Float")).bl_idname
           == "ShaderNodeLayerWeight")
     from maxdrop.convert import colors
     amount = _principled(bpy.data.materials["FixtureMixCurveAmount"]).inputs["Base Color"]
@@ -2184,7 +2616,7 @@ def check_falloff_jump(mapping, x):
     _desc, plan = _irs(os.path.join(ROOT, "tests", "fixtures", "falloff_curve.max"))
     ir = next(ir for p in plan.values() for irs in p.slots for ir in irs
               if ir is not None and ir.name == "FixtureCurveJump")
-    pts = list(ir.textures["base_color"].root.mask.points)
+    pts = list(ir.textures["base_color"].root.input.mask.points)  # the gamma-off Falloff under its Decode
     stored = [tuple(p.location) for p in mapping.curves[0].points]
     at = [p for p in pts if abs(p[0] - x) < 1e-6]
     check("falloff_curve/FixtureCurveJump: the convert side's points, the two at the jump in their order (0.8, 0.3)",
@@ -2792,21 +3224,38 @@ def check_pack_cancel(fixture):
             z.write(fixture, "pack/" + os.path.basename(fixture))
         scene = "pack/" + os.path.basename(fixture)
 
-        def slow(*args, watch=None, **kwargs):
-            def slowed(n):
-                time.sleep(0.3)  # the close below comes while the scene is being written
-                watch(n)
-            return original(*args, watch=slowed, **kwargs)
+        saw = []
 
-        archive.unpack = slow
+        def held(*args, watch=None, **kwargs):
+            def holding(n):
+                # the worker stays in the unpack until close() stops it: a small pack unpacked before the first
+                # step would start the read, and that step would not be _WAIT
+                deadline = time.perf_counter() + 30.0
+                while time.perf_counter() < deadline:
+                    try:
+                        watch(n)  # archive.Cancelled once the steps are closed
+                    except archive.Cancelled:
+                        saw.append(True)
+                        raise
+                    time.sleep(0.005)
+                saw.append(False)
+                watch(n)
+            return original(*args, watch=holding, **kwargs)
+
+        archive.unpack = held
         run = ops._Run(_cancel_run([pack]).opts, [pack], {pack: scene}, bpy.context)
-        steps = run.steps(threaded=True)
-        waited = next(steps) is ops._WAIT
-        steps.close()
-        archive.unpack = original
+        try:
+            steps = run.steps(threaded=True)
+            waited = next(steps) is ops._WAIT
+            steps.close()
+        finally:
+            archive.unpack = original
+            for worker in list(ops._WORKERS):  # close() waits _STOP_WAIT at most: here until the unpack has ended
+                worker.join(60)
         check("pack cancel: closed while it unpacks: only the archive is left, nothing in Blender",
-              waited and os.listdir(scratch) == ["pack.zip"] and _state() == before,
-              "%s %s" % (os.listdir(scratch), run.text))
+              waited and saw == [True] and ops._busy() == "" and os.listdir(scratch) == ["pack.zip"]
+              and _state() == before, "waited %s, stop seen %s, busy %r, %s %s" % (
+                  waited, saw, ops._busy(), os.listdir(scratch), run.text))
 
         run = ops._Run(_cancel_run([pack]).opts, [pack], {pack: scene}, bpy.context)
         steps = run.steps(threaded=True)
@@ -3067,8 +3516,8 @@ def check_builder_blend():
         mixes = [n for n in nodes if n.bl_idname == "ShaderNodeMix" and n.blend_type in ('ADD', 'SUBTRACT')]
         add = next((n for n in mixes if n.blend_type == 'ADD'), None)
         gammas = sorted(round(n.inputs[1].default_value, 4) for n in nodes if n.bl_idname == "ShaderNodeGamma")
-        check("blend: add between Gamma 1 / 2.2 and 2.2, unclamped",
-              add is not None and not add.clamp_result and gammas == [round(1 / 2.2, 4)] * 2 + [2.2], str(gammas))
+        check("blend: add between Gamma 1 / 2.2 and 2.2, unclamped (the constant side folded: maxdrop-em3.161)",
+              add is not None and not add.clamp_result and gammas == [round(1 / 2.2, 4), 2.2], str(gammas))
         floor = [n for n in nodes if n.bl_idname == "ShaderNodeVectorMath" and n.operation == 'MAXIMUM']
         check("blend: subtract floored at 0", len(floor) == 1)
         bsdfs, shaders = _bsdfs(m), _shaders(m)
@@ -3103,12 +3552,52 @@ def _reaches_image(socket, depth=4):
     return n.bl_idname == "ShaderNodeTexImage" or any(_reaches_image(i, depth - 1) for i in n.inputs)
 
 
+def _blend_form(op, vms, t):
+    """Whether the Vector Math nodes vms of a dodge, burn or exclusion of an image (a) and the constant t (b, as the
+    operation takes it) are wired as Corona's formula (maxdrop-em3.161): (ok, the operations found)."""
+    from maxdrop.convert import texmaps as tx
+
+    def one(operation):
+        found = [n for n in vms if n.operation == operation]
+        return found[0] if len(found) == 1 else None
+
+    def const(n, name, v):
+        socket = _input(n, name)
+        return not socket.is_linked and close(list(socket.default_value), list(v), 1e-5)
+
+    ones, zeros = (1.0, 1.0, 1.0), (0.0, 0.0, 0.0)
+    madds = [n for n in vms if n.operation == 'MULTIPLY_ADD']
+    found = sorted(n.operation for n in vms)
+    if op == tx.BLEND_EXCLUSION:  # a + b (1 - 2a)
+        inner = next((n for n in madds if const(n, "Vector_001", (-2.0,) * 3)), None)
+        outer = next((n for n in madds if n != inner), None)
+        ok = len(madds) == 2 and inner is not None and outer is not None and const(inner, "Vector_002", ones) \
+            and _reaches_image(_input(inner, "Vector")) and const(outer, "Vector", t) \
+            and _from(_input(outer, "Vector_001")) == inner and _input(outer, "Vector_002").is_linked \
+            and _input(outer, "Vector_002").links[0].from_socket == _input(inner, "Vector").links[0].from_socket
+        return ok, found
+    div, sub, top = one('DIVIDE'), one('SUBTRACT'), one('MAXIMUM')
+    if None in (div, sub, top) or len(madds) != 1:
+        return False, found
+    m = madds[0]
+    ok = const(m, "Vector_001", (-1.0,) * 3) and const(m, "Vector_002", ones) and const(sub, "Vector", ones) \
+        and _from(_input(sub, "Vector_001")) == div and _from(_input(top, "Vector")) == sub \
+        and const(top, "Vector_001", zeros)
+    if op == tx.BLEND_DODGE:  # 1 - max(0, 1 - a / (1 - b))
+        ok = ok and _reaches_image(_input(div, "Vector")) and const(div, "Vector_001", [1.0 - c for c in t]) \
+            and _from(_input(m, "Vector")) == top
+    else:  # burn: max(0, 1 - (1 - a) / b)
+        ok = ok and _from(_input(div, "Vector")) == m and _reaches_image(_input(m, "Vector")) \
+            and const(div, "Vector_001", t)
+    return ok, found
+
+
 def check_builder_blend_modes():
     """The CoronaMix blend modes of bead maxdrop-em3.117 over an image: a Mix node of the mode (bottom in A, hard
     light's top in A), linear burn's add minus 1 floored at 0; dodge, burn and exclusion as Vector Math nodes,
     Corona's unclamped formulas (maxdrop-em3.161); in sRGB mode a Vector Math ABSOLUTE before the map side's
-    Gamma of 1 / 2.2 (Corona takes a layer's magnitude, maxdrop-em3.161) and before the closing Gamma but for
-    linear burn and burn (never below 0), in linear mode none."""
+    Gamma of 1 / 2.2 and a constant side's magnitude folded (Corona takes a layer's magnitude, maxdrop-em3.161), an
+    ABSOLUTE before the closing Gamma but for linear burn and burn (never below 0); in linear mode none."""
     from maxdrop.build import materials as build_materials
     from maxdrop.convert import materials as cm
     from maxdrop.convert import texmaps as tx
@@ -3119,22 +3608,18 @@ def check_builder_blend_modes():
         png = os.path.join(scratch, "blend.png")
         _write_png(png)
         img = tx.Image(1, "blend.png", "blend.png", "", ct.Found(png, ct.SCENE))
-        top = tx.Constant((0.6, 0.2, 0.75))
+        top = (0.6, -0.2, 0.75)  # a channel below 0: its magnitude in sRGB mode
         types = {tx.BLEND_SCREEN: 'SCREEN', tx.BLEND_OVERLAY: 'OVERLAY', tx.BLEND_HARD_LIGHT: 'OVERLAY',
                  tx.BLEND_LINEAR_BURN: 'ADD', tx.BLEND_LINEAR_LIGHT: 'LINEAR_LIGHT'}
-        # the Vector Math operations of the forms over an image and a constant top (dodge's and burn's
-        # ceil(min(|d|, 1)) folded for a constant d, drawn in sRGB mode, where the top is a Gamma node's output)
-        forms = {tx.BLEND_DODGE: ['DIVIDE', 'MAXIMUM', 'MULTIPLY_ADD', 'SUBTRACT'],
-                 tx.BLEND_BURN: ['DIVIDE', 'MAXIMUM', 'MULTIPLY_ADD', 'SUBTRACT'],
-                 tx.BLEND_EXCLUSION: ['MULTIPLY_ADD']}
         builder = build_materials.MaterialBuilder()
-        for op in list(types) + list(forms):
+        for op in list(types) + [tx.BLEND_DODGE, tx.BLEND_BURN, tx.BLEND_EXCLUSION]:
             for gamma in (2.2, 1.0):
                 ir = cm.MaterialIR(30, "Mode", "test", base_color=cm.Input((0.5,) * 3, cm.MapRef(1)))
-                ir.textures = {"base_color": tx.TextureGraphIR(tx.Blend(op, img, top, gamma), tx.COLOR)}
+                ir.textures = {"base_color": tx.TextureGraphIR(tx.Blend(op, img, tx.Constant(top), gamma), tx.COLOR)}
                 m = builder.make(ir)
                 nodes = m.node_tree.nodes
                 what = "blend mode %s, gamma %s" % (op, gamma)
+                t = tuple(abs(c) ** (1 / gamma) for c in top) if gamma != 1.0 else top
                 vms = [n for n in nodes if n.bl_idname == "ShaderNodeVectorMath"]
                 if op in types:
                     blend_type = types[op]
@@ -3143,23 +3628,29 @@ def check_builder_blend_modes():
                     if ok:
                         a, b = _input(mix[0], "A_Color"), _input(mix[0], "B_Color")
                         image, constant = (b, a) if op == tx.BLEND_HARD_LIGHT else (a, b)
-                        ok = _reaches_image(image) and not _reaches_image(constant)
-                    check("%s: one unclamped Mix node, the bottom image in %s"
-                          % (what, "B" if op == tx.BLEND_HARD_LIGHT else "A"), ok)
+                        held = _from(constant)  # a channel below 0: a Combine XYZ (a color input clamps at 0)
+                        if held is None:
+                            value = list(constant.default_value)[:3]
+                        elif held.bl_idname == "ShaderNodeCombineXYZ":
+                            value = [s.default_value for s in held.inputs]
+                        else:
+                            value = None
+                        ok = _reaches_image(image) and value is not None and close(value, list(t), 1e-5) \
+                            and (held is not None) == (min(t) < 0.0)
+                    check("%s: one unclamped Mix node, the bottom image in %s, the top %s"
+                          % (what, "B" if op == tx.BLEND_HARD_LIGHT else "A", [round(c, 4) for c in t]), ok)
                 else:
-                    got = sorted({n.operation for n in vms} - {'ABSOLUTE'})
-                    nz = ['CEIL', 'MINIMUM'] if gamma != 1.0 and op != tx.BLEND_EXCLUSION else []
-                    check("%s: Vector Math nodes, no Mix node" % what, got == sorted(forms[op] + nz)
-                          and not any(n.bl_idname == "ShaderNodeMix" for n in nodes), str(got))
+                    ok, found = _blend_form(op, vms, t)
+                    check("%s: Vector Math nodes wired as Corona's formula, no Mix node" % what,
+                          ok and not any(n.bl_idname == "ShaderNodeMix" for n in nodes), str(found))
                 absolute = [n for n in vms if n.operation == 'ABSOLUTE']
                 into = sorted(round(_input(n.outputs[0].links[0].to_node, "Gamma").default_value, 3)
                               for n in absolute if n.outputs[0].links
                               and n.outputs[0].links[0].to_node.bl_idname == "ShaderNodeGamma")
                 closing = gamma != 1.0 and op not in (tx.BLEND_LINEAR_BURN, tx.BLEND_BURN)
                 wants = ([round(1 / 2.2, 3)] if gamma != 1.0 else []) + ([2.2] if closing else [])
-                nz = 1 if gamma != 1.0 and op in (tx.BLEND_DODGE, tx.BLEND_BURN) else 0  # |d|
                 check("%s: ABSOLUTE into the Gammas %s" % (what, wants),
-                      into == wants and len(absolute) == len(wants) + nz, str(into))
+                      into == wants and len(absolute) == len(wants), str(into))
                 if op == tx.BLEND_LINEAR_BURN:
                     vm = {n.operation: n for n in vms}
                     add, floor = vm.get('ADD'), vm.get('MAXIMUM')
@@ -3167,14 +3658,70 @@ def check_builder_blend_modes():
                           add is not None and tuple(_input(add, "Vector_001").default_value) == (-1.0, -1.0, -1.0)
                           and floor is not None and floor.inputs[0].links[0].from_node == add)
                 bpy.data.materials.remove(m)
-        for op in (tx.BLEND_DODGE, tx.BLEND_BURN):  # a map top: 1 where it is not d = 0, drawn
+        for op in (tx.BLEND_DODGE, tx.BLEND_BURN):  # a map top: nz = ceil(min(|d|, 1)) drawn from the divisor
             ir = cm.MaterialIR(31, "Maps", "test", base_color=cm.Input((0.5,) * 3, cm.MapRef(1)))
             ir.textures = {"base_color": tx.TextureGraphIR(tx.Blend(op, img, tx.Invert(img)), tx.COLOR)}
             m = builder.make(ir)
-            got = sorted(n.operation for n in m.node_tree.nodes if n.bl_idname == "ShaderNodeVectorMath")
-            check("blend mode %s over two maps: ceil(min(|d|, 1)) drawn" % op,
-                  {'ABSOLUTE', 'CEIL', 'MINIMUM'} <= set(got), str(got))
+            vms = {n.operation: n for n in m.node_tree.nodes if n.bl_idname == "ShaderNodeVectorMath"}
+            div, sub, ceil = vms.get('DIVIDE'), vms.get('SUBTRACT'), vms.get('CEIL')
+            low, absolute = vms.get('MINIMUM'), vms.get('ABSOLUTE')
+            ok = None not in (div, sub, ceil, low, absolute) and _input(div, "Vector_001").is_linked \
+                and _from(_input(absolute, "Vector")) == _from(_input(div, "Vector_001")) \
+                and _from(_input(low, "Vector")) == absolute and _from(_input(ceil, "Vector")) == low \
+                and _from(_input(sub, "Vector")) == ceil and _from(_input(sub, "Vector_001")) == div
+            check("blend mode %s over two maps: ceil(min(|d|, 1)) of the divisor drawn" % op, ok, str(sorted(vms)))
             bpy.data.materials.remove(m)
+    finally:
+        empty_scene()
+        for img in list(bpy.data.images):
+            bpy.data.images.remove(img)
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def check_builder_gamma_magnitude():
+    """A ColorCorrect gamma that takes the magnitude (a CoronaMix gamma in sRGB mode, maxdrop-6n0.6.40): a Vector Math
+    ABSOLUTE between the image and the Gamma node, also beside another step; without the flag none; at a gamma of 1
+    the ABSOLUTE alone. Structural, as the other builder checks (the values: test_texmaps and the probe)."""
+    from maxdrop.build import materials as build_materials
+    from maxdrop.convert import materials as cm
+    from maxdrop.convert import texmaps as tx
+    from maxdrop.convert import textures as ct
+    empty_scene()
+    scratch = tempfile.mkdtemp(prefix="maxdrop-gamma-magnitude-")
+    try:
+        png = os.path.join(scratch, "gamma.png")
+        _write_png(png)
+        img = tx.Image(1, "gamma.png", "gamma.png", "", ct.Found(png, ct.SCENE))
+        builder = build_materials.MaterialBuilder()
+        for magnitude in (True, False):
+            for hue in (0.0, 0.25):
+                ir = cm.MaterialIR(32, "Magnitude", "test", base_color=cm.Input((0.5,) * 3, cm.MapRef(1)))
+                ir.textures = {"base_color": tx.TextureGraphIR(
+                    tx.ColorCorrect(img, hue=hue, gamma=0.731, magnitude=magnitude), tx.COLOR)}
+                m = builder.make(ir)
+                nodes = m.node_tree.nodes
+                gammas = [n for n in nodes if n.bl_idname == "ShaderNodeGamma"]
+                absolute = [n for n in nodes if n.bl_idname == "ShaderNodeVectorMath" and n.operation == 'ABSOLUTE']
+                ok = len(gammas) == 1 and abs(_input(gammas[0], "Gamma").default_value - 1 / 0.731) < 1e-5
+                if magnitude:
+                    ok = (ok and len(absolute) == 1 and _from(_input(gammas[0], "Color")) == absolute[0]
+                          and _reaches_image(_input(absolute[0], "Vector"))
+                          and absolute[0].location.x < gammas[0].location.x)
+                else:
+                    ok = ok and not absolute and _reaches_image(_input(gammas[0], "Color"))
+                check("ColorCorrect gamma, magnitude %s, hue %s: %s" % (
+                    magnitude, hue, "ABSOLUTE into the Gamma" if magnitude else "no ABSOLUTE"), ok,
+                    str([n.bl_idname for n in nodes]))
+                bpy.data.materials.remove(m)
+        ir = cm.MaterialIR(33, "Magnitude1", "test", base_color=cm.Input((0.5,) * 3, cm.MapRef(1)))
+        ir.textures = {"base_color": tx.TextureGraphIR(tx.ColorCorrect(img, magnitude=True), tx.COLOR)}
+        m = builder.make(ir)
+        nodes = m.node_tree.nodes
+        absolute = [n for n in nodes if n.bl_idname == "ShaderNodeVectorMath" and n.operation == 'ABSOLUTE']
+        check("ColorCorrect magnitude at gamma 1: the ABSOLUTE alone, no Gamma",
+              len(absolute) == 1 and _reaches_image(_input(absolute[0], "Vector"))
+              and not any(n.bl_idname == "ShaderNodeGamma" for n in nodes), str([n.bl_idname for n in nodes]))
+        bpy.data.materials.remove(m)
     finally:
         empty_scene()
         for img in list(bpy.data.images):
@@ -3297,11 +3844,13 @@ def check_builder_weight():
 
 def check_builder_fresnel_off():
     """A weight without Fresnel (bead maxdrop-em3.120, VRayMtl Fresnel off): between 0 and 1, or a converted map, a
-    Mix Shader by the weight from the BSDF at Specular IOR Level 0 to its copy as a white metal; 0, a metal and a
+    Mix Shader by the weight from the BSDF at Specular IOR Level 0 to its copy as a metal (white unless the IR's
+    mirror color tints it); 0, a metal and a
     reflection map that did not convert or whose image is not found (no node: its swatch) keep em3.119's drawing;
     Fresnel on keeps the twin. Refracting glass (bead maxdrop-6n0.7.2): the mirror's first shader refracts without
     reflecting (em3.135's refraction twin, the weight 1 under total internal reflection) and the filled BSDF feeds
-    nothing; a black reflection is the twin at 0, a white one the lone BSDF; a coat keeps the mirror over the BSDF."""
+    nothing; a black reflection is the twin at 0, a white one the lone BSDF; a coat keeps the mirror over the BSDF.
+    A tinted mirror color (bead maxdrop-6n0.6.16) is the copy's Base Color, over the BSDF and over refracting glass."""
     from maxdrop.build import materials as build_materials
     from maxdrop.convert import materials as cm
     from maxdrop.convert import texmaps as tx
@@ -3320,6 +3869,9 @@ def check_builder_fresnel_off():
             ("GlassOffBlack", dict(glass, specular=cm.Input(0.0)), {}, "twin", 0.5),
             ("GlassOffWhite", dict(glass, specular=cm.Input(1.0)), {}, "lone", 0.5),
             ("GlassOffUnconverted", dict(glass, specular=cm.Input(0.6, cm.MapRef(1))), {}, "twin", 0.5),
+            ("GlassOffTinted", dict(glass, mirror_color=(1.0, 0.5, 0.25)), {}, "mirror", 0.0),
+            ("Tinted", dict(specular=cm.Input(0.6), base_color=cm.Input((0.2, 0.3, 0.8)),
+                            mirror_color=(1.0, 0.5, 0.25)), {}, "mirror", 0.0),
             ("Dim", dict(specular=cm.Input(0.2), roughness=cm.Input(0.3)), {}, "mirror", 0.0),
             ("DimRed", dict(specular=cm.Input(0.2), base_color=cm.Input((1.0, 0.0, 0.0), cm.MapRef(1)),
                             metallic=cm.Input(0.2, cm.MapRef(1))),
@@ -3344,6 +3896,10 @@ def check_builder_fresnel_off():
         got = "lone" if mix is None else "mirror" if getattr(second, "label", "") == MIRROR_LABEL else "twin"
         check("fresnel off: %s: %s, Specular IOR Level %.1f" % (name, drawing, level), level_ok and got == drawing,
               "%s, level %r" % (got, None if p is None else p.inputs["Specular IOR Level"].default_value))
+        if name in ("Tinted", "GlassOffTinted") and got == "mirror":
+            check("fresnel off: %s: the mirror's Base Color is the IR's mirror color, the BSDF's the base" % name,
+                  close(list(second.inputs["Base Color"].default_value)[:3], [1.0, 0.5, 0.25], 1e-6)
+                  and close(list(p.inputs["Base Color"].default_value)[:3], list(ir.base_color.value), 1e-6))
         if name == "DimRed" and got == "mirror":
             check("fresnel off: DimRed: the source's Base Color and Metallic are linked (the copy's are not)",
                   p.inputs["Base Color"].is_linked and p.inputs["Metallic"].is_linked)
@@ -3462,6 +4018,395 @@ def check_builder_mono():
         empty_scene()
         for img in list(bpy.data.images):
             bpy.data.images.remove(img)
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def check_builder_negative_constants():
+    """A constant color below 0 on a Mix node's color input (bead maxdrop-6n0.6.26): a color input, and an RGB
+    node's color, clamp their own value at 0, so mix, multiply, a Composite's opacity Mix and its blend Mix, and
+    _Tree.socket put it on a Combine XYZ node, which keeps it; a constant of no channel below 0 stays the input's own
+    value (an RGB node for socket)."""
+    from maxdrop.build import materials as build_materials
+    from maxdrop.convert import materials as cm
+    from maxdrop.convert import texmaps as tx
+    from maxdrop.convert import textures as ct
+    empty_scene()
+    scratch = tempfile.mkdtemp(prefix="maxdrop-negative-")
+    neg, pos = (-0.5, 0.25, -0.2), (0.2, 0.3, 0.4)
+
+    def held(socket):  # the constant on a color input: (its values, whether a Combine XYZ holds them)
+        n = _from(socket)
+        if n is None:
+            return list(socket.default_value)[:3], False
+        if n.bl_idname == "ShaderNodeCombineXYZ":
+            return [i.default_value for i in n.inputs], True
+        return None, False
+
+    try:
+        png = os.path.join(scratch, "negative.png")
+        _write_png(png)
+        img = tx.Image(1, "negative.png", "negative.png", "", ct.Found(png, ct.SCENE))
+        cases = (("mix", lambda c: tx.Mix(img, tx.Constant(c), 0.5), 'MIX'),
+                 ("multiply", lambda c: tx.Multiply(img, tx.Constant(c)), 'MULTIPLY'),
+                 ("mix (A)", lambda c: tx.Mix(tx.Constant(c), img, 0.5), 'MIX'),
+                 ("multiply (A)", lambda c: tx.Multiply(tx.Constant(c), img), 'MULTIPLY'),
+                 ("composite opacity", lambda c: tx.Composite((tx.CompositeLayer(img),
+                                                               tx.CompositeLayer(tx.Constant(c), 0.5))), 'MIX'),
+                 ("composite blend", lambda c: tx.Composite((tx.CompositeLayer(img),
+                                                             tx.CompositeLayer(tx.Constant(c), 1.0, tx.ADDITION))),
+                  'ADD'))
+        builder = build_materials.MaterialBuilder()
+        for what, graph, blend in cases:
+            for c in (neg, pos):
+                ir = cm.MaterialIR(80, "Negative", "test", base_color=cm.Input((0.5,) * 3, cm.MapRef(1)))
+                ir.textures = {"base_color": tx.TextureGraphIR(graph(c), tx.COLOR)}
+                m = builder.make(ir)
+                mixes = [n for n in m.node_tree.nodes if n.bl_idname == "ShaderNodeMix" and n.blend_type == blend]
+                side, other = ("A_Color", "B_Color") if what.endswith("(A)") else ("B_Color", "A_Color")
+                value, combined = held(_input(mixes[0], side)) if len(mixes) == 1 else (None, False)
+                check("negative constants: %s of an image and %s: %s" % (
+                          what, list(c), "on a Combine XYZ" if min(c) < 0 else "the input's own value"),
+                      value is not None and close(value, list(c), 1e-6) and combined == (min(c) < 0)
+                      and _reaches_image(_input(mixes[0], other)), "%d %s %s" % (len(mixes), value, combined))
+                bpy.data.materials.remove(m)
+        # a constant bottom layer below 0 under a spotlight-blended map: the blend's A, the add's A and the opacity
+        # Mix's A all from one Combine XYZ holding it
+        ir = cm.MaterialIR(82, "NegativeBelow", "test", base_color=cm.Input((0.5,) * 3, cm.MapRef(1)))
+        ir.textures = {"base_color": tx.TextureGraphIR(tx.Composite((
+            tx.CompositeLayer(tx.Constant(neg)), tx.CompositeLayer(img, 0.5, tx.SPOTLIGHT_BLEND))), tx.COLOR)}
+        m = builder.make(ir)
+        mixes = [n for n in m.node_tree.nodes if n.bl_idname == "ShaderNodeMix"]
+        combines = [n for n in m.node_tree.nodes if n.bl_idname == "ShaderNodeCombineXYZ"]
+        sources = [_from(_input(n, "A_Color")) for n in mixes]
+        check("negative constants: a constant bottom layer below 0 under a spotlight blend: one Combine XYZ on the A "
+              "of its three Mix nodes", len(mixes) == 3 and len(combines) == 1 and all(s == combines[0] for s in
+                                                                                    sources)
+              and close([i.default_value for i in combines[0].inputs], list(neg), 1e-6),
+              "%d Mix, %d Combine XYZ, %s" % (len(mixes), len(combines), [getattr(s, "bl_idname", None)
+                                                                         for s in sources]))
+        bpy.data.materials.remove(m)
+        m = bpy.data.materials.new("NegativeSocket")
+        tree = build_materials._Tree(builder, m, cm.MaterialIR(81, "NegativeSocket", "test"))
+        for c, kind in ((neg, "ShaderNodeCombineXYZ"), (pos, "ShaderNodeRGB")):
+            out = tree.socket(c, build_materials.COLOR, 0)
+            node = out.node
+            got = [i.default_value for i in node.inputs] if node.bl_idname == "ShaderNodeCombineXYZ" else \
+                list(out.default_value)[:3]
+            check("negative constants: socket() of %s: a %s holding it" % (list(c), kind[10:]),
+                  node.bl_idname == kind and close(got, list(c), 1e-6), "%s %s" % (node.bl_idname, got))
+        bpy.data.materials.remove(m)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+        empty_scene()
+
+
+def check_builder_mask_mean():
+    """An image read as stored as a gamma-off mask (texmaps.Decode mean, bead maxdrop-6n0.6.36): the mean of its
+    channels (a DOT_PRODUCT) through the exact sRGB curve in Math nodes (a FLOAT Mix of the power and the linear
+    branch by a LESS_THAN), evaluated here from the nodes' own constants against colors.srgb_to_linear; over a
+    constant folded; a Composite layer below it keeps its image's alpha."""
+    from maxdrop.build import materials as build_materials
+    from maxdrop.convert import colors
+    from maxdrop.convert import materials as cm
+    from maxdrop.convert import texmaps as tx
+    from maxdrop.convert import textures as ct
+    empty_scene()
+    scratch = tempfile.mkdtemp(prefix="maxdrop-mask-mean-")
+
+    def evaluate(socket, f, image):  # the float reaching socket when the image's mean is f
+        if not socket.is_linked:
+            return socket.default_value
+        n = _from(socket)
+        if n == image:
+            return f
+        if n.bl_idname == "ShaderNodeMath":
+            x = [evaluate(i, f, image) for i in n.inputs[:3]]
+            return {'MULTIPLY_ADD': lambda: x[0] * x[1] + x[2], 'POWER': lambda: x[0] ** x[1] if x[0] > 0 else 0.0,
+                    'DIVIDE': lambda: x[0] / x[1], 'LESS_THAN': lambda: float(x[0] < x[1])}[n.operation]()
+        if n.bl_idname == "ShaderNodeMix" and n.data_type == 'FLOAT':
+            t = min(1.0, max(0.0, evaluate(_input(n, "Factor_Float"), f, image)))
+            a, b = evaluate(_input(n, "A_Float"), f, image), evaluate(_input(n, "B_Float"), f, image)
+            return a + (b - a) * t
+        raise ValueError(n.bl_idname)
+
+    try:
+        png = os.path.join(scratch, "mask.png")
+        _write_png(png)
+        img = tx.Image(1, "mask.png", "mask.png", "", ct.Found(png, ct.SCENE), colorspace=tx.NON_COLOR)
+        builder = build_materials.MaterialBuilder()
+        black, white = tx.Constant((0.0,) * 3), tx.Constant((1.0,) * 3)
+        ir = cm.MaterialIR(83, "MaskMean", "test", base_color=cm.Input((0.5,) * 3, cm.MapRef(1)))
+        ir.textures = {"base_color": tx.TextureGraphIR(tx.Mix(black, white, 0.0, tx.Decode(img, mean=True)),
+                                                       tx.COLOR)}
+        m = builder.make(ir)
+        mix = _from(_principled(m).inputs["Base Color"])
+        factor = _input(mix, "Factor_Float") if mix is not None and mix.bl_idname == "ShaderNodeMix" else None
+        curve = _from(factor) if factor is not None else None
+        texture = None
+        if curve is not None and curve.bl_idname == "ShaderNodeMix":
+            dots = [n for n in m.node_tree.nodes if n.bl_idname == "ShaderNodeVectorMath"
+                    and n.operation == 'DOT_PRODUCT' and close(list(_input(n, "Vector_001").default_value),
+                                                                [1 / 3.0] * 3, 1e-6)]
+            texture = _from(_input(dots[0], "Vector")) if len(dots) == 1 else None
+        ok = (texture is not None and texture.bl_idname == "ShaderNodeTexImage"
+              and texture.image.colorspace_settings.name == "Non-Color")
+        samples = (0.0, 0.02, 0.04, 0.0405, 0.2, 0.457511, 0.5, 1.0, 1.5)
+        got = [evaluate(factor, f, dots[0]) for f in samples] if ok else []
+        want = [colors.srgb_to_linear(f) for f in samples]
+        check("mask mean: the Non-Color image's mean through the sRGB curve in Math nodes, exact",
+              ok and close(got, want, 1e-6), "%s %s" % (got, want))
+        bpy.data.materials.remove(m)
+        ir = cm.MaterialIR(84, "MaskMeanConstant", "test", base_color=cm.Input((0.5,) * 3, cm.MapRef(1)))
+        ir.textures = {"base_color": tx.TextureGraphIR(tx.Mix(black, white, 0.0, tx.Decode(tx.Constant((
+            0.8, 0.4, 0.2)), mean=True)), tx.COLOR)}
+        m = builder.make(ir)
+        mix = _from(_principled(m).inputs["Base Color"])
+        value = _input(mix, "Factor_Float").default_value if mix is not None else None
+        check("mask mean: over a constant folded to the sRGB curve of its mean",
+              value is not None and abs(value - colors.srgb_to_linear(1.4 / 3)) <= 1e-6, str(value))
+        bpy.data.materials.remove(m)
+        alpha = dataclasses.replace(img, index=2)
+        ir = cm.MaterialIR(85, "MaskMeanLayer", "test", base_color=cm.Input((0.5,) * 3, cm.MapRef(1)))
+        ir.textures = {"base_color": tx.TextureGraphIR(tx.Composite((tx.CompositeLayer(black), tx.CompositeLayer(
+            tx.Decode(alpha, mean=True), 0.5))), tx.COLOR)}
+        m = builder.make(ir)
+        alphas = [k for k in m.node_tree.links if k.from_node.bl_idname == "ShaderNodeTexImage"
+                  and k.from_socket.identifier == "Alpha"]
+        check("mask mean: a Composite layer of a mean keeps its image's alpha in the opacity", len(alphas) == 1,
+              str(len(alphas)))
+        bpy.data.materials.remove(m)
+    finally:
+        for img in list(bpy.data.images):
+            bpy.data.images.remove(img)
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _evaluate_color(socket):
+    """The RGB a color or vector socket gives, from the nodes' own constants (RGB, Separate Color, Math MAXIMUM /
+    MINIMUM / ADD / MULTIPLY, Vector Math MULTIPLY_ADD / MAXIMUM / MINIMUM, Gamma); a float is returned as three equal
+    channels."""
+    if not socket.is_linked:
+        v = socket.default_value
+        return tuple(v[:3]) if hasattr(v, "__len__") else (float(v),) * 3
+    link = socket.links[0]
+    n, out = link.from_node, link.from_socket
+    if n.bl_idname == "ShaderNodeRGB":
+        return tuple(n.outputs[0].default_value[:3])
+    if n.bl_idname == "ShaderNodeSeparateColor":
+        c = _evaluate_color(n.inputs["Color"])
+        return (c[("Red", "Green", "Blue").index(out.name)],) * 3
+    if n.bl_idname == "ShaderNodeMath":
+        a, b = (_evaluate_color(i)[0] for i in n.inputs[:2])
+        f = {'MAXIMUM': max, 'MINIMUM': min, 'ADD': lambda x, y: x + y, 'MULTIPLY': lambda x, y: x * y}[n.operation]
+        return (f(a, b),) * 3
+    if n.bl_idname == "ShaderNodeVectorMath" and n.operation == 'MULTIPLY_ADD':
+        v, s, add = (_evaluate_color(_input(n, k)) for k in ("Vector", "Vector_001", "Vector_002"))
+        return tuple(x * y + z for x, y, z in zip(v, s, add))
+    if n.bl_idname == "ShaderNodeVectorMath" and n.operation in ('MAXIMUM', 'MINIMUM'):
+        a, b = (_evaluate_color(_input(n, k)) for k in ("Vector", "Vector_001"))
+        return tuple((max if n.operation == 'MAXIMUM' else min)(x, y) for x, y in zip(a, b))
+    if n.bl_idname == "ShaderNodeGamma":
+        c, g = _evaluate_color(n.inputs["Color"]), n.inputs["Gamma"].default_value
+        return tuple(x ** g if x > 0 else x for x in c)
+    raise ValueError(n.bl_idname)
+
+
+def check_builder_saturation():
+    """A Color Correction's saturation drawn as 3ds Max's (HSL: each channel towards (max + min) / 2; V-Ray 5.2
+    renders, bead maxdrop-6n0.6.18: -50 % over (200, 100, 50) gives (0.637, 0.441, 0.343)), evaluated from the nodes'
+    constants; the hue shift alone on the Hue/Saturation/Value node, its saturation 1."""
+    from maxdrop.build import materials as build_materials
+    from maxdrop.convert import materials as cm
+    from maxdrop.convert import texmaps as tx
+    empty_scene()
+    color = (200 / 255, 100 / 255, 50 / 255)
+    builder = build_materials.MaterialBuilder()
+    for label, hue in (("saturation", 0.0), ("hue and saturation", 0.5)):
+        ir = cm.MaterialIR(86, "Saturation", "test", emission_color=cm.Input((0.0,) * 3, cm.MapRef(1)),
+                           emission_strength=1.0)
+        ir.textures = {"emission_color": tx.TextureGraphIR(tx.ColorCorrect(tx.Constant(color), hue=hue,
+                                                                           saturation=0.5), tx.COLOR)}
+        m = builder.make(ir)
+        socket = _principled(m).inputs["Emission Color"]
+        sat = _from(socket)
+        ok = sat is not None and sat.bl_idname == "ShaderNodeVectorMath" and sat.operation == 'MULTIPLY_ADD'
+        got = _evaluate_color(socket) if ok and hue == 0.0 else None
+        hues = [n for n in m.node_tree.nodes if n.bl_idname == "ShaderNodeHueSaturation"]
+        if hue == 0.0:
+            check("builder saturation: HSL, (0.637, 0.441, 0.343) as V-Ray renders it, no HSV node",
+                  ok and not hues and close(got, [0.6373, 0.4412, 0.3431], 0.0005), str(got))
+        else:
+            source = _from(_input(sat, "Vector")) if ok else None
+            check("builder saturation: the hue on a Hue/Saturation/Value node of saturation 1, before the HSL step",
+                  len(hues) == 1 and source == hues[0] and abs(hues[0].inputs["Saturation"].default_value - 1.0) < 1e-6
+                  and abs(hues[0].inputs["Hue"].default_value - 0.0) < 1e-6, str(hues))
+        bpy.data.materials.remove(m)
+    # above 0 %: a channel below 0 is 0, one above 1 kept (V-Ray 5.2, bead maxdrop-6n0.6.38: +100 % over
+    # (200, 100, 50) gives 1.078 0.294 0, +50 % 0.931 0.343 0.049)
+    for saturation, want in ((2.0, [1.0784, 0.2941, 0.0]), (1.5, [0.9314, 0.3431, 0.0490])):
+        ir = cm.MaterialIR(86, "Saturation", "test", emission_color=cm.Input((0.0,) * 3, cm.MapRef(1)),
+                           emission_strength=1.0)
+        ir.textures = {"emission_color": tx.TextureGraphIR(tx.ColorCorrect(tx.Constant(color), saturation=saturation),
+                                                           tx.COLOR)}
+        m = builder.make(ir)
+        socket = _principled(m).inputs["Emission Color"]
+        low = _from(socket)
+        ok = low is not None and low.bl_idname == "ShaderNodeVectorMath" and low.operation == 'MAXIMUM'
+        got = _evaluate_color(socket) if ok else None
+        check("builder saturation %+d %%: a channel below 0 is 0, above 1 kept, as V-Ray renders it" % (
+            round(saturation * 100) - 100), ok and close(got, want, 0.0005), str(got))
+        bpy.data.materials.remove(m)
+
+
+def check_world_shown_sky():
+    """A float dome texture of a gamma-off scene (DomeTexture.shown, bead maxdrop-6n0.6.21): camera rays see a second
+    Background of the sRGB curve of texture x strength (at strength 1), picked by the Light Path's Is Camera Ray on a
+    Mix Shader; other rays the texture at the strength. Evaluated from the nodes' constants: a 0.5 sky at multiplier
+    2 is srgb_to_linear(1.0), 0.25 at 2 srgb_to_linear(0.5); a hemisphere masks both; a texture not shown has none."""
+    from maxdrop.build import world as build_world
+    from maxdrop.convert import colors
+    from maxdrop.convert import lights as cl
+    from maxdrop.convert import texmaps as tx
+    empty_scene()
+    image = bpy.data.images.new("ShownSky", 4, 4, float_buffer=True)
+    texture = tx.Image(1, "sky.exr", "sky.exr", colorspace=tx.LINEAR, gamma=1.0)
+    try:
+        for hemisphere in (False, True):
+            dd = cl.DomeDescription(None, "ShownSky", radiance=2.0, hemisphere=hemisphere)
+            dd.texture = cl.DomeTexture(texture, shown=True)
+            world = build_world.make_world(dd, image, 1.0)
+            nodes = world.node_tree.nodes
+            out = next(n for n in nodes if n.bl_idname == "ShaderNodeOutputWorld")
+            mix = _from(out.inputs["Surface"])
+            seen = nodes.get(build_world.CAMERA_BACKGROUND)
+            path = _from(mix.inputs[0]) if mix is not None and mix.bl_idname == "ShaderNodeMixShader" else None
+            light = _from(mix.inputs[1]) if path is not None else None
+            ok = (path is not None and path.bl_idname == "ShaderNodeLightPath"
+                  and mix.inputs[0].links[0].from_socket.name == "Is Camera Ray"
+                  and light is not None and light.bl_idname == "ShaderNodeBackground" and light != seen
+                  and _from(mix.inputs[2]) == seen)
+            power = _from(seen.inputs["Color"]) if ok else None
+            curve = _from(power.inputs["Color"]) if power is not None else None
+            env = _from(_input(curve, "Vector")) if curve is not None else None
+            got = []
+            if env is not None and env.bl_idname == "ShaderNodeTexEnvironment":
+                for texel in (0.5, 0.25):
+                    s, add = (_input(curve, k).default_value[0] for k in ("Vector_001", "Vector_002"))
+                    got.append((texel * s + add) ** power.inputs["Gamma"].default_value)
+            check("world shown sky%s: camera rays see the sRGB curve of texture x 2, others the texture"
+                  % (" (hemisphere)" if hemisphere else ""), ok and len(got) == 2
+                  and close(got, [colors.srgb_to_linear(1.0), colors.srgb_to_linear(0.5)], 0.001)
+                  and _from(light.inputs["Color"]) == env, "%s %s" % (ok, got))
+            if hemisphere:
+                above = _from(seen.inputs["Strength"]) if seen is not None else None
+                check("world shown sky (hemisphere): the camera's strength the mask alone, the light's mask x 2",
+                      above is not None and above.operation == 'GREATER_THAN'
+                      and _from(light.inputs["Strength"]).operation == 'MULTIPLY')
+            else:
+                check("world shown sky: the camera's Background at strength 1, the light's at 2",
+                      ok and abs(seen.inputs["Strength"].default_value - 1.0) < 1e-6
+                      and abs(light.inputs["Strength"].default_value - 2.0) < 1e-6)
+            bpy.data.worlds.remove(world)
+        dd = cl.DomeDescription(None, "PlainSky", radiance=2.0)
+        dd.texture = cl.DomeTexture(texture)
+        world = build_world.make_world(dd, image, 1.0)
+        kinds = {n.bl_idname for n in world.node_tree.nodes}
+        check("world shown sky: a texture not shown has no Light Path", "ShaderNodeLightPath" not in kinds
+              and "ShaderNodeMixShader" not in kinds, str(sorted(kinds)))
+        bpy.data.worlds.remove(world)
+        dd = cl.DomeDescription(None, "ColorSky", color=(colors.srgb_to_linear(0.5),) * 3, radiance=0.5)
+        dd.shown = True
+        world = build_world.make_world(dd, None, 1.0)
+        seen = world.node_tree.nodes.get(build_world.CAMERA_BACKGROUND)
+        out = next(n for n in world.node_tree.nodes if n.bl_idname == "ShaderNodeOutputWorld")
+        mix = _from(out.inputs["Surface"])
+        got = list(seen.inputs["Color"].default_value)[:3] if seen is not None else None
+        check("world shown sky: an untextured gamma-off dome (grey 128 at 0.5): the camera sees srgb_to_linear(0.25)",
+              mix is not None and mix.bl_idname == "ShaderNodeMixShader" and got is not None
+              and close(got, [colors.srgb_to_linear(0.25)] * 3, 1e-6) and not seen.inputs["Color"].is_linked
+              and abs(seen.inputs["Strength"].default_value - 1.0) < 1e-6, str(got))
+        bpy.data.worlds.remove(world)
+    finally:
+        bpy.data.images.remove(image)
+
+
+def _render_mean(scene, camera, path):
+    """The mean red of an 8 x 8 render of scene through camera, written to path (an EXR) and read back."""
+    scene.camera = camera
+    scene.render.filepath = path
+    bpy.ops.render.render(write_still=True)
+    img = bpy.data.images.load(path)
+    px = img.pixels[:]
+    n = len(px) // 4
+    value = sum(px[i * 4] for i in range(n)) / n
+    bpy.data.images.remove(img)
+    return value
+
+
+def check_world_shown_render():
+    """The Light Path split rendered (bead maxdrop-6n0.6.21): a World of a uniform 0.5 float texture made shown, a
+    camera looking at the sky alone sees srgb_to_linear(0.5) = 0.214 and a white diffuse floor under it, seen from
+    above, is lit by the texture as it is (0.5), in Cycles and in this version's EEVEE (world lighting is not a camera
+    ray there either)."""
+    from maxdrop import compat
+    from maxdrop.build import world as build_world
+    from maxdrop.convert import colors
+    from maxdrop.convert import lights as cl
+    from maxdrop.convert import texmaps as tx
+    empty_scene()
+    scene = bpy.context.scene
+    scratch = tempfile.mkdtemp(prefix="maxdrop-world-shown-")
+    image = bpy.data.images.new("ShownHalf", 8, 4, float_buffer=True)
+    image.pixels[:] = [0.5, 0.5, 0.5, 1.0] * 32
+    try:
+        dd = cl.DomeDescription(None, "ShownHalf", radiance=1.0)
+        dd.texture = cl.DomeTexture(tx.Image(1, "half.exr", "half.exr", colorspace=tx.LINEAR, gamma=1.0), shown=True)
+        scene.world = build_world.make_world(dd, image, 1.0)
+        mesh = bpy.data.meshes.new("ShownFloor")
+        mesh.from_pydata([(-50, -50, 0), (50, -50, 0), (50, 50, 0), (-50, 50, 0)], [], [(0, 1, 2, 3)])
+        floor = bpy.data.objects.new("ShownFloor", mesh)
+        scene.collection.objects.link(floor)
+        mat = bpy.data.materials.new("ShownWhite")
+        tree = compat.node_tree(mat)
+        tree.nodes.clear()
+        diffuse = tree.nodes.new("ShaderNodeBsdfDiffuse")
+        diffuse.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+        out = tree.nodes.new("ShaderNodeOutputMaterial")
+        tree.links.new(diffuse.outputs[0], out.inputs["Surface"])
+        mesh.materials.append(mat)
+        cams = {}
+        for name, z, angle in (("sky", 1.0, math.pi), ("floor", 1.0, 0.0)):
+            data = bpy.data.cameras.new("Shown" + name)
+            data.type = 'ORTHO'
+            data.ortho_scale = 1.0
+            data.clip_start = 0.01
+            cam = bpy.data.objects.new("Shown" + name, data)
+            cam.location = (0.0, 0.0, z)
+            cam.rotation_euler = (angle, 0.0, 0.0)  # 0: looking down; pi: looking up, away from the floor
+            scene.collection.objects.link(cam)
+            cams[name] = cam
+        scene.render.resolution_x = scene.render.resolution_y = 8
+        scene.render.resolution_percentage = 100
+        scene.render.image_settings.file_format = 'OPEN_EXR'
+        scene.render.image_settings.color_depth = '32'
+        scene.view_settings.view_transform = 'Standard'
+        eevee = 'BLENDER_EEVEE' if bpy.app.version >= (5, 0, 0) else 'BLENDER_EEVEE_NEXT'
+        for engine in ('CYCLES', eevee):
+            scene.render.engine = engine
+            if engine == 'CYCLES':
+                scene.cycles.samples = 64
+                scene.cycles.use_denoising = False
+            else:
+                scene.eevee.taa_render_samples = 16
+            sky = _render_mean(scene, cams["sky"], os.path.join(scratch, "sky_%s.exr" % engine))
+            lit = _render_mean(scene, cams["floor"], os.path.join(scratch, "floor_%s.exr" % engine))
+            check("world shown sky, %s: the camera sees srgb_to_linear(0.5), the floor is lit by 0.5" % engine,
+                  abs(sky - colors.srgb_to_linear(0.5)) <= 0.02 and abs(lit - 0.5) <= 0.03,
+                  "sky %.4f floor %.4f" % (sky, lit))
+    finally:
+        for ob in list(bpy.data.objects):
+            bpy.data.objects.remove(ob)
+        bpy.data.images.remove(image)
         shutil.rmtree(scratch, ignore_errors=True)
 
 
@@ -4733,16 +5678,23 @@ def check_builder_wiring(ma, mb, builder, cm, tx, srgb, data, lost, gamma):
     gam = _from(pb.inputs["Emission Color"])
     gain = _from(gam.inputs["Color"])
     bc = _from(gain.inputs[0])
-    hue = _from(bc.inputs["Color"])
+    sat = _from(bc.inputs["Color"])
+    low = sat if sat.bl_idname == "ShaderNodeVectorMath" and sat.operation == 'MAXIMUM' else None
+    sat = _from(_input(low, "Vector")) if low is not None else sat
+    hue = _from(_input(sat, "Vector")) if sat.bl_idname == "ShaderNodeVectorMath" else sat
     comp = _from(hue.inputs["Color"])
-    check("wiring: Color Correction: Hue 0.75, Saturation 1.5, Bright 0.1, Contrast 0.2, gain 1.2, Gamma 1 / 1.1",
+    check("wiring: Color Correction: Hue 0.75, HSL Saturation 1.5 (maxdrop-6n0.6.18) and a MAXIMUM of 0 after it "
+          "(maxdrop-6n0.6.38), Bright 0.1, Contrast 0.2, gain 1.2, Gamma 1 / 1.1", low is not None
+          and close(list(_input(low, "Vector_001").default_value), [0.0] * 3, 1e-6)
+          and sat.bl_idname == "ShaderNodeVectorMath" and sat.operation == 'MULTIPLY_ADD'
+          and close(list(_input(sat, "Vector_001").default_value), [1.5] * 3, 1e-6) and
           gam.bl_idname == "ShaderNodeGamma" and abs(gam.inputs["Gamma"].default_value - 1 / 1.1) < 1e-6
           and gain.bl_idname == "ShaderNodeVectorMath" and gain.operation == 'SCALE'
           and abs(_input(gain, "Scale").default_value - 1.2) < 1e-6
           and bc.bl_idname == "ShaderNodeBrightContrast" and abs(_input(bc, "Bright").default_value - 0.1) < 1e-6
           and abs(_input(bc, "Contrast").default_value - 0.2) < 1e-6
           and hue.bl_idname == "ShaderNodeHueSaturation" and abs(hue.inputs["Hue"].default_value - 0.75) < 1e-6
-          and abs(hue.inputs["Saturation"].default_value - 1.5) < 1e-6)
+          and abs(hue.inputs["Saturation"].default_value - 1.0) < 1e-6)
     factor = _from(_input(comp, "Factor_Float"))
     top = _from(_input(comp, "B_Color"))
     check("wiring: Composite: the top layer over the bottom by its alpha times 0.5, its gamma override 1.8 applied",
@@ -4875,7 +5827,11 @@ def check_wrapper_nodes():
         kinds = _node_kinds(m) if m is not None else set()
         check("texmap_wrappers/%s: its wrappers' nodes" % name, want <= kinds, str(sorted(want - kinds)))
     p = _principled(bpy.data.materials["FixtureWrapFalloff"])
-    mix = _from(p.inputs["Base Color"])
+    mix = _decoded(_from(p.inputs["Base Color"]))
+    check("texmap_wrappers: the gamma-off Falloff mixed as stored, under a Gamma node of 2.2 (maxdrop-6n0.6.18)",
+          mix is not None and mix.bl_idname == "ShaderNodeMix")
+    if mix is None:
+        return
     side = _from(_input(mix, "A_Color"))
     check("texmap_wrappers: the Falloff's side 1 is lerp(color 1, its map, 0.6), by Layer Weight Facing",
           _from(_input(mix, "Factor_Float")).bl_idname == "ShaderNodeLayerWeight" and side.bl_idname == "ShaderNodeMix"
@@ -5354,13 +6310,20 @@ def main():
                                  ("builder debt", check_builder_debt), ("builder mirror", check_builder_mirror),
                                  ("builder blend", check_builder_blend), ("builder mono", check_builder_mono),
                                  ("builder blend modes", check_builder_blend_modes),
+                                 ("builder gamma magnitude", check_builder_gamma_magnitude),
                                  ("builder multiply", check_builder_multiply),
+                                 ("builder negative constants", check_builder_negative_constants),
                                  ("builder diffuse level", check_builder_diffuse_level),
                                  ("builder wrapper constants", check_builder_wrapper_constants),
+                                 ("builder volume", check_builder_volume),
                                  ("builder weight", check_builder_weight),
                                  ("builder fresnel off", check_builder_fresnel_off),
                                  ("builder clip mask", check_builder_clip_mask),
                                  ("builder clipped normal", check_builder_clipped_normal),
+                                 ("builder mask mean", check_builder_mask_mean),
+                                 ("builder saturation", check_builder_saturation),
+                                 ("world shown sky", check_world_shown_sky),
+                                 ("world shown render", check_world_shown_render),
                                  ("curve step", check_curve_step),
                                  ("crease open edges", check_crease_open_edges),
                                  ("linear fallback", check_linear_fallback),
@@ -5389,6 +6352,8 @@ def main():
                                      os.path.join(ROOT, "tests", "fixtures", "lights_photometric.max"))),
                                  ("ies search stopped", lambda: check_ies_search_stopped(
                                      os.path.join(ROOT, "tests", "fixtures", "lights_photometric.max"))),
+                                 ("spread cancel", lambda: check_spread_cancel(
+                                     os.path.join(ROOT, "tests", "fixtures", "vray_mesh_light.max"))),
                                  ("benchmark", lambda: _bench().run(check))):
             try:
                 run_check()

@@ -61,7 +61,8 @@ UV_LAYERS = {
     "editable_mesh": ["UVMap"],
     # per mesh (named after its first node): Extrude makes channel 1 only with Generate Mapping Coords.
     "falloff_curve": ["UVMap"],
-    "extrude": {"FixtureExtRect": ["UVMap"], "FixtureExtAdaptive": ["UVMap"]},
+    "extrude": {"FixtureExtRect": ["UVMap"], "FixtureExtAdaptive": ["UVMap"], "FixtureExtDownStart": ["UVMap"],
+                "FixtureExtDownEndReal": ["UVMap"]},
     "gamma_swatches": ["UVMap"],
     "hierarchy": [],
     "instances": ["UVMap"],
@@ -103,6 +104,7 @@ UV_LAYERS = {
     "cameras": [],  # its box, without Generate Mapping Coords; the cameras are no mesh
     "controllers": [],  # boxes without Generate Mapping Coords
     "controllers_tangents": [],  # boxes without Generate Mapping Coords
+    "controllers_ranges": [],  # boxes without Generate Mapping Coords
     "vray_wrappers": ["UVMap"],
     # per mesh: every box, the cylinder and the sphere have channel 1; two UVW Maps write channels 2 and 3
     "uvwmap": collections.defaultdict(lambda: ["UVMap"], {"FixtureUVWGizmo": ["UVMap", "UVChannel_2"],
@@ -121,7 +123,11 @@ SHARP_EDGES_OPEN_BOX = 12
 SHARP_EDGES_SHELL = {"FixtureShellPlane": 4, "FixtureShellTurbo": 4, "FixtureShellSmoothed": 0,
                      # the half and quarter boxes below a Symmetry (2 x 2 segments): the edges between their sides
                      # and the top's open edges, not those of the cut, which the Mirror welds shut
-                     "FixtureShellSymHalf": 6 + 4, "FixtureShellSymClosed": 10, "FixtureShellSymQuarter": 3 + 2}
+                     "FixtureShellSymHalf": 6 + 4, "FixtureShellSymClosed": 10, "FixtureShellSymQuarter": 3 + 2,
+                     # Shells below a Symmetry whose plane holds their cut: the Mirror moved below them welds it; a
+                     # TurboSmooth (Smooth Result) above smooths everything; weld off: the cut's open edges sharp too
+                     "FixtureShellUnderSym": 6 + 4, "FixtureShellUnderSymTurbo": 0, "FixtureShellBetweenSym": 3 + 2,
+                     "FixtureShellUnderSymNoWeld": 6 + 8}
 # extrude: the vertical edges at corner knots (one per level) and both rims of every capped outline
 SHARP_EDGES_EXTRUDE = {"FixtureExtRect": 4 * 2 + 8, "FixtureExtL": 6 + 12, "FixtureExtHole": 4 + 8 + 56,
                        "FixtureExtIsland": 12 + 24, "FixtureExtOpen": 0, "FixtureExtMirror": 8 + 64,
@@ -129,11 +135,15 @@ SHARP_EDGES_EXTRUDE = {"FixtureExtRect": 4 * 2 + 8, "FixtureExtL": 6 + 12, "Fixt
                        "FixtureUVWExtrude": 4 + 8,
                        # grid caps: as above (the circle smooth, one rim: Cap End off)
                        "FixtureExtGrid": 10 + 8 + 18, "FixtureExtGridCircle": 16,
+                       # downwards, one cap each: 3 and 2 levels of corner columns, one rim
+                       "FixtureExtDownStart": 4 * 3 + 4, "FixtureExtDownEndReal": 4 * 2 + 4,
                        # arc_pie_reverse: both rims of a pie's 23 columns and the side broken at from, the
                        # center and to in 2 segments (maxdrop-em3.111); the open arc none; the clockwise Line and
                        # the holed cap as above
                        "FixturePieRevExt": 46 + 6, "FixturePieRevWrapExt": 46 + 6, "FixturePieExt": 46 + 6,
-                       "FixtureArcRevExt": 0, "FixtureClockwiseExt": 4 * 2 + 8, "FixtureHoleExt": 4 * 2 + 8 + 56}
+                       "FixtureArcRevExt": 0, "FixtureClockwiseExt": 4 * 2 + 8, "FixtureHoleExt": 4 * 2 + 8 + 56,
+                       # stack_shell: an open Line's two corner columns, the hardened rim but its ends on the plane
+                       "FixtureShellUnderSymExtrude": 2 + 6}
 # uvwmap: boxes of 3 x 2 x 2 segments, a group per side: 28 edges; the cylinder's two rims; the sphere is smooth
 SHARP_EDGES_UVWMAP = {"FixtureUVWCyl": 32, "FixtureUVWSphere": 0, "FixtureUVWSharedB": SHARP_EDGES_POLY_BOX,
                       # uvwmap_oblique: smooth spheres, the rims of a 10-sided cylinder
@@ -186,7 +196,11 @@ ISSUES = {"uvwmap": ["uvw map: a UVW Map above Bend is not evaluated",
           "stack_shell": ["modifiers: Shell: auto smooth: 4 corners of the rim sharper than 45 degrees shade smooth "
                           "(3ds Max splits the rim there)",
                           "modifiers: Shell: smoothing group override (group 4) not converted: 3ds Max merges the rim "
-                          "into the faces along it of that group"],
+                          "into the faces along it of that group",
+                          # FixtureShellUnderSymNoWeld: a Symmetry with its weld off above the Shell
+                          "modifiers: Symmetry: the rim of the Shell below it along the mirror plane differs from 3ds "
+                          "Max's: the Mirror is moved below the Solidify only for a rim lying on the plane, with slice "
+                          "and weld on"],
           "lookat": [NO_DECAY],  # its target spot (its Perspective viewport is a note of the report, no issue)
           "cameras": ["camera: depth of field is not imported"] * 2 + [
               "camera: its exposure is not imported: Blender renders as if the camera had none"] * 3 + [
@@ -225,10 +239,7 @@ ISSUES = {"uvwmap": ["uvw map: a UVW Map above Bend is not evaluated",
                           "imported"],
           "vray_dome": ["light: a second dome light: not imported (Blender has one World, FixtureDome's)"],
           "vray_mesh_light": ["light: not built: a mesh light without a mesh (none picked, or its node deleted): not "
-                              "imported",
-                              "light: the modifiers of its mesh (Shell) are not applied: the emitter is the base mesh "
-                              "(V-Ray emits the evaluated mesh, and in lm and W spreads the flux over that one's "
-                              "area)"]}
+                              "imported"]}  # FixtureEmitterOwn's Shell: a Solidify on its emitter
 # the oracle's base_class_id of the lights MaxDrop builds: VRayLight, VRaySun, VRayIES, the standard and the
 # photometric lights
 LIGHT_CLASSES = {("0x3c5575a1", "0x5fd602df"), ("0x732c0383", "0x7d993776"), ("0x2eaf2f07", "0x7ec44f31"),
@@ -245,7 +256,7 @@ UNBUILT_LIGHTS = {"FixtureMesh", "FixtureDome", "FixtureDomeColor", "FixtureEmit
 EMITTERS = {"FixtureMeshLight", "FixtureEmitter", "FixtureEmitterW", "FixtureEmitterOwn"}
 # meshes under a converted smoother with Smooth Result: no sharp edge (modifier_pivot's reference, stack_basic's box)
 SHARP_EDGES_SMOOTHED = {"FixtureSmooth": 0, "FixtureTurbo": 0, "FixtureTurboOne": 0, "FixtureMeshSmooth": 0,
-                        "FixtureOrder": 0}
+                        "FixtureOrder": 0, "FixtureTurboSymHalf": 0}
 
 
 def _shading(node):
@@ -1235,9 +1246,10 @@ class Fixtures(unittest.TestCase):
                     md = desc.meshes[node.mesh]
                     if primitive and o["modifiers"]:  # 3ds Max's counts are after the TurboSmooth
                         self.assertTrue(node.converted, "%s %s" % (name, node.name))
-                    elif extruded or primitive:  # 3ds Max's counts are of triangles
-                        self.assertEqual((len(md.positions), int((md.loop_totals - 2).sum())),
-                                         (o["eval_verts"], o["eval_faces"]), "%s %s" % (name, node.name))
+                    elif extruded or primitive:  # 3ds Max's counts are of triangles, after converted modifiers
+                        if not node.converted:
+                            self.assertEqual((len(md.positions), int((md.loop_totals - 2).sum())),
+                                             (o["eval_verts"], o["eval_faces"]), "%s %s" % (name, node.name))
                     else:
                         self.assertEqual((len(md.positions), len(md.loop_starts)), (o["base_verts"], o["base_faces"]),
                                          "%s %s" % (name, node.name))

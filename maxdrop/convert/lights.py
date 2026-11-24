@@ -14,6 +14,7 @@
     dt, issues = dome_texture(graph_ir, material_graph, swatches)   # DomeTexture of the dome's converted map, or None
     is_mesh_light(values)               # a VRayLight mesh light: an emissive mesh, not a light (describe_emitter)
     ed, issues = describe_emitter(key, name, values, swatches, area)   # EmitterDescription (area: the mesh's, m^2)
+    gone, added = spread(ed, area)      # its radiance over another area (build: the mesh under its modifiers)
     watts(units, multiplier, area(kind, size0, size1, double_sided, meters))
     environment_sky(scene)              # the object index of a VRaySky that is the environment map, else None
 
@@ -61,8 +62,9 @@ A mesh light is an emissive mesh (describe_emitter; docs/FORMAT.md, "VRayLight")
 mesh (reference SLOT_MESH, else the object of the node 34 names; neither: not built, the reason) in object space at
 the light node's object transform, along the faces' normals (35: the other side; double-sided: both), its back black,
 with the radiance of the units mode's flux spread over the mesh's object-space area as a Lambertian emitter (flux =
-pi L a; the node's scale does not change it): emitter_radiance. Invisible: not seen by the camera and no occluder (a
-visible one shadows other lights, measured); affect diffuse / specular / reflections as a light's; its texture,
+pi L a; the node's scale does not change it): emitter_radiance. That is the evaluated mesh's area: convert.scene
+describes the mesh below the modifiers MaxDrop converts, build/ measures it under them and spreads (spread).
+Invisible: not seen by the camera and no occluder (a visible one shadows other lights, measured); affect diffuse / specular / reflections as a light's; its texture,
 directional spread, contributions and cast shadows off are not imported (issues). convert.scene builds the mesh.
 
 A dome light is the scene's World (describe_dome; docs/FORMAT.md, "VRayLight"): V-Ray 5.2 lights a white floor under
@@ -141,7 +143,7 @@ import math
 from .. import pathnames
 from ..reader import chunks, classids, pblock
 from ..reader import materials as reader_materials
-from . import colors, texmaps
+from . import colors, params, texmaps
 from .params import finite
 
 ChunkError = chunks.ChunkError
@@ -262,13 +264,14 @@ NO_MESH = "a mesh light without a mesh (none picked, or its node deleted): not i
 EMITTER = "a mesh light is an emitter, not a light"
 EMITTER_CLASS = "its mesh is a %s, which MaxDrop does not build: not imported"
 EMITTER_UNREAD = "its mesh cannot be read: %s"
-EMITTER_MODIFIERS = ("the modifiers of its mesh (%s) are not applied: the emitter is the base mesh (V-Ray emits the "
-                     "evaluated mesh, and in lm and W spreads the flux over that one's area)")
+EMITTER_MODIFIERS = ("the modifiers of its mesh (%s) are not applied: the emitter is its mesh below them (V-Ray "
+                     "emits the evaluated mesh, and in lm and W spreads the flux over that one's area)")
 EMITTER_TEXMAP = "its texture is not imported: the emitter has its color"
 EMITTER_CONTRIBUTION = "%s contribution %g is not imported: an emitter has no such factor"
 EMITTER_GLOSSY = ("affect specular %s, affect reflections %s: Blender has one switch for both, glossy rays, "
                   "which stays on")
 EMITTER_SHADOW = "cast shadows off is not imported: what the emitter lights casts shadows"
+SPREAD_UNITS = (UNITS_LM, UNITS_W)  # the units modes whose flux a mesh light spreads over its mesh's area
 EMITTER_FLAT = "its mesh has no area: 0 W/m2/sr (V-Ray spreads its %s over the mesh's area)"
 NOT_SKYLIGHT = "a Skylight is not imported yet (Skylight -> World is later work)"
 DOME_OFF = "dome light off: not imported"
@@ -288,10 +291,11 @@ DOME_SWITCH = "its texture %s's %s is not imported"
 DOME_PLACEMENT = "its texture %s's offset, tiling or angle is not imported"
 DOME_OUTPUT = "its texture %s's Output (invert, RGB level or offset) is not imported"
 DOME_GAMMA = "its texture %s's gamma %g is not applied"
-DOME_FLOAT_OFF = ("its texture %s is a float image in a scene saved with the gamma off: kept linear (its own decode), "
-                  "as the dome's multiplier is; V-Ray 5.2 shows the light it gives display-referred, so below 1 it is "
-                  "brighter and above 1 darker than V-Ray's (measured; decoded as on a material a sun would be "
-                  "orders of magnitude too bright)")
+DOME_FLOAT_OFF = ("its texture %s is a float image in a scene saved with the gamma off: the camera sees the sky decoded, "
+                  "as V-Ray 5.2 shows it, but the light it gives (reflections and the sky through glass too) is kept "
+                  "linear (its own decode), as the dome's multiplier is; V-Ray shows that light display-referred, so "
+                  "below 1 it is brighter and above 1 darker than V-Ray's (measured; decoded as on a material a sun "
+                  "would be orders of magnitude too bright)")
 DOME_CROP = "its texture %s's crop or placement is not imported"
 DOME_SHADOW = "cast shadows off is not imported: the World casts shadows"
 SKY = "the environment map is a VRaySky: not imported yet (environment -> World is later work)"
@@ -685,15 +689,17 @@ class EmitterDescription:
     Emission strength before the Light Strength); area the mesh's object-space area in m^2; double_sided: both sides
     emit, else the side its faces' normals point to (flip: the other one); on; camera: the camera sees it; occluder:
     it shadows other lights (V-Ray: when visible); diffuse_rays and glossy_rays as a light's; users the object
-    indices of its nodes, in walk order."""
+    indices of its nodes, in walk order; units and multiplier the light's (spread)."""
     __slots__ = ("key", "name", "color", "radiance", "area", "double_sided", "flip", "on", "camera", "occluder",
-                 "diffuse_rays", "glossy_rays", "users")
+                 "diffuse_rays", "glossy_rays", "users", "units", "multiplier")
 
     def __init__(self, key, name, color=(1.0, 1.0, 1.0), radiance=0.0, area=0.0, double_sided=False, flip=False,
-                 on=True, camera=True, occluder=True, diffuse_rays=True, glossy_rays=True):
+                 on=True, camera=True, occluder=True, diffuse_rays=True, glossy_rays=True, units=UNITS_DEFAULT,
+                 multiplier=1.0):
         self.key, self.name, self.color, self.radiance, self.area = key, name, color, radiance, area
         self.double_sided, self.flip, self.on, self.camera, self.occluder = double_sided, flip, on, camera, occluder
         self.diffuse_rays, self.glossy_rays = diffuse_rays, glossy_rays
+        self.units, self.multiplier = units, multiplier
         self.users = []
 
     def __repr__(self):
@@ -710,13 +716,11 @@ def emitter_radiance(units, multiplier, a, double_sided=False):
     return watts(units, multiplier, 1.0) / math.pi
 
 
-def describe_emitter(key, name, values, swatches, a):
-    """(EmitterDescription of a mesh light's values whose mesh has the object-space area a in m^2, issues)."""
+def _emitter_strength(units, multiplier, a, double_sided):
+    """(the radiance of emitter_radiance, issues): 0 for an area of 0 in lm and W, out of range or negative."""
     issues = []
-    units = values[P_UNITS]
-    double = bool(values[P_DOUBLE_SIDED])
     try:
-        radiance = emitter_radiance(units, values[P_MULTIPLIER], a, double)
+        radiance = emitter_radiance(units, multiplier, a, double_sided)
     except ZeroDivisionError:
         issues.append(EMITTER_FLAT % ("lumens" if units == UNITS_LM else "watts"))
         radiance = 0.0
@@ -726,8 +730,29 @@ def describe_emitter(key, name, values, swatches, a):
         issues.append(OUT_OF_RANGE)
         radiance = 0.0
     if radiance < 0:
-        issues.append(NEGATIVE % ("multiplier", values[P_MULTIPLIER]))
+        issues.append(NEGATIVE % ("multiplier", multiplier))
         radiance = 0.0
+    return radiance, issues
+
+
+def spread(ed, a):
+    """(gone, added): EmitterDescription ed's area made a (m^2: its mesh's evaluated area) and its radiance that of its
+    units mode and multiplier over a (only SPREAD_UNITS change it); gone the issues of its radiance over the area it
+    had (describe_emitter's) that no longer hold, added those that hold now and did not."""
+    if ed.units not in SPREAD_UNITS:
+        ed.area = a
+        return [], []
+    _radiance, before = _emitter_strength(ed.units, ed.multiplier, ed.area, ed.double_sided)
+    ed.radiance, after = _emitter_strength(ed.units, ed.multiplier, a, ed.double_sided)
+    ed.area = a
+    return [x for x in before if x not in after], [x for x in after if x not in before]
+
+
+def describe_emitter(key, name, values, swatches, a):
+    """(EmitterDescription of a mesh light's values whose mesh has the object-space area a in m^2, issues)."""
+    units = values[P_UNITS]
+    double = bool(values[P_DOUBLE_SIDED])
+    radiance, issues = _emitter_strength(units, values[P_MULTIPLIER], a, double)
     if values[P_TEXMAP] is not None and values[P_TEXMAP_ON]:
         issues.append(EMITTER_TEXMAP)
     if values[P_DIRECTIONAL] > 0:
@@ -742,7 +767,7 @@ def describe_emitter(key, name, values, swatches, a):
             issues.append(EMITTER_CONTRIBUTION % (label, values[pid]))
     visible = not values[P_INVISIBLE]
     ed = EmitterDescription(key, name, light_color(values, swatches), radiance, a, double, bool(values[P_MESH_FLIP]),
-                            bool(values[P_ON]), visible, visible, diffuse, spec or refl)
+                            bool(values[P_ON]), visible, visible, diffuse, spec or refl, units, values[P_MULTIPLIER])
     return ed, issues
 
 
@@ -752,9 +777,11 @@ class DomeDescription:
     the dome node's world rotation (3 rows of 3, Blender's convention: the columns are its local axes in world space,
     in the file's frame); locked: its texture turns with the node; texmap the object index of its texture map, None
     without one (or switched off); camera, diffuse, glossy: which rays see it; texture: the DomeTexture ops sets
-    (dome_texture), None: the color."""
+    (dome_texture), None: the color; shown: the scene's gamma is off, so camera rays see the color's value (the
+    swatch as stored times the strength) through the sRGB curve, as V-Ray 5.2 shows it (maxdrop-6n0.6.21: an
+    untextured dome at multiplier 0.5, sky 0.5, target 0.214)."""
     __slots__ = ("node", "name", "color", "radiance", "hemisphere", "rotation", "locked", "texmap", "camera",
-                 "diffuse", "glossy", "texture")
+                 "diffuse", "glossy", "texture", "shown")
 
     def __init__(self, node, name, color=(1.0, 1.0, 1.0), radiance=0.0, hemisphere=False,
                  rotation=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)), locked=False, texmap=None,
@@ -762,7 +789,7 @@ class DomeDescription:
         self.node, self.name, self.color, self.radiance = node, name, color, radiance
         self.hemisphere, self.rotation, self.locked, self.texmap = hemisphere, rotation, locked, texmap
         self.camera, self.diffuse, self.glossy = camera, diffuse, glossy
-        self.texture = None
+        self.texture, self.shown = None, False
 
     def __repr__(self):
         return "DomeDescription(%r, %g W/m2/sr%s)" % (self.name, self.radiance, ", texture" if self.texture else "")
@@ -770,15 +797,18 @@ class DomeDescription:
 
 class DomeTexture:
     """The image of a dome's texture: image (convert.texmaps.Image, its file found), turn (radians: what V-Ray adds to
-    phi before u = 0.5 + phi / 2 pi, its horizontal rotation; a Bitmap's spherical environment pi / 2) and amount
-    (its Output's amount, a VRayBitmap's multipliers: a factor on the strength)."""
-    __slots__ = ("image", "turn", "amount")
+    phi before u = 0.5 + phi / 2 pi, its horizontal rotation; a Bitmap's spherical environment pi / 2), amount (its
+    Output's amount, a VRayBitmap's multipliers: a factor on the strength) and shown (a float image of a gamma-off
+    scene: camera rays see the sky's value, the image times the strength, through the sRGB curve, as V-Ray 5.2 shows
+    it; other rays the image as it is, maxdrop-6n0.6.21)."""
+    __slots__ = ("image", "turn", "amount", "shown")
 
-    def __init__(self, image, turn=0.0, amount=1.0):
-        self.image, self.turn, self.amount = image, turn, amount
+    def __init__(self, image, turn=0.0, amount=1.0, shown=False):
+        self.image, self.turn, self.amount, self.shown = image, turn, amount, shown
 
     def __repr__(self):
-        return "DomeTexture(%r, %g rad, x %g)" % (self.image.name, self.turn, self.amount)
+        return "DomeTexture(%r, %g rad, x %g%s)" % (self.image.name, self.turn, self.amount,
+                                                   ", shown" if self.shown else "")
 
 
 def _rotation(world, issues):
@@ -824,6 +854,7 @@ def describe_dome(node, name, values, swatches, world):
     dd = DomeDescription(node, name, light_color(values, swatches), radiance, not values[P_DOME_SPHERICAL],
                          _rotation(world, issues), bool(values[P_DOME_LOCKED]), texmap, not values[P_INVISIBLE],
                          diffuse, spec or refl)
+    dd.shown = not swatches.linear
     return dd, issues
 
 
@@ -838,13 +869,19 @@ _ENV_PROJECTIONS = {2: "cylindrical environment", 3: "shrink-wrap environment", 
 def dome_texture(graph_ir, material_graph, swatches=None):
     """(DomeTexture of a dome's converted texture map (convert.texmaps.TextureGraphIR of kind COLOR, None when it
     converts to nothing), or None: the World keeps the color, issues). material_graph (reader.materials
-    MaterialGraph) reads the map's projection; swatches: the scene's colors.Swatches (None: read from
-    material_graph's scene)."""
+    MaterialGraph) reads the map's projection, a parameter a controller holds at frame 0 (params.at_frame_zero; what
+    that meets in the issues, a line the conversion gave already not again); swatches: the scene's colors.Swatches
+    (None: read from material_graph's scene)."""
     if graph_ir is None:
         return None, [DOME_NO_TEXTURE]
     issues = list(graph_ir.issues)
+
+    def heard(_index, line):
+        if line not in issues:
+            issues.append(line)
+    material_graph = params.at_frame_zero(material_graph, heard) if material_graph is not None else None
     img = graph_ir.root
-    if not isinstance(img, texmaps.Image):  # a gamma-off Mix or Composite is named, not its Decode
+    if not isinstance(img, texmaps.Image):  # a gamma-off Mix, Composite or CoronaMix is named, not its Decode
         return None, issues + [DOME_ROOT % type(img.input if isinstance(img, texmaps.Decode) else img).__name__]
     m = material_graph.get(img.index) if material_graph is not None else None
     if m is not None:  # the converter names the root's environment mapping: wrong for a material, expected here
@@ -882,21 +919,21 @@ def dome_texture(graph_ir, material_graph, swatches=None):
         if (mp.tiling, mp.offset, mp.angle) != ((1.0, 1.0), (0.0, 0.0), (0.0, 0.0, 0.0)):
             issues.append(DOME_PLACEMENT % img.name)
     out = img.output
-    amount = 1.0
+    amount, shown = 1.0, False
     if out is not None:
         amount = max(0.0, out.amount)
         if out.invert or out.level != 1.0 or out.offset != 0.0:
             issues.append(DOME_OUTPUT % img.name)
-    if cid != classids.CORONA_BITMAP and img.name.lower().endswith(texmaps.FLOAT_IMAGES) \
+    if img.name.lower().endswith(texmaps.FLOAT_IMAGES) \
             and not (swatches if swatches is not None else colors.of_graph(material_graph)).linear:
-        img = texmaps.unshown(img)
+        img, shown = texmaps.unshown(img), True
         issues.append(DOME_FLOAT_OFF % img.name)
     # a guard: the converter's images always have the color space of their gamma (drawn by it or a Gamma node)
     if img.gamma not in (None, 1.0) and img.colorspace != texmaps.colorspace(texmaps.COLOR, img.gamma):
         issues.append(DOME_GAMMA % (img.name, img.gamma))
     if img.crop is not None:
         issues.append(DOME_CROP % img.name)
-    return DomeTexture(img, turn, amount), issues
+    return DomeTexture(img, turn, amount, shown), issues
 
 
 def _rays(ld, diffuse, specular, diffuse_contribution, specular_contribution, issues):

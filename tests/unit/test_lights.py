@@ -14,7 +14,8 @@ mesh light's emitter, the scaled spheres as V-Ray 5.2 renders them (X scale only
 rules of dome_texture. Mesh lights: the radiance of emitter_radiance against the V-Ray 5.2 renders of
 docs/FORMAT.md "VRayLight" (a 200 x 200 mm source), describe_emitter's issues on hand-made values, and the
 vray_mesh_light fixture (tools/fixtures/vray_mesh_light.ms): a picked source, a scaled double-sided flipped one with
-an object offset, one holding its own mesh (Replace mesh with light) with a Shell, one without a mesh.
+an object offset, one holding its own mesh (Replace mesh with light) with a Shell, one without a mesh; spread on
+hand-made areas, an Extrude on a shape source (the extrude fixture, tools/fixtures/extrude.ms).
 """
 import importlib
 import math
@@ -28,6 +29,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 FIXTURE = os.path.join(ROOT, "tests", "fixtures", "vray_lights.max")
 DOME_FIXTURE = os.path.join(ROOT, "tests", "fixtures", "vray_dome.max")
 MESH_FIXTURE = os.path.join(ROOT, "tests", "fixtures", "vray_mesh_light.max")
+EXTRUDE_FIXTURE = os.path.join(ROOT, "tests", "fixtures", "extrude.max")
 
 # A package named apart from the add-on whose path is maxdrop/: relative imports resolve, maxdrop/__init__.py (which
 # imports bpy) never runs.
@@ -434,6 +436,33 @@ class EmitterRules(unittest.TestCase):
                                         colors.GAMMA_ON, 1e-300)
         self.assertEqual((ed.radiance, issues), (0.0, [L.OUT_OF_RANGE]))
 
+    def test_spread(self):
+        """The radiance over another area (the evaluated mesh's) as describe_emitter gives it for that area: in lm and
+        W; the radiance units and the default keep theirs (the area is still recorded). The strength issues that change
+        with the area: gone and added; those that stay (a negative multiplier) neither."""
+        for units in (L.UNITS_W, L.UNITS_LM, L.UNITS_DEFAULT, L.UNITS_W_M2_SR, L.UNITS_LM_M2_SR):
+            for double in (False, True):
+                v = values(type=L.MESH, units=units, multiplier=3.0, double_sided=int(double))
+                ed, _issues = L.describe_emitter(1, "e", v, colors.GAMMA_ON, self.A)
+                want, _issues = L.describe_emitter(1, "e", v, colors.GAMMA_ON, 2.1 * self.A)
+                before = ed.radiance
+                self.assertEqual(L.spread(ed, 2.1 * self.A), ([], []), units)
+                self.assertAlmostEqual(ed.radiance, want.radiance, delta=want.radiance * 1e-12, msg=units)
+                self.assertEqual(ed.area, 2.1 * self.A)
+                if units in (L.UNITS_W, L.UNITS_LM):
+                    self.assertAlmostEqual(ed.radiance, before / 2.1, delta=before * 1e-12)
+                else:
+                    self.assertEqual(ed.radiance, before)
+        ed, _issues = L.describe_emitter(1, "e", values(type=L.MESH, units=L.UNITS_W, multiplier=1.0), colors.GAMMA_ON,
+                                         self.A)
+        self.assertEqual((L.spread(ed, 0.0), ed.radiance), (([], [L.EMITTER_FLAT % "watts"]), 0.0))
+        self.assertEqual(L.spread(ed, self.A), ([L.EMITTER_FLAT % "watts"], []))  # a flat mesh under a Shell
+        self.assertAlmostEqual(ed.radiance, 1.0 / (math.pi * self.A), delta=1e-9)
+        ed, issues = L.describe_emitter(1, "e", values(type=L.MESH, units=L.UNITS_W, multiplier=-1.0),
+                                        colors.GAMMA_ON, self.A)
+        self.assertEqual((issues, L.spread(ed, 2.0 * self.A), ed.radiance),
+                         ([L.NEGATIVE % ("multiplier", -1.0)], ([], []), 0.0))
+
 
 @unittest.skipIf(conv is None, "numpy is not installed")
 class MeshLightFixture(unittest.TestCase):
@@ -476,14 +505,320 @@ class MeshLightFixture(unittest.TestCase):
         self.assertNotEqual(node.mesh, self.by_name["FixtureEmitter"].mesh)  # another light: a mesh of its own
 
     def test_own_mesh_with_a_shell(self):
-        """Replace mesh with light: reference 1 holds the plane (30 x 10) under a Shell; lm 100 over its area; the
-        Shell named, not applied; affect specular and reflections off: no glossy rays."""
+        """Replace mesh with light: reference 1 holds the plane (30 x 10) under a Shell (inner 2): the plane, the
+        Shell a Solidify of 2 mm on the light node (build spreads lm 100 over the shelled area; here the plane's);
+        affect specular and reflections off: no glossy rays; no line."""
         node, ed, md = self.emitter("FixtureEmitterOwn")
         self.assertAlmostEqual(ed.area, 0.0003, delta=1e-9)
         self.assertAlmostEqual(ed.radiance, 100.0 / 683.0 / (math.pi * 0.0003), delta=1e-4)
+        self.assertEqual((ed.units, ed.multiplier), (L.UNITS_LM, 100.0))
         self.assertFalse(ed.glossy_rays)
-        self.assertEqual(self.issues[node.index], ["light: " + L.EMITTER_MODIFIERS % "Shell"])
+        self.assertNotIn(node.index, self.issues)
         self.assertEqual(len(md.loop_starts), 1)
+        self.assertEqual([(m.kind, m.class_name) for m in node.converted], [(conv.rules.SOLIDIFY, "Shell")])
+        settings = dict(node.converted[0].settings)
+        self.assertAlmostEqual(settings["thickness"], 0.002, delta=1e-12)
+        self.assertEqual((settings["offset"], settings["use_rim"]), (-1.0, True))
+        self.assertEqual((node.modifiers, node.applied), ((), ()))  # the light's own stack: none
+        for name in ("FixtureEmitter", "FixtureEmitterW"):  # a picked Plane without modifiers
+            self.assertEqual(self.by_name[name].converted, (), name)
+
+    def test_own_mesh_creased_by_its_smoother(self):
+        """A converted smoother that separates by smoothing groups (CREASE) creases the emitter's mesh, as a mesh
+        node's (md.creases): only FixtureEmitterOwn's, whose node has converted modifiers."""
+        with mock.patch.object(conv, "_shading", lambda converted: conv.rules.CREASE if converted else None):
+            desc = conv.read(MESH_FIXTURE)
+        creased = sorted(n.name for n in desc.nodes if n.emitter is not None and desc.meshes[n.mesh].creases)
+        self.assertEqual(creased, ["FixtureEmitterOwn"])
+
+    def test_a_refused_shell_is_named_once(self):
+        """A Shell the rules refuse: _converted's line names it, the line of the modifiers left out does not."""
+        def refuse(scene, modifier, meters=1.0, offset=None):
+            raise conv.rules.ModifierError("refused here")
+        with mock.patch.object(conv.rules, "convert", refuse):
+            desc = conv.read(MESH_FIXTURE)
+        node = next(n for n in desc.nodes if n.name == "FixtureEmitterOwn")
+        self.assertEqual(node.converted, ())
+        self.assertEqual([r for i, r in desc.issues if i == node.index], ["modifiers: Shell not converted: refused here"])
+
+    def test_own_mesh_with_conversion_off(self):
+        """Modifiers: Ignore: nothing converted, the Shell named in the line."""
+        desc = conv.read(MESH_FIXTURE, convert_modifiers=False)
+        node = next(n for n in desc.nodes if n.name == "FixtureEmitterOwn")
+        self.assertEqual(node.converted, ())
+        self.assertEqual([r for i, r in desc.issues if i == node.index], ["light: " + L.EMITTER_MODIFIERS % "Shell"])
+
+    def test_an_extruded_shape_source(self):
+        """A shape under an Extrude as the emitter's mesh (FixtureExtRect: a Rectangle 30 x 20 extruded 10, capped):
+        the extruded mesh, its area 2 x 600 + 100 x 10 mm^2, nothing above it; without the reader's modifiers or
+        past the scene's corner budget, not made."""
+        cfb = importlib.import_module(_PKG + ".reader.cfb")
+        reader_scene = importlib.import_module(_PKG + ".reader.scene")
+        reader_modifiers = importlib.import_module(_PKG + ".reader.modifiers")
+        with cfb.CompoundFile(EXTRUDE_FIXTURE) as cf:
+            sc = reader_scene.Scene.from_file(cf)
+            node = next(i for i in sc.walk() if sc.node(i).name == "FixtureExtRect")
+            v = {L.MESH_OBJECT: sc.node(node).object, L.P_MESH_SOURCE: None}
+            desc = conv.SceneDescription(MM)
+            built = [0]
+            found = conv._emitter_mesh(sc, desc, v, node, MM, built, None, reader_modifiers.Modifiers(sc))
+            self.assertNotIsInstance(found, str, found)
+            _base, data, area, rest, unread = found
+            self.assertAlmostEqual(area, 2200.0 * MM * MM, delta=1e-12)
+            self.assertEqual((rest, unread, built[0]), ((), (), len(data.loop_vertices)))
+            self.assertEqual(conv._emitter_mesh(sc, desc, v, node, MM, [0]), L.EMITTER_CLASS % "Rectangle")
+            spent = conv._emitter_mesh(sc, desc, v, node, MM, [conv.MAX_BUILT_CORNERS], None,
+                                       reader_modifiers.Modifiers(sc))
+            self.assertTrue(isinstance(spent, str) and "Extrude is not made" in spent, spent)
+            ext = importlib.import_module(_PKG + ".convert.extrude")
+            built = [0]
+            with mock.patch.object(ext, "extrude", side_effect=ext.ExtrudeError("more than 1 vertices", 5)):
+                refused = conv._emitter_mesh(sc, desc, v, node, MM, built, None, reader_modifiers.Modifiers(sc))
+            self.assertEqual((refused, built[0]), (L.EMITTER_UNREAD % "more than 1 vertices", 5))  # charged
+
+    def test_one_extrusion_for_a_shape_and_its_mesh_light(self):
+        """FixtureExtRect's shape under its Extrude as a mesh node's mesh and as a mesh light's picked mesh, in either
+        walk order: extruded once, its face corners counted once, its Extrude issues named once (on the node that
+        made it); after the shape's last node (drop) the light gets it made again, naming and counting nothing."""
+        cfb = importlib.import_module(_PKG + ".reader.cfb")
+        reader_scene = importlib.import_module(_PKG + ".reader.scene")
+        reader_modifiers = importlib.import_module(_PKG + ".reader.modifiers")
+        real, calls = conv.extrude.extrude, []
+
+        def counted(sh, params):
+            calls.append(1)
+            data, issues = real(sh, params)
+            return data, issues + ["counted"]
+
+        with cfb.CompoundFile(EXTRUDE_FIXTURE) as cf, mock.patch.object(conv.extrude, "extrude", counted):
+            sc = reader_scene.Scene.from_file(cf)
+            stacks = reader_modifiers.Modifiers(sc)
+            node = next(i for i in sc.walk() if sc.node(i).name == "FixtureExtRect")
+            obj = sc.node(node).object
+            base = sc.object_stack(obj).base
+            ext = [m for m in stacks.object_stack(obj).modifiers if m.renders][0]
+            v = {L.MESH_OBJECT: None, L.P_MESH_SOURCE: node}
+            for order in ("mesh, light", "light, mesh", "mesh, drop, light"):
+                calls.clear()
+                desc, built = conv.SceneDescription(MM), [0]
+                ex = conv._Extrusions(sc, desc, {}, built)
+                found = key = None
+                for step in order.split(", "):
+                    if step == "mesh":
+                        key, _done = conv._extruded(sc, desc, ex, {}, base, ext, (), node, "FixtureExtRect", None, MM)
+                    elif step == "drop":
+                        ex.drop(base)
+                    else:
+                        found = conv._emitter_mesh(sc, desc, v, "light", MM, built, None, stacks, ex)
+                self.assertNotIsInstance(found, str, (order, found))
+                self.assertIsNotNone(key, order)
+                corners = len(found[1].loop_vertices)
+                first = "light" if order.startswith("light") else node
+                self.assertEqual((len(calls), built[0]), (2 if "drop" in order else 1, corners), order)
+                self.assertEqual([(i, r) for i, r in desc.issues if r == "extrude: counted"],
+                                 [(first, "extrude: counted")], order)
+
+    def test_a_refused_adaptive_extrude_charged_once_for_a_shape_and_its_mesh_light(self):
+        """FixtureExtRect's Extrude refused after its points are made (ExtrudeError.spent): met by the shape's node and
+        by a mesh light in either walk order, it is tried once and its spent corners charged to built once."""
+        cfb = importlib.import_module(_PKG + ".reader.cfb")
+        reader_scene = importlib.import_module(_PKG + ".reader.scene")
+        reader_modifiers = importlib.import_module(_PKG + ".reader.modifiers")
+        calls = []
+
+        def refused(sh, params):
+            calls.append(1)
+            raise conv.extrude.ExtrudeError("more than 1 vertices", 5)
+
+        with cfb.CompoundFile(EXTRUDE_FIXTURE) as cf, mock.patch.object(conv.extrude, "extrude", refused):
+            sc = reader_scene.Scene.from_file(cf)
+            stacks = reader_modifiers.Modifiers(sc)
+            node = next(i for i in sc.walk() if sc.node(i).name == "FixtureExtRect")
+            obj = sc.node(node).object
+            base = sc.object_stack(obj).base
+            ext = [m for m in stacks.object_stack(obj).modifiers if m.renders][0]
+            v = {L.MESH_OBJECT: None, L.P_MESH_SOURCE: node}
+            for order in ("mesh, light", "light, mesh"):
+                calls.clear()
+                desc, built = conv.SceneDescription(MM), [0]
+                ex = conv._Extrusions(sc, desc, {}, built)
+                for step in order.split(", "):
+                    if step == "mesh":
+                        key, _done = conv._extruded(sc, desc, ex, {}, base, ext, (), node, "FixtureExtRect", None, MM)
+                        self.assertIsNone(key, order)
+                    else:
+                        found = conv._emitter_mesh(sc, desc, v, "light", MM, built, None, stacks, ex)
+                        self.assertIsInstance(found, str, order)
+                self.assertEqual((len(calls), built[0]), (1, 5), order)
+
+    def test_a_refused_shape_or_extrude_named_on_the_shapes_node_in_either_order(self):
+        """FixtureExtRect's shape refused by the reader, or its Extrude: in either walk order the shape's own node
+        names it once ("shape: ..." through _curve as describe() falls back to it, or "extrude: ..."), the light gets
+        it as its reason and no shape or extrude line of its own."""
+        cfb = importlib.import_module(_PKG + ".reader.cfb")
+        reader_scene = importlib.import_module(_PKG + ".reader.scene")
+        reader_modifiers = importlib.import_module(_PKG + ".reader.modifiers")
+        shapes = importlib.import_module(_PKG + ".reader.shapes")
+        cases = (("shape", mock.patch.object(conv.shapes, "read_shape", side_effect=shapes.ShapeError("bad"))),
+                 ("extrude", mock.patch.object(conv.extrude, "read_params",
+                                               side_effect=conv.extrude.ExtrudeError("bad"))))
+        with cfb.CompoundFile(EXTRUDE_FIXTURE) as cf:
+            sc = reader_scene.Scene.from_file(cf)
+            stacks = reader_modifiers.Modifiers(sc)
+            node = next(i for i in sc.walk() if sc.node(i).name == "FixtureExtRect")
+            obj = sc.node(node).object
+            base = sc.object_stack(obj).base
+            ext = [m for m in stacks.object_stack(obj).modifiers if m.renders][0]
+            v = {L.MESH_OBJECT: None, L.P_MESH_SOURCE: node}
+            for kind, patch in cases:
+                for order in (("mesh", "light"), ("light", "mesh")):
+                    desc, built, shape_of = conv.SceneDescription(MM), [0], {}
+                    ex = conv._Extrusions(sc, desc, shape_of, built)
+                    reason = None
+                    with patch:
+                        for step in order:
+                            if step == "mesh":
+                                key, _done = conv._extruded(sc, desc, ex, {}, base, ext, (), node, "FixtureExtRect",
+                                                            None, MM)
+                                self.assertIsNone(key)
+                                conv._curve(sc, desc, shape_of, set(), base, node, "FixtureExtRect", None, MM)
+                            else:
+                                reason = conv._emitter_mesh(sc, desc, v, "light", MM, built, None, stacks, ex)
+                    self.assertEqual(reason, L.EMITTER_UNREAD % "bad", (kind, order))
+                    self.assertEqual(desc.issues, [(node, "%s: bad" % kind)], (kind, order))
+                    self.assertEqual(built[0], 0, (kind, order))
+
+    def test_a_refused_extrusion_named_once_for_the_shape_and_on_each_light(self):
+        """The scene's corner budget spent before FixtureExtRect's Extrude: the light that meets it first gets its
+        "Extrude is not made" reason, the shape's node its own "extrude: not made" line, once; nothing is made."""
+        cfb = importlib.import_module(_PKG + ".reader.cfb")
+        reader_scene = importlib.import_module(_PKG + ".reader.scene")
+        reader_modifiers = importlib.import_module(_PKG + ".reader.modifiers")
+        with cfb.CompoundFile(EXTRUDE_FIXTURE) as cf:
+            sc = reader_scene.Scene.from_file(cf)
+            stacks = reader_modifiers.Modifiers(sc)
+            node = next(i for i in sc.walk() if sc.node(i).name == "FixtureExtRect")
+            obj = sc.node(node).object
+            base = sc.object_stack(obj).base
+            ext = [m for m in stacks.object_stack(obj).modifiers if m.renders][0]
+            v = {L.MESH_OBJECT: None, L.P_MESH_SOURCE: node}
+            desc, built = conv.SceneDescription(MM), [conv.MAX_BUILT_CORNERS]
+            ex = conv._Extrusions(sc, desc, {}, built)
+            spent = conv._emitter_mesh(sc, desc, v, "light", MM, built, None, stacks, ex)
+            for _ in range(2):
+                key, _done = conv._extruded(sc, desc, ex, {}, base, ext, (), node, "FixtureExtRect", None, MM)
+                self.assertIsNone(key)
+            self.assertTrue(isinstance(spent, str) and "Extrude is not made" in spent, spent)
+            lines = [(i, r) for i, r in desc.issues if r.startswith("extrude: ")]
+            self.assertEqual(lines, [(node, "extrude: not made: " + conv._SPENT % conv.MAX_BUILT_CORNERS)])
+            self.assertEqual(built[0], conv.MAX_BUILT_CORNERS)
+
+    def test_shared_extrusion_dropped_at_the_last_node_of_the_shape_and_of_the_light(self):
+        """describe() of the extrude fixture with FixtureExtL turned into a mesh light (shape test, light class and
+        parameters patched: FixtureEmitter's values with FixtureExtRect's node as its mesh source) and the walk order
+        patched (FixtureExtRect's node twice: a shape of two nodes): the extrusion is dropped at the shape's last
+        node and at the light's last node only once no node of the shape is left (maxdrop-6n0.8.1). Per order: the
+        extrude calls, the face corners counted (one extrusion's), its Extrude issue once on the node that made it."""
+        cfb = importlib.import_module(_PKG + ".reader.cfb")
+        reader_scene = importlib.import_module(_PKG + ".reader.scene")
+        reader_modifiers = importlib.import_module(_PKG + ".reader.modifiers")
+        with cfb.CompoundFile(MESH_FIXTURE) as cf:
+            msc = reader_scene.Scene.from_file(cf)
+            emitter = next(i for i in msc.walk() if msc.node(i).name == "FixtureEmitter")
+            values, _issues = L.read_params(msc, msc.object_stack(msc.node(emitter).object).base)
+        real_extrude, real_cls = conv.extrude.extrude, conv._Extrusions
+        real_is_shape, real_class, real_read = conv.shapes.is_shape, L.light_class, L.read_params
+        with cfb.CompoundFile(EXTRUDE_FIXTURE) as cf:
+            sc = reader_scene.Scene.from_file(cf)
+            by_name = {sc.node(i).name: i for i in sc.walk()}
+            rect, light = by_name["FixtureExtRect"], by_name["FixtureExtL"]
+            rect_base = sc.object_stack(sc.node(rect).object).base
+            light_base = sc.object_stack(sc.node(light).object).base
+            ext = [m for m in reader_modifiers.Modifiers(sc).object_stack(sc.node(rect).object).modifiers
+                   if m.renders][0]
+            data, _more = real_extrude(conv.shapes.read_shape(sc, rect_base), conv.extrude.read_params(sc, ext)[0])
+            corners = len(data.loop_vertices)
+            light_values = dict(values)
+            light_values[L.MESH_OBJECT], light_values[L.P_MESH_SOURCE] = None, rect
+            calls, made = [], []
+
+            def counted(sh, params):
+                calls.append(1)
+                found, issues = real_extrude(sh, params)
+                return found, issues + ["counted"]
+
+            def captured(*args, **kw):
+                made.append(real_cls(*args, **kw))
+                return made[-1]
+
+            patches = (mock.patch.object(conv.extrude, "extrude", counted),
+                       mock.patch.object(conv, "_Extrusions", captured),
+                       mock.patch.object(conv.shapes, "is_shape", lambda s, i: i != light_base and real_is_shape(s, i)),
+                       mock.patch.object(L, "light_class", lambda s, i: L.VRAY if i == light_base else
+                                         real_class(s, i)),
+                       mock.patch.object(L, "read_params", lambda s, i, *a, **kw: (dict(light_values), [])
+                                         if i == light_base else real_read(s, i, *a, **kw)))
+            wants = {(light, rect): (1, light), (rect, light): (2, rect), (rect, light, rect): (1, rect),
+                     (light, rect, rect): (1, light)}
+            for order, (n_calls, first) in wants.items():
+                calls.clear()
+                made.clear()
+                with patches[0], patches[1], patches[2], patches[3], patches[4], \
+                        mock.patch.object(sc, "walk", return_value=list(order)):
+                    desc = conv.describe(sc, MM)
+                names = [sc.node(i).name for i in order]
+                described = [n for n in desc.nodes if n.index == light]
+                self.assertTrue(described and described[0].kind == conv.MESH and described[0].emitter is not None,
+                                names)
+                self.assertEqual((len(calls), len(made), made[0].built[0]), (n_calls, 1, corners), names)
+                self.assertEqual([(i, r) for i, r in desc.issues if r == "extrude: counted"],
+                                 [(first, "extrude: counted")], names)
+
+    def test_a_refused_shape_a_mesh_light_meets_first_named_on_the_shapes_node_by_describe(self):
+        """describe() with FixtureExtL a mesh light picking FixtureExtRect (patched as in the test above) and the reader
+        refusing FixtureExtRect's shape: whichever node meets it first, the shape's node names the refusal once
+        ("shape: bad": the light does not keep it in shape_of, the shape's _curve reads it again), the light gets it
+        as its reason, both stay empties."""
+        cfb = importlib.import_module(_PKG + ".reader.cfb")
+        reader_scene = importlib.import_module(_PKG + ".reader.scene")
+        shapes = importlib.import_module(_PKG + ".reader.shapes")
+        with cfb.CompoundFile(MESH_FIXTURE) as cf:
+            msc = reader_scene.Scene.from_file(cf)
+            emitter = next(i for i in msc.walk() if msc.node(i).name == "FixtureEmitter")
+            values, _issues = L.read_params(msc, msc.object_stack(msc.node(emitter).object).base)
+        real_is_shape, real_class, real_read, real_shape = (conv.shapes.is_shape, L.light_class, L.read_params,
+                                                            conv.shapes.read_shape)
+        with cfb.CompoundFile(EXTRUDE_FIXTURE) as cf:
+            sc = reader_scene.Scene.from_file(cf)
+            by_name = {sc.node(i).name: i for i in sc.walk()}
+            rect, light = by_name["FixtureExtRect"], by_name["FixtureExtL"]
+            rect_base = sc.object_stack(sc.node(rect).object).base
+            light_base = sc.object_stack(sc.node(light).object).base
+            light_values = dict(values)
+            light_values[L.MESH_OBJECT], light_values[L.P_MESH_SOURCE] = None, rect
+
+            def refused(s, i):
+                if i == rect_base:
+                    raise shapes.ShapeError("bad")
+                return real_shape(s, i)
+
+            for order in ((light, rect), (rect, light), (light, rect, rect)):
+                names = [sc.node(i).name for i in order]
+                with mock.patch.object(conv.shapes, "read_shape", refused), \
+                        mock.patch.object(conv.shapes, "is_shape",
+                                          lambda s, i: i != light_base and real_is_shape(s, i)), \
+                        mock.patch.object(L, "light_class", lambda s, i: L.VRAY if i == light_base else
+                                          real_class(s, i)), \
+                        mock.patch.object(L, "read_params", lambda s, i, *a, **kw: (dict(light_values), [])
+                                          if i == light_base else real_read(s, i, *a, **kw)), \
+                        mock.patch.object(sc, "walk", return_value=list(order)):
+                    desc = conv.describe(sc, MM)
+                self.assertEqual([(i, r) for i, r in desc.issues if r.startswith(("shape: ", "extrude: "))],
+                                 [(rect, "shape: bad")], names)
+                self.assertEqual([(i, r) for i, r in desc.issues if r.startswith("light: not built")],
+                                 [(light, "light: not built: " + L.EMITTER_UNREAD % "bad")], names)
+                self.assertEqual({n.index: n.kind for n in desc.nodes if n.index in (rect, light)},
+                                 {rect: conv.EMPTY, light: conv.EMPTY}, names)
 
     def described(self, change):
         """The fixture described with change(values) applied to the values of every mesh light read."""
@@ -574,6 +909,15 @@ class DomeRules(unittest.TestCase):
         dd, _ = L.describe_dome(4, "d", values(type=L.DOME, texmap=9, texmap_on=0), colors.GAMMA_ON, self.ROWS)
         self.assertIsNone(dd.texmap)
 
+    def test_a_gamma_off_dome_is_shown_to_the_camera(self):
+        """maxdrop-6n0.6.21: an untextured dome of a gamma-off scene (multiplier 0.5: V-Ray's sky 0.5, target 0.214)
+        asks the World for the camera's decoded reading; gamma on or unknown does not."""
+        for rule, shown in ((colors.GAMMA_OFF, True), (colors.GAMMA_ON, False), (colors.UNKNOWN, False)):
+            with self.subTest(rule):
+                dd, _ = L.describe_dome(1, "d", values(type=L.DOME, multiplier=0.5), rule, self.ROWS)
+                self.assertIs(dd.shown, shown)
+        self.assertFalse(L.DomeDescription(1, "d").shown, "none by default")
+
     def test_shadows_off_is_a_line(self):
         """A World has no shadow switch: a dome with cast shadows off is a line, built as before."""
         on, _ = L.describe_dome(1, "d", values(type=L.DOME), colors.GAMMA_ON, self.ROWS)
@@ -643,6 +987,52 @@ class DomeTextureRules(unittest.TestCase):
                                   L.DOME_SWITCH % ("sky.hdr", "ground projection"), L.DOME_OUTPUT % "sky.hdr",
                                   L.DOME_GAMMA % ("sky.hdr", 1.8), L.DOME_CROP % "sky.hdr"])
 
+    def test_a_rotation_held_by_a_controller(self):
+        """A VRayBitmap's horizontal rotation a controller holds is its value at frame 0 (maxdrop-6n0.6.32); what the
+        read meets is in the issues, once also when the conversion reported it already."""
+        params = importlib.import_module(_PKG + ".convert.params")
+        controllers = importlib.import_module(_PKG + ".reader.controllers")
+
+        class Block:
+            block_id = 0
+
+            def __init__(self, values):
+                self.values = values
+
+            def __contains__(self, pid):
+                return pid in self.values
+
+            def get(self, pid, tab=0, default=None):
+                return self.values.get(pid, default)
+
+            def param(self, pid):
+                return types.SimpleNamespace(base_type=5 if pid == L.VB_H_ROTATION else 1)
+
+        class Map(_Map):
+            index = 3
+
+            def __init__(self, values):
+                super().__init__(tuple(classids.VRAY_BITMAP), values)
+                self.blocks = {0: Block(values)}
+
+            def block(self, block_id):
+                return self.blocks.get(block_id)
+
+        graph = _Graph({3: Map({texmaps.VB_MAP_TYPE: L.VB_SPHERICAL, L.VB_H_ROTATION: pblock.Animated(40)})})
+        graph.scene = object()
+        line = "'sky': parameter %d at frame 0 (controller 40): %s" % (L.VB_H_ROTATION, controllers.ANIMATED)
+        issue = controllers.Issue(None, 40, None, None, controllers.ANIMATED)
+        with mock.patch.object(params.controllers, "parameter_value", return_value=(0.7, [issue])):
+            dt, issues = L.dome_texture(self.ir(self.image()), graph)
+            self.assertEqual((dt.turn, issues), (0.7, [line]))
+            dt, issues = L.dome_texture(self.ir(self.image(), [line]), graph)
+            self.assertEqual(issues, [line])
+        with mock.patch.object(params.controllers, "parameter_value", return_value=(None, [])):
+            dt, issues = L.dome_texture(self.ir(self.image()), graph)
+        self.assertEqual(dt.turn, 0.0)
+        self.assertEqual(issues, ["'sky': parameter %d at frame 0 (controller 40): %s, %s" % (
+            L.VB_H_ROTATION, params.NOT_READ, params.DEFAULT_USED)])
+
     def test_a_gamma_the_world_draws_is_no_issue(self):
         for gamma, space in ((2.2, texmaps.SRGB), (texmaps.SRGB_TWICE, texmaps.LINEAR), (0.5, texmaps.LINEAR)):
             dt, issues = L.dome_texture(self.ir(self.image(gamma=gamma, colorspace=space)), self.vray({}))
@@ -671,9 +1061,27 @@ class DomeTextureRules(unittest.TestCase):
         dt, issues = L.dome_texture(self.ir(png), self.vray({}), colors.GAMMA_OFF)
         self.assertEqual((dt.image, issues), (png, []), "an 8-bit file: decoded once more, as on a material")
 
-    def test_a_float_texture_keeps_its_own_decode_whatever_the_case_not_on_a_corona_bitmap(self):
+    def test_the_camera_sees_a_gamma_off_float_texture_decoded(self):
+        """maxdrop-6n0.6.21: V-Ray 5.2 shows a gamma-off float dome's sky display-referred (a uniform 0.5 EXR: sky
+        0.5, target 0.214; at multiplier 2: 1.0): DomeTexture.shown asks the World for the camera's reading; a
+        gamma-on or 8-bit texture has none."""
+        for gamma, space in ((2.2, texmaps.SRGB), (None, texmaps.SRGB), (texmaps.SRGB_TWICE, texmaps.LINEAR)):
+            with self.subTest(gamma=gamma):
+                dt, _issues = L.dome_texture(self.ir(self.image(gamma=gamma, colorspace=space)), self.vray({}),
+                                             colors.GAMMA_OFF)
+                self.assertTrue(dt.shown)
+                self.assertIn("shown", repr(dt))
+        lin = self.image(gamma=1.0, colorspace=texmaps.LINEAR)
+        self.assertFalse(L.dome_texture(self.ir(lin), self.vray({}), colors.GAMMA_ON)[0].shown, "gamma on")
+        png = texmaps.Image(3, "sky.png", found=self.FOUND, gamma=texmaps.SRGB_TWICE, colorspace=texmaps.LINEAR)
+        self.assertFalse(L.dome_texture(self.ir(png), self.vray({}), colors.GAMMA_OFF)[0].shown, "an 8-bit file")
+        self.assertIn("the camera sees the sky decoded", L.DOME_FLOAT_OFF)
+        self.assertFalse(L.DomeTexture(lin).shown, "none by default")
+
+    def test_a_float_texture_keeps_its_own_decode_whatever_the_case_a_corona_bitmap_too(self):
         """Measured as a light (maxdrop-em3.166; docs/FORMAT.md, Scene gamma): the line says so. The extension's case
-        does not matter; a CoronaBitmap keeps what the converter made of it."""
+        does not matter; a CoronaBitmap, shown decoded once more on a material with the gamma off as a VRayBitmap is
+        (maxdrop-em3.165), keeps its own decode too."""
         self.assertNotIn("not measured", L.DOME_FLOAT_OFF)
         shown = dict(gamma=2.2, colorspace=texmaps.SRGB)
         upper = texmaps.Image(3, "SKY.EXR", found=self.FOUND, **shown)
@@ -683,7 +1091,11 @@ class DomeTextureRules(unittest.TestCase):
         corona = self.image(**shown)
         dt, issues = L.dome_texture(self.ir(corona), _Graph({3: _Map(tuple(classids.CORONA_BITMAP), {})}),
                                     colors.GAMMA_OFF)
-        self.assertEqual((dt.image, issues), (corona, [L.DOME_CORONA % "sky.hdr"]))
+        self.assertEqual((dt.image.gamma, dt.image.colorspace, issues),
+                         (1.0, texmaps.LINEAR, [L.DOME_CORONA % "sky.hdr", L.DOME_FLOAT_OFF % "sky.hdr"]))
+        dt, issues = L.dome_texture(self.ir(corona), _Graph({3: _Map(tuple(classids.CORONA_BITMAP), {})}),
+                                    colors.GAMMA_ON)
+        self.assertEqual((dt.image, issues), (corona, [L.DOME_CORONA % "sky.hdr"]), "gamma on: as converted")
 
     def test_a_bitmap_is_turned_a_quarter(self):
         graph = _Graph({3: _Map(tuple(classids.BITMAP_TEX), {})})  # no Placement part: texture mapping

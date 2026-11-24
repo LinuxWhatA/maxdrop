@@ -278,8 +278,27 @@ Keyframe controllers (controllers fixture; every class read here is a 3ds Max 20
   `0x2501` = 36.6667, oracle -20, the frame-0 key).
 - A key record: `i32` time (ticks, 160 per frame at 30 fps), `u32` flags, the value (1, 3, 4 or 7 floats as the
   value chunk), then the class's tangents or TCB parameters. TCB Rotation keeps the absolute quaternion there and
-  an angle-axis relative to the previous key later in the record. `0x3003` = the first and last key's time
-  (`(-2^31, -2^31)` without keys), `0x3002` 0 for Linear and 4 for TCB and Bezier when keyed.
+  an angle-axis relative to the previous key later in the record. `0x3003` = the range, the first and last key's
+  time unless the range bar was moved (`(-2^31, -2^31)` without keys), `0x3002` 0 for Linear and 4 for TCB and
+  Bezier when keyed.
+- Out-of-range types (controllers_ranges; probes of every keyframe class, maxdrop-6n0.6.12): a container `0x8499`
+  beside the keys (in `0x7127` for a Bezier Float) holds `0x3000` (before) and `0x3001` (after), `i32` 2 Cycle, 3
+  Loop, 4 Ping Pong, 5 Linear, 7 Relative Repeat (MAXScript's #identity is 0, and the whole controller then reads
+  zero, a scale too, inside the keys as well: not followed, an issue wherever frame 0 is), and `0x3003` = 1 when they are switched off (Enable ORTs; then
+  Constant). Without `0x8499` both are Constant. Setting them on a Position XYZ writes them on its three floats too.
+  They apply outside the range `[r0, r1]` (span `T`): Constant the value at the range end; Cycle and Loop the time
+  `r1 - (r0 - t) mod T` before and `r0 + (t - r1) mod T` after (a time a whole range before the start lands on the
+  end); Ping Pong mirrored; Relative Repeat that plus `k (v(r1) - v(r0))`, `k` the ranges crossed (a rotation:
+  `v * (v0^-1 v1)^k`, a scale its components); Linear the slope of one tick at the range end, `v(r0 + 1) - v(r0)`
+  per tick (a rotation turned by `(a^-1 b)` per tick). Inside the range the keys (the nearest key's value outside
+  them): a range of frames 20 to 40 over keys at 10 to 50 gives frame 20's value at frame 0 with Constant
+  (FixtureFloatRanges). Loop over a range wider than the keys repeats them every range and goes in a straight line
+  from the last key's value to the first's across the gap, inside the range too (FixtureFloatRanges' X: 2.5 at
+  frame 0, halfway from 5 at frame 50 to 0 at frame 70; a probe of a Bezier Float within 2.4e-7 at every frame of
+  three gaps; other classes are not probed: the same line, an issue). 3ds Max takes the one-tick values of Linear in single
+  precision through its own time curve: the reader is within 2e-4 ten frames out on probes of every class, more
+  further out or past a curved end (8e-4 at one frame from a custom key), exact past a straight end
+  (FixtureFloatAfter's Z).
 - At time 0: a key at 0 gives its value (FixtureBezierKeys, the keyed nodes, the lists' animated entries); before
   the first key, the first key's value (FixtureTCBBefore, keys at frames 10 and 50); between two Linear keys, linear
   (FixtureLinearBetween, keys at -10 and 40: position `[-56, 93, 11]`, scale rows of length 1.1, 1.0, 1.4) and the
@@ -304,10 +323,19 @@ Keyframe controllers (controllers fixture; every class read here is a 3ds Max 20
   | Smooth Rotation | quaternion, the in and the out control quaternion (equal), two identity quaternions |
 
   - Bezier: tangents in value per tick (MAXScript shows them times the frame rate, a scale's times 100 more), the in
-    tangent pointing back; every tangent type (smooth, linear, fast, slow, auto, custom) stores the tangent it
-    computed (but see the Linear tangent in [Open](#open)). Flags: the in
+    tangent pointing back; smooth, fast, slow and auto tangents store the tangent 3ds Max computed when it last
+    evaluated the controller (a smooth key between keys `dt_in` and `dt_out` away: the chords' slopes weighted
+    `(s_in dt_out + s_out dt_in) / (dt_in + dt_out)`; auto: `(v[k+1] - v[k-1]) / (t[k+1] - t[k-1])`, flat at an
+    extreme). Flags: the in
     tangent's type in bits 7-9, the out tangent's in bits 10-12 (0 smooth, 1 linear, 2 step, 3 fast, 4 slow, 5 custom
     and auto), `0x8000` constant velocity, `0x100000` free handle. A length is a fraction of the segment, -1 a third.
+    `0x2533` and `0x2534` beside the keys are bit arrays of the keys whose in and out tangent is auto (`0x2700`:
+    `i32` count, then a bit per key, the first key's the lowest bit; `0x2532` their union). Only a custom tangent
+    (type 5 without its auto bit) and a free handle are drawn with their stored length: every other type is a third
+    long, though they store 0.3333 or 0.333 (up to 8.7e-3 off in the probes; controllers_ranges' FixtureSmoothAuto).
+    A Linear tangent facing a custom or auto tangent across its segment is the chord's slope (it stores a stale one,
+    1.5 off: FixtureLinearTangents, FixtureLinearPosition); facing a smooth, fast, slow or Linear one its stored
+    tangent, `2 s - ` the neighbour's (the chord's slope `s` between two Linear keys), is right.
     The segment is the cubic through `(t0, v0)`, `(t0 + lo dt, v0 + out lo dt)`, `(t1 - li dt, v1 + in li dt)`,
     `(t1, v1)`, its time curve solved for the time (FixtureBezierFloats, FixtureBezierCustom with lengths 0.6 and
     0.15, FixtureBezierPosition and FixtureBezierScale with a length per axis); in the probes this curve and
@@ -364,7 +392,16 @@ block's reference slots where animated. Each entry weighs as the oracle shows:
   `[25, 30, 15]`; FixtureFloats `0.5 * 30 + 1.0 * 7` = 22).
 - Scale List: the product of `I + (S - I) * weight` per entry (FixtureScaleList `[1.5, 2, 0.75]` from `[2, 1, 1]`
   and `[1, 3, 0.5]` at 50 %), a later entry applied first (controllers_tangents' FixtureScaleListAxes: two scales
-  along turned axes at 100 %; the other order misses by 1.28).
+  along turned axes at 100 %; the other order misses by 1.28). One entry along a turned axis at any weight
+  (controllers_ranges' FixtureScaleListTurned at 60 %; probes at 30, 150 and -50 %) and plain scales at any weights
+  fit it; a weight other than 100 % on an entry applied after a turned one fits none of the rules tried (0.2 to
+  0.5 off): an issue.
+- Average (parameter 1 of the block, an `i32`, 1 when on; controllers_ranges' FixtureListAverages and
+  FixtureFloatListAverage, probes of 3 to 11 lists of each class): a Float, Position and Scale List divide the
+  weighted sum by the weights' sum (0, the origin or identity when they add up to 0; one entry at 40 %: its value),
+  a Rotation List slerps from no rotation towards each entry in turn by its weight, `q = slerp(q, q_k, w_k)`
+  (X 30 deg at 50 % and Z 80 deg at 100 %: Z 80 deg). A Scale List average of turned scales fits none of the rules
+  tried (0.59 off): the weighted mean of the matrices, an issue.
 - Rotation List: each entry's rotation turned by its weight along its own axis, a later entry applied first
   (FixtureRotList: 30 deg about X and 80 deg about Z at 50 % give Z 40 deg, then X 15 deg; controllers_tangents'
   FixtureRotListMulti: two turns about all three axes at 50 % and 30 %).
@@ -420,7 +457,7 @@ reference is a ParamBlock2:
 
 | Id | Parameter (MAXScript) | Type |
 |---|---|---|
-| 0 | `weight` | float table, one per target; an animated element is a controller (tag `0x80`) in the block's next reference slot ([Parameter blocks](#parameter-blocks)), before the targets' (lookat: FixtureWeightAnimated's second weight, a Bezier Float, at slot 0, its targets at 1 and 2; FixtureWeightUp's one weight at 0, the up node at 2): its value at frame 0; 50 (`appendTarget`'s default) when the slot is empty, the controller gives none or is of an unknown class, or a stored weight is not finite or missing, reported |
+| 0 | `weight` | float table, one per target; an animated element is a controller (tag `0x80`) in the block's next reference slot ([Parameter blocks](#parameter-blocks)), before the targets' (lookat: FixtureWeightAnimated's second weight, a Bezier Float, at slot 0, its targets at 1 and 2; FixtureWeightUp's one weight at 0, the up node at 2): its value at frame 0; 50 (`appendTarget`'s default) when the slot is empty, the controller gives none or is of an unknown class (a Float List none of whose entries gives a value too: under Position XYZ or ScaleXYZ such a list adds nothing), or a stored weight is not finite or missing, reported |
 | 1 | targets (`appendTarget`) | node table, no value: the block's reference slots, after the weights' controllers |
 | 2 | `relative` (Keep Initial Offset) | bool |
 | 3 | `lookat_vector_length` | float (display) |
@@ -618,18 +655,19 @@ against the extrude fixture's oracle) keeps its parameters in an old ParamBlock 
 
 | Index | Parameter | extrude fixture |
 |---|---|---|
-| 0 | amount (`f32`) | FixtureExtRect 10, FixtureExtL -15 |
-| 1 | segments | FixtureExtRect 2, the others 1 |
-| 2, 3 | cap start, cap end | 1 everywhere but FixtureExtGridCircle's cap end 0 |
+| 0 | amount (`f32`) | FixtureExtRect 10, FixtureExtL -15, FixtureExtDownStart and FixtureExtDownEndReal -6 |
+| 1 | segments | FixtureExtRect 2, FixtureExtDownStart 3, FixtureExtDownEndReal 2, the others 1 |
+| 2, 3 | cap start, cap end | 1 everywhere but FixtureExtGridCircle's and FixtureExtDownStart's cap end 0 and FixtureExtDownEndReal's cap start 0 |
 | 4 | cap type: 0 morph, 1 grid | FixtureExtGrid and FixtureExtGridCircle 1, the others 0 |
 | 5 | output: 0 patch, 1 mesh, 2 NURBS | 1 |
-| 6 | generate mapping coordinates | FixtureExtRect and FixtureExtAdaptive 1 |
+| 6 | generate mapping coordinates | FixtureExtRect, FixtureExtAdaptive, FixtureExtDownStart and FixtureExtDownEndReal 1 |
 | 7 | generate material IDs | FixtureExtAdaptive 0, the others 1 |
 | 8 | use shape IDs | FixtureExtShapeIDs and FixtureExtShapeIDsRect 1, the others 0 |
 | 9 | smooth | 1 |
 
 Real-World Map Size is not in the block: the modifier's own chunk holds `0x2150 {0x0100 u32 1, 0x0110 {0x0120: 20
-bytes naming the class, 0x0130 u32}}`, and that `u32` is 1 on FixtureExtAdaptive, 0 on the others. `0x2150` can hold
+bytes naming the class, 0x0130 u32}}`, and that `u32` is 1 on FixtureExtAdaptive and FixtureExtDownEndReal, 0 on
+the others. `0x2150` can hold
 several `0x0110` entries: the flag is the one whose `0x0120` names Extrude's ClassID (another class's entry is not it).
 `maxdrop/reader/realworld.py` reads it for Extrude, UVW Map and the primitives alike. A damaged one is off, never an
 error (the flag only changes UVs): a chunk or a `0x2150` whose children do not parse, or a `0x0130` shorter
@@ -646,26 +684,33 @@ What 3ds Max 2020 makes of it (`snapshotAsMesh`, probed on scratch scenes and ch
   10^-1.70 curved; 10^-1.82 with the vector's end next to its knot), an S with both vectors off on opposite sides
   up to 10^-1.24, vectors on the chord's line until the curve at t 0.4 or 0.6 lies past an end (out vector 1.72
   chords along with the in vector at two thirds; both vectors 4.49 chords long, 3.49 past the far ends). Adaptive:
-  a straight segment (the same test) gets none, a curved one 2^d - 1, d the smallest
-  depth up to 5 at which every piece turns by at most 2 degrees between the chords of its halves (a Circle: 31 per
-  quarter, 128 points; Arcs of 30, 90, 180, 300 degrees: 13, 25, 49, 97 points). 3ds Max splits a curved segment
-  at its middle piece by piece instead, each piece under the straight test: an uneven curve gets other counts
-  (maxdrop-6n0.6.11).
+  a straight segment (the same test) gets none; a curved one is split at its middle, and each piece again while
+  its own points at 0.4 and 0.6 of it turn the path from its start to its end by more than 2 degrees and it is wider
+  than 1/2048 of the segment, a point at every split (a Circle: 31 per quarter, 128 points; Arcs of 30, 90, 180, 300
+  degrees: 13, 25, 49, 97 points). The probe (maxdrop-6n0.6.11; two-knot segments under 3dsmaxbatch, every point
+  read back to its parameter): each point sits at a dyadic t, the split tree of 14 of 16 curves (an S, a hook, loops,
+  collinear vectors past the ends) is exactly this rule, and a cusp at t 1/3 is kept in a piece of 1/2048 (49 steps;
+  50 at 1000 and 0.01 times the size, float32), so 2047 steps a segment at most. 3ds Max computes in float32: next to a cusp, or far from the
+  object's origin, its rounding splits pieces the test keeps (a cusp at t 0.5, chord 10: 73 steps, the rule 63; a
+  zigzag 129, the rule 131; an S: 19 steps at the origin and 1000 units off, 81 at 10000). MaxDrop
+  computes in double. Adaptive's points are counted as they are made against the mesh's MAX_VERTICES.
 - **Vertices**: per spline, one copy of its points per level (segments + 1), nothing more: the caps reuse them.
 - **Faces**: the sides two triangles per segment and level; a cap of n points with h holes n + 2h - 2 triangles,
   without extra vertices (FixtureExtHole: 32 + 2 - 2 = 32 per cap). Nested closed splines alternate solid / hole
   (FixtureExtIsland: a square, a hole, an island in it). An open spline gets no cap (FixtureExtOpen).
-- **Normals**: outward whatever the splines' direction and the sign of the amount (but a lone cap of a downward
-  extrusion, below); the side faces of an open spline look to the right of it.
+- **Normals**: outward whatever the splines' direction and the sign of the amount, a lone cap too; the side faces
+  of an open spline look to the right of it.
 - **Material IDs**: the cap facing +Z gets ID 1, the one facing -Z ID 2, the sides ID 3 (FixtureExtRect: the cap at
   the shape faces down and is ID 2; FixtureExtL, amount -15: the cap at the shape faces up and is ID 1); without
   Generate Material IDs every face is ID 1. Use Shape IDs (with Generate Material IDs; without it every face is still
   ID 1): each side face takes the material ID of the spline segment it comes from, its interpolated steps too, on a
   clockwise outline and a hole alike; the caps keep 1 and 2 (FixtureExtShapeIDs: side triangles 2, 6, 10, 4, 8 on IDs
-  4, 5, 7, 11, 12). A parametric shape's segments are ID 1 (FixtureExtShapeIDsRect). Downwards (a negative amount)
-  the caps are turned out only when both are on: a lone cap faces as upwards, into the solid (Cap Start -Z and ID 2,
-  Cap End +Z and ID 1; FixtureExtGridCircle, amount -4, Cap End off: its cap faces -Z, ID 2); the sides face out
-  in every case.
+  4, 5, 7, 11, 12). A parametric shape's segments are ID 1 (FixtureExtShapeIDsRect). Cap Start is the bottom cap
+  and Cap End the top one: downwards (a negative amount) Cap Start lies at the far level (z = amount), faces -Z and
+  is ID 2, Cap End lies at the shape, faces +Z and is ID 1, alone or together (FixtureExtGridCircle, amount -4, Cap
+  End off: its grid cap at z -4, facing -Z, ID 2; FixtureExtDownStart, amount -6, Cap End off: at z -6;
+  FixtureExtDownEndReal, Cap Start off: at z 0). The maxdrop-6n0.6.10 probe (3ds Max 2020, a 20 x 10 rectangle at
+  -5, its hole, clockwise and at z 3, morph and grid caps; the grid points at the cap's level too).
 - **Grid caps** (cap type 1; probed on about 60 shapes, `tests/unit/test_extrude.py` GRID_PROBES holds their counts;
   FixtureExtGrid, FixtureExtGridCircle): each solid (an outline with its holes; an island and an overlapping outline
   are solids of their own) gets a grid over the box of its outline's interpolated points, W x H. Divisions per axis:
@@ -703,14 +748,36 @@ What 3ds Max 2020 makes of it (`snapshotAsMesh`, probed on scratch scenes and ch
   are bounded (`MAX_CROSS_TESTS`): past them a spline is capped unchecked, a line in the report.
   Wherever the spline starts: a doubled first knot (DupFirst), a doubled pair before the last (DupSecondLast), the
   last on the first, all without a cap. Not probed, assumed as above: an Extrude with both caps off (MaxDrop leaves
-  a crossing spline unturned there too), a doubled knot without Optimize (MaxDrop: its steps run out and back, a
-  crossing), a segment from a knot back to itself with its handles pulled out (MaxDrop: no steps under Optimize), two
+  a crossing spline unturned there too), a segment from a knot back to itself with its handles pulled out
+  (MaxDrop: no steps under Optimize), two
   points on one XY spot at different heights (MaxDrop: a touch on XY, no cap).
   Rounded Rectangles with short straight sides (10 x 20, corner radius 4.8, 4.9, 4.99; 13 x 12.5, radius 6 and
   6.25): 3ds Max gives the short sides their 6 steps (their handles run so far past the ends that the curve folds
   back: not straight, 44 points) and no cap (the steps fold back over the side); radius 3, 4, 4.5: 32 points and a
   cap. MaxDrop the same since maxdrop-em3.142 (the straight test above; radius 6.25 with its zero-length sides
   merged, 42 points).
+  Zero-length segments (maxdrop-6n0.6.9, 3ds Max 2020 probes, steps 6 unless named): what decides is the edge
+  into the doubled spot. After a straight edge it gets no cap whatever leaves it (a line into (20, 0) and a curve
+  out, two or three knots on the spot: no cap at scales 1, 0.1, 1.37, 3.3 and 1000 with offsets, with the line
+  tilted, at steps 1, 6 and 10, without Optimize; three line knots: no cap). After a curve's step 3ds Max's
+  rounding decides, a line out or not (a curve in and a line out: capped at scales 1.37, 3.3 and 1000 and at steps
+  10, not at scales 1 and 0.1, steps 1 or without Optimize; the last knot on the first after a curve: capped at
+  1.37 and 1000 only; curves on both sides: the two shapes probed capped, also with three knots on the spot), and
+  MaxDrop caps it, as the pills. Without Optimize the straight cases the same, whatever the steps (DupCorner
+  70 / 70, DupMid 84 / 84, the last knot on the first 70 / 70, every point kept; steps 0: 10 / 10, 12 / 12,
+  10 / 10). A curve whose vectors lie 1 % of its chord off it counted as straight in the one shape probed, with and
+  without Optimize (no cap). MaxDrop: an edge is straight when its segment is a line or passes Optimize's test, or
+  is a curve without steps (one chord); a zero-length straight segment's steps sit on its point.
+  MaxDrop keeps merging a zero-length segment's points, a default taken in an unattended run and open to the
+  owner's word: 3ds Max's extra vertices only make faces of no area (DupCorner 10 / 10, DupMid 12 / 12, the
+  10 x 20 r 5 pill 64 / 124 with a degenerate triangle per doubled spot in each cap; MaxDrop 8 / 8, 10 / 10,
+  60 / 116). Keeping them would change the crossing test (it would find a touch at every merged point between
+  curves and uncap the pills 3ds Max caps), the ear clipping and the grid bands (two ring points on one spot) and
+  the caps' polygons. The pill's cap stays as it is: its knots are bit-equal to MaxDrop's (the two on each doubled
+  spot too, capped or not), its interpolated steps 1 to 4 float32 ulps off MaxDrop's (3ds Max's are not even
+  mirror-symmetric), so whatever 3ds Max tests at the spot turns on bits MaxDrop does not reproduce (Pill 10 x 20
+  and Full 14.6 capped, Pill 7.3 x 19.1, 3 x 4 and Full 10 not, the 10 x 20 one at steps 7 capped, 10 not: MaxDrop
+  caps them all).
 - **Smoothing**: caps group 16; the sides change group only at a corner or Bezier-corner knot (FixtureExtMirror's
   rounded Rectangle: sharp at its 8 Bezier-corner knots) or a Bezier knot with a vector on its point, the groups
   alternating 1, 2 (4 where three runs meet, 1, 3, 2 ... along a spline with no corner). A Bezier knot breaks the
@@ -725,7 +792,13 @@ What 3ds Max 2020 makes of it (`snapshotAsMesh`, probed on scratch scenes and ch
   cases. The group bits differ (a pie's sides: MaxDrop 1, 2, 4; 3ds Max 1 to 4 or 5, overlapping along the arc), the
   hard edges do not: `tests/unit/test_extrude.py` compares them by position with `arc_pie_reverse.maps.jsonl`.
 - **Mapping**: the sides U along each spline by length (0 to 1, the seam at its first point), V up the levels; the
-  caps the shape's XY box, 0 to 1. Real-World Map Size: the lengths and sizes in file units instead. A closed spline
+  caps the shape's XY box, 0 to 1. Real-World Map Size: the lengths and sizes in file units instead. Downwards (a
+  negative amount; maxdrop-6n0.6.10, 3ds Max 2020: segments 1 to 4, amounts -5 and -0.75, open, closed, clockwise,
+  holed, at z 3, a Circle, every cap setting) V is 0 at the far level and 1 at the shape ((segments - level) /
+  segments, the level counted from the shape), and with Real-World Map Size that V times the signed amount: the
+  amount at the shape, 0 at the far level (FixtureExtDownStart, FixtureExtDownEndReal); V follows the levels, not
+  z (a shape at z 3 alike). U and the caps' box mapping are as upwards; `tests/unit/test_extrude.py` NEG_PROBES
+  holds every corner of nine probed shapes. A closed spline
   that runs the other way than its role (a clockwise solid, a counter-clockwise hole) is turned whole: its U starts
   at its last interpolated point and runs back (arc_pie_reverse: FixtureClockwiseExt, FixtureHoleExt's Circle, the
   reversed pies; `tests/unit/test_extrude.py` compares every corner with `arc_pie_reverse.maps.jsonl`, the
@@ -833,11 +906,20 @@ Max 2020 with every parameter set apart from its default, then the stack_convert
 What 3ds Max 2020 makes, against Blender's evaluated meshes (`tests/blender/run.py`, the oracle's `eval_verts`,
 `eval_faces`, box and `eval_mesh.smoothing` after the stack):
 
-- **TurboSmooth, MeshSmooth NURMS / quad output**: Catmull-Clark on the control points, not the limit surface: a
+- **TurboSmooth, MeshSmooth NURMS**: Catmull-Clark on the control points, not the limit surface: a
   box gives 26 vertices after one iteration, 98 after two, and Blender's Subdivision Surface with
   `use_limit_surface` off has the same vertices (the limit surface shrinks the box to 8.4 of 10). MeshSmooth classic
   is another scheme (80 vertices after two iterations). Separate by smoothing groups keeps the vertex count and
   hardens the edges between groups (a crease of 1 in Blender).
+  An open mesh's boundary is smoothed along itself (1/8, 6/8, 1/8 of a vertex and its two boundary neighbours), but a
+  corner (a boundary vertex of one face) stays where it is: Subdivision Surface's `boundary_smooth` PRESERVE_CORNERS
+  (ALL, Blender's default, moves it). It shows under a Symmetry: an open half box (its top and half deleted) keeps
+  the corner where the cut meets the top on the mirror plane, which welds it; with ALL it moves 1.25 of 10 off the
+  plane and stays unwelded (FixtureTurboSymHalf: 39 vertices, 64 triangles in 3ds Max and Blender 4.2, 4.5 and 5.2;
+  41 with ALL; probed, not in a fixture: a Shell above, 78 and 152, (0, 3, 24), as 3ds Max). MeshSmooth quad output
+  is another scheme: the same counts, but every boundary vertex stays and the half box's corner (10, -10, 0) goes to
+  the mean of its edges' midpoints (8.33, -6.67, 3.33), not Catmull-Clark's (7.78, -5.56, 4.44): a line in the
+  report.
 - **Shell**: the new surfaces lie at -inner and +outer amount along the vertex normals, not at an even thickness: a
   box with outer amount 2 grows by 2 / √3 along each axis (Solidify with `use_even_offset` off). Both may lie on
   one side of the original (inner -1, outer 2; inner 3, outer -1): Solidify's offset (hi + lo) / (hi - lo) past
@@ -868,6 +950,26 @@ What 3ds Max 2020 makes, against Blender's evaluated meshes (`tests/blender/run.
   mesh would pass 4M face corners), or the
   override group with auto smooth off (the group is a number, 1 .. 32: group 4 is the side of mask 8;
   FixtureShellOverride). A crease on an open edge (a smoother that separates by smoothing groups) is left out.
+  A Shell below a Symmetry (slice and weld on) whose rim along the cut lies on the slice plane: 3ds Max 2020's slice
+  drops that rim (faces within 1e-4 system units of the plane; 1e-3 off they stay, doubled) and the weld shuts the
+  cut, where Blender's bisect keeps them (the open half box of 2 x 2 segments: 34 vertices, 64 triangles, (0, 11, 40)
+  in 3ds Max; 72 triangles, (0, 19, 40) and two false rim corners in Blender with the Mirror above the Solidify).
+  MaxDrop moves such a Mirror below the Solidify, which welds the cut before the shell is made: 3ds Max's counts and
+  shading on Blender 4.2, 4.5 and 5.2 (FixtureShellUnderSym; FixtureShellUnderSymTurbo, a TurboSmooth above: 130
+  vertices, 256 triangles, (0, 1, 0); FixtureShellBetweenSym, a Symmetry on each side; FixtureShellUnderSymExtrude, an
+  open Line under an Extrude: 24, 48, (0, 10, 32); the probe also: inner 1 outer 0, a closed half, a quarter under two
+  Symmetries, the gizmo 1e-5 off or turned 1e-4 degrees). The rule (convert/scene.py lowered()): per Symmetry right
+  above the lowest Shell (only Symmetries below it), on the mesh with the copies of those below, the open edges with
+  both ends within 1e-4 units of its plane (at most 1 mm, Blender's bisect distance; float32 positions some 1000 units
+  from the origin along the axis pass 1e-4, and keep the order); none: it stays; moved when it slices and welds those
+  ends and every face at them is square to the plane (|cos| <= 1e-5), else a line in the report: weld off (3ds Max
+  leaves the cut open: FixtureShellUnderSymNoWeld 64 triangles, Blender 80), slice off (3ds Max keeps both copies of
+  the rim: 80, Blender 72), the cut's faces slanting across the plane (3ds Max slices the shell: 37 vertices, Blender
+  34). With the slice on, the rim's corners are counted there as if the cut were welded (3ds Max has none there). Only
+  the open edges on the plane decide: others within the weld threshold of it are welded too once the Mirror is moved,
+  where 3ds Max keeps their rim. A mesh that with its copies would pass 4M face corners is not tested (a line). A
+  gizmo 1e-3 to 0.04 units off the cut, or turned 1e-3 degrees, keeps the rim in 3ds Max too (80 or 72 triangles,
+  Blender 72): no line. A mesh light's emitter keeps 3ds Max's order.
 - **Symmetry**: the mirror plane is in the gizmo's space, q = p * context * inverse(gizmo), as UVW Map's; without
   flip the side where q along the axis is positive stays, sliced at the plane; without slice the whole object is
   mirrored and both copies stay (FixtureSymmetryNoSlice: 16 vertices). Weld seam: 3ds Max slices beside a vertex
@@ -1073,9 +1175,16 @@ Emission of that radiance × Light Strength (Cycles renders an Emission of stren
 by Geometry Backfacing with a black Emission (flipped for 35), both sides when double-sided; invisible: camera and
 shadow off. The `calib_*` scenes of the calibration (W, default, lm, double-sided, flipped, seen by the camera)
 imported and rendered in Cycles (Blender 5.2, 512 samples, the floor a Diffuse BSDF of 1.0, Light Strength 1.43):
-V-Ray / Cycles 1.0003 to 1.0004. The modifiers of the mesh are left out (a line in the report: the base mesh emits,
-and in W and lm its area sets the radiance); no mesh object, or a class MaxDrop does not build, is an empty with a
-line in the report. A mirrored light node follows the rules of every mesh (an offset with a negative determinant
+V-Ray / Cycles 1.0003 to 1.0004. The modifiers of the mesh are those of any mesh (maxdrop-em3.162): a shape under
+an Extrude right above it is extruded; its UVW Maps are left out (an emitter has no texture); the TurboSmooth,
+MeshSmooth, Shell and Symmetry above it become Blender modifiers on the emitter (with the light node's offset), and
+in W and lm the radiance is spread over the mesh under them: build.emitters measures a copy of the emitter object
+(shown, a Subdivision Surface at its render levels within the viewport budget) and scales the object-space area by
+the evaluated over the unmodified area. The 30 × 10 mm plane under a 2 mm Shell of the vray_mesh_light fixture
+(FixtureEmitterOwn) emits over 2 × 300 + 80 × 2 = 760 mm² (Blender's Solidify), as the 5 mm Shell above (0.143 →
+0.0679 in W: 0.04 / 0.084 m²) says V-Ray does. Not measured against V-Ray: a TurboSmooth or Symmetry under a mesh
+light (Blender's evaluated area is taken). Any other modifier is left out (a line in the report: the mesh below it
+emits); no mesh object, or a class MaxDrop does not build, is an empty with a line in the report. A mirrored light node follows the rules of every mesh (an offset with a negative determinant
 reverses the loops, a mirrored node is left to Blender), so the lit side is the mesh's front as Blender sees it: not
 measured against V-Ray.
 
@@ -1233,11 +1342,35 @@ the flux. Type B (vertical −90 to 90, horizontal −90 to 90 or 0 to 90), rate
 (the power loading a file rated −1 sets): type C 100, 0, 0 cd at 0, 90, 180° 228.96 lm (the candelas linear in angle:
 228.32; the zone mean × (cos a − cos b) 314.16); a cosine in 10° steps 313.99; planes of 100, 50, 100, 50, 100 cd at
 0 to 360° 942.16; type B isotropic 629.57 (2π · 100 = 628.32), the same with vertical or horizontal angles from 0
-(mirrored) and with horizontal angles from −180 to 180 (only −90 to 90 counts); type B 0, 100, 0 cd at vertical −90,
+and with horizontal angles from −180 to 180 (only −90 to 90 counts); type B 0, 100, 0 cd at vertical −90,
 0, 90° 400.95 (linear 400.00), the same across the horizontal angles 314.80 (314.16); type A isotropic 629.58,
-the same with vertical angles from 0 (mirrored), but type A with horizontal angles from 0 to 90 1.26 lm (also with
-vertical ones from 0): not read. Ballast 0.5 halves that flux, 2 lamps leave it, a multiplier of 2 doubles it; a
+the same with vertical angles from 0, but type A with horizontal angles from 0 to 90 1.26 lm (also with
+vertical ones from 0): dark (below). Ballast 0.5 halves that flux, 2 lamps leave it, a multiplier of 2 doubles it; a
 rated −1 file of ballast 0.5 at power 1000 renders 0.0531.
+
+**VRayIES type A and B ranges, measured** (the same scene in millimeters, power 1000, override off, 64 × 64 renders,
+the mean of the 8 × 8 center pixels; the light turned about X or Y so that the center pixel samples another direction
+of the file (type B: X turns the horizontal angle, Y the vertical one; type A the other way round); each file rated
+628.3, where 100 cd gives 0.1048, and rated −1, V-Ray's own flux in brackets; 100 cd unless given). Horizontal angles
+from −180 to 180, isotropic, type B (629.574) and A (629.575): as −90 to 90; turned 135° or 180° 0 (the back half
+dark); type B 0, 0, 100, 100, 100, 0, 0 cd at −180, −120, −60, 0, 60, 120, 180° (576.90; the table cut at ±90°, 50
+cd there, 575.96): 75 cd turned 75°. Type A with horizontal angles from 0 to 90, vertical ones from −90 or from 0
+(1.257): black in the whole frame turned to each of the six cube faces, rated or not. Vertical angles from 0 are not
+mirrored: type B 100, 50, 0 cd at 0, 45, 90° (629.58; mirrored 400.00) gives 150 cd at −45° and 183 at −75°, the
+first segment going on below 0; 0, 50, 100 (114.31) and 40, 100, 100 at 0, 30, 90 (288.19) are black at −45°, the
+line floored at 0 cd; 100, 70, 0 at 0, 60, 90 (621.76) gives 121 cd at −45° and 136 at −75°; 100, 0 at 0, 90 as
+100, 50, 0; type A 100, 50, 0 the same. V-Ray's own flux is 1.002 × that table's (as for an isotropic file) in every
+file here, but with 4 or more vertical angles from 0 and a run that varies the render is black below 0 where the
+flux goes on: 120, 100, 60, 0 at 0, 30, 60, 90 (730.87), 120, 80, 40, 0 (755.49), 100, 100, 60, 0 (583.17), 100,
+50, 20, 0 (652.78), 120, 110, 90, 50, 0 in 22.5° steps (721.75), and with planes that differ, from −180 to 180 too
+(583.78); with only the middle plane constant (680.19) 83 cd at −45° in it, neither 100 nor 0. Constant runs from 0
+render as isotropic with 2 to 5 angles (629.57). Horizontal angles from 0 (type B) are mirrored: 100, 50, 0 at 0,
+45, 90° (314.80) gives 50 cd at ±45° and 17 at ±75°. Partial ranges follow no rule found: vertical −60 to 60 of 50,
+100, 100, 100, 50 (527.77, types A and B) gives 298 cd at −75° and 50 at 75°, horizontal −60 to 60 the same
+(445.84) 67 and 93 cd at +45° and −45°; isotropic files of vertical −60 to 60, 0 to 60, −90 to 60 or 30 to 90 and of
+horizontal −60 to 60 or 0 to 60 render as the full range (629.57). A table of 0 cd (types B and C) loads a power of
+0 at rated −1 and renders black, rated or not. Next to a change V-Ray's render rises up to 3 % over the table's
+linear value (the front of a file whose back half is 50 cd): its flux, not its render, is linear in angle.
 
 **IES files** (IESNA LM-63, `convert/ies.py`): after the keyword lines, `TILT=NONE`, `TILT=<file>` (nothing inline)
 or `TILT=INCLUDE` (lamp-to-luminaire geometry, the number of pairs n, n angles, n factors); then the number of lamps,
@@ -1250,11 +1383,18 @@ vertical angles (a zone [a, b]: Ia cos a − Ib cos b + (Ib − Ia)(sin b − si
 planes in radians, times 360 / their span (one plane 2π; the spans 90, 180 and 360 of LM-63's symmetries from 0 or
 90, 90 to 270 included; planes from 0 to past 180 but short of 360 closed with the first plane at 360); of a type A or
 B file, whose vertical angles are a latitude, the integral of I(θ) cos θ (Ib sin b − Ia sin a + (Ib − Ia)(cos b −
-cos a) / (b − a)) and the same trapezoid, vertical angles from −90, or from 0 doubled, to 90, horizontal ones from −90
-to 90, or for type B from 0 to 90 doubled. An isotropic file of I cd gives 4π I exactly (type C), 2π I (A and B).
+cos a) / (b − a)) and the same trapezoid, vertical angles from −90 or 0 to 90, horizontal ones from −90
+to 90, from −180 to 180 (only −90 to 90 counts, the planes at ±90 interpolated), or for type B from 0 to 90 doubled.
+Vertical angles from 0 are not doubled: each run goes on below 0 along its first segment, floored at 0 cd (a constant
+run: doubled), read with 2 or 3 vertical angles or constant runs ("VRayIES type A and B ranges, measured"); with 4 or
+more and a run that varies, V-Ray renders the lower half black while its own flux goes on: not read; nor a run that
+varies with a first segment shorter than 30° (the shortest measured), 0 included. A type A file
+with horizontal angles from 0 to 90 renders nothing: its flux is 0. An isotropic file of I cd gives 4π I exactly
+(type C), 2π I (A and B).
 The flux is times the candela multiplier and the ballast factor (not the ballast-lamp factor); the rated lumens are
-the number of lamps times the lumens per lamp; rated lumens of 0 or below count as -1. Other ranges of type A and B
-(type A with horizontal angles from 0 included), and a file larger than 4 MiB, of more than 4096 angles per axis or 2^20 candelas, or with a
+the number of lamps times the lumens per lamp; rated lumens of 0 or below count as -1 (a flux of 0 is dark then too,
+as V-Ray renders it). Other ranges of type A and B (partial: V-Ray renders them by no rule found),
+and a file larger than 4 MiB, of more than 4096 angles per axis or 2^20 candelas, or with a
 number out of range or out of order, are not read (a line in the report).
 
 **Spot cones.** Blender's spot size is the falloff; its blend is set so that full intensity ends at the hotspot, as in
@@ -1386,12 +1526,12 @@ picker and Material Editor switches off).
   Bitmap is read as stored whatever its override, and a temperature color is decoded as a swatch is. CoronaBitmap
   and VRayBitmap Auto / sRGB apply their own curve in every case, so with the gamma off V-Ray shows them darker
   than an sRGB image (and an EXR shows its value as stored), and VRayBitmap None shows as stored: converted since
-  maxdrop-em3.123 but for CoronaBitmap (below). Reopening the saved scenes from disk renders the same.
+  maxdrop-em3.123, CoronaBitmap since maxdrop-em3.165 (below). Reopening the saved scenes from disk renders the same.
 - LUT mode belongs to the session: a scene saved in it (Scene `1`, Config `0`) opens as `#gamma` from a `#none` or
   `#gamma` session and renders as gamma on (swatch 186, the PNG 128); a `#lut` session stays in LUT mode for a file
   whose chunk says `1` (and renders as gamma off there: 128, 128). MaxDrop reads the file's `1` as gamma on.
-- A Corona render does not run on this machine (not under `3dsmaxbatch`, not in a silent instance): Corona's own
-  swatches are not measured.
+- Corona's own swatches: Corona 12 renders a 128 swatch 0.502 with the gamma on and off, as V-Ray (maxdrop-em3.165,
+  below; Corona renders run here since 2026-11-23).
 - Data inputs and masks (maxdrop-em3.122), V-Ray 5.2 renders of the same 128 grey PNG and of swatches: VRayMtl
   glossiness through the VRayMtlReflectGlossiness element, VRayMtl opacity as the render alpha, a Mix black -> white
   mask on a VRayLightMtl (its internal value, `getPixels ... linear:true`):
@@ -1410,6 +1550,12 @@ picker and Material Editor switches off).
   display-referred (Blender needs `srgb_to_linear` of it): a mask between black and white is the decoded number,
   a mask between two colors mixes display values (target 0.225 linear for the 0.511 above, a decoded mask gives
   0.171). The rules are in `maxdrop/convert/texmaps.py` (MASK, colorspace, `_swatch`).
+- A Corona opacity color (maxdrop-6n0.6.35), Corona 12 renders of a self-illuminated white CoronaLegacyMtl and
+  CoronaPhysicalMtl over black, 64 passes, gamma on and off alike: white 1.0, grey 64 0.251, red (255, 0, 0)
+  1.0 / 0.0 / 0.0, (200, 100, 50) 0.784 / 0.392 / 0.196 (0.785 / 0.393 / 0.197 for the physical one), black 0:
+  the swatch as stored, per channel, not its mean. A Blender alpha is one number: MaxDrop keeps the mean and names
+  a colored opacity color in the report (`MaterialConverter.mono_swatch`; CoronaSkinMtl and CoronaHairMtl assumed
+  alike).
 - Maps with their own decode (maxdrop-em3.123), V-Ray 5.2 renders of VRayLightMtl planes, each rendered alone, its
   internal value (`getPixels ... linear:true` of an HDR bitmap); greys 64 / 128 / 192 as 8-bit PNGs, EXRs of 0.25 /
   0.5 / 2.0. Gamma on (input 2.2) and off give the same internal value for every row:
@@ -1421,15 +1567,15 @@ picker and Material Editor switches off).
   | VRayBitmap Inverse gamma 2.0 / 0.5, 128 | 0.7085 / 0.2520 | 0.4598 / 0.0516 |
   | Bitmap automatic, EXR 0.25 / 0.5 / 2.0 | 0.25 / 0.5 / 2.0 | 0.0509 / 0.214 / 4.954 |
   | VRayBitmap Auto / None / From 3ds Max, EXR 0.5; sRGB, EXR 0.5 | 0.5; 0.2140 | 0.214; 0.0376 |
-  | CoronaBitmap automatic 64 / 192, 1.0 192, automatic EXR 0.5 | 0.0478 / 0.5356, 0.753, 0.5 | Corona: not measured |
-  | CoronaColor HDR 0.25 / 0.5 / 2.0, 0.5 x multiplier 2 | 0.25 / 0.5 / 2.0, 1.0 | Corona: not measured |
+  | CoronaBitmap automatic 64 / 192, 1.0 192, automatic EXR 0.5 | 0.0478 / 0.5356, 0.753, 0.5 | 0.0037 / 0.2483, 0.527, 0.214 (Corona 12 alike, below) |
+  | CoronaColor HDR 0.25 / 0.5 / 2.0, 0.5 x multiplier 2 | 0.25 / 0.5 / 2.0, 1.0 | 0.0509 / 0.214 / 4.954, 1.0 (Corona 12 alike, below) |
 
   Inverse gamma g is pixel ^ (1 / g). With the gamma off a color input or mask gets the gamma the scene shows: 2.2 x
   the map's own (2.2: the sRGB color space, which Blender 4.2 to 5.2 applies to an EXR with the extended curve,
   2.0 -> 4.954), 5.0 for the sRGB curve (`SRGB_TWICE`: twice the curve is within 0.008 of x ^ 5 over 0..1); a
   Bitmap and From 3ds Max read any file as stored, sRGB. Data inputs keep the map's own curve. Blender 5.2 and 4.2
-  renders of the probe scenes agree within 0.02 (2 % above 1). CoronaBitmap and CoronaColor HDR are left as they
-  were: whether a Corona render shows them as V-Ray does is not known (no Corona render yet). A dome's texture
+  renders of the probe scenes agree within 0.02 (2 % above 1). CoronaBitmap and CoronaColor HDR follow the same
+  rule since Corona 12 renders them so (maxdrop-em3.165, below). A dome's texture
   gamma is drawn as a material's (a Gamma node in the World), but a float dome texture in a gamma-off scene keeps
   its own decode (a line in the report): measured as a light below (maxdrop-em3.166).
 - Color mixes (maxdrop-em3.158), V-Ray 5.2 renders of VRayLightMtl planes, each plane's internal value; greys are
@@ -1450,7 +1596,34 @@ picker and Material Editor switches off).
   own decode, the mask as stored) and the display shows the result decoded; decoded sides mixed in Blender were off
   by up to 0.27 (the colored pair), 16 of 24 planes by more than 0.02. A product commutes with a power law, so a
   decoded RGB Multiply is within 0.005. The rule is in `maxdrop/convert/texmaps.py` (STORED, Decode); Blender 5.2
-  renders of the probe scenes agree with V-Ray within 0.0085 on every plane. Falloff and CoronaMix were not probed.
+  renders of the probe scenes agree with V-Ray within 0.0085 on every plane. Falloff and the wrappers: below
+  (maxdrop-6n0.6.18); CoronaMix in Corona 12: below (maxdrop-em3.165).
+- Corona maps with the gamma off (maxdrop-em3.165), Corona 12 renders of CoronaLightMtl planes (color white,
+  intensity 1, the map as texmap), tone mapping off, a pass and a time limit, an orthographic camera over a grid,
+  each plane's internal value (`getPixels ... linear:true` of an HDR bitmap, a 9 x 9 pixel mean); the em3.123 greys
+  and EXRs. Gamma on (input 2.2) and off give the same internal value for every row:
+
+  | Map | internal value | shown with the gamma off (Blender linear) |
+  |---|---|---|
+  | swatch 128 (CoronaLightMtl color; CoronaColor color) | 0.502 | 0.216 |
+  | CoronaBitmap automatic or 2.2, 64 / 128 / 192 | 0.0478 / 0.2195 / 0.5356 | 0.0037 / 0.0395 / 0.2483 |
+  | CoronaBitmap 1.0, 64 / 128 / 192 | 0.251 / 0.502 / 0.753 | 0.0513 / 0.216 / 0.527 |
+  | CoronaBitmap automatic, EXR 0.25 / 0.5 / 2.0; 2.2, EXR 0.5 | 0.25 / 0.5 / 2.0; 0.2177 | 0.0509 / 0.214 / 4.954; 0.0389 |
+  | CoronaColor HDR 0.25 / 0.5 / 2.0; 0.5 x multiplier 2 | 0.25 / 0.5 / 2.0; 1.0 | 0.0509 / 0.214 / 4.954; 1.0 |
+  | Mix and CoronaMix (mix) black -> white by a CoronaBitmap automatic 128 | 0.2195 | 0.0395 |
+  | Mix 50 % of CoronaBitmaps automatic 64 and 192; CoronaMix mix 50 % of them | 0.2917; 0.2917 | 0.0692 |
+  | CoronaMix of CoronaColor HDR (0.05, 0.4, 0.9) under (0.6, 0.2, 0.75): screen, overlay, hard light, exclusion, add, multiply | renderMap's values (em3.117) | them decoded |
+
+  So Corona holds a CoronaBitmap's own decode, the HDR color (unclamped) and a swatch as V-Ray holds its maps, and
+  computes a Mix and a CoronaMix on those values: with the gamma off a CoronaBitmap on a color input or a mask gets
+  `_shown`, the HDR color is decoded with the extended curve (the mean on a mask), and a CoronaMix at a color root
+  joins `DISPLAY_MIXES` (STORED under a Decode; a folded constant decoded exactly). A float CoronaBitmap dome texture
+  keeps its own decode, as the other float dome textures do. Data, normal and bump inputs are unchanged. A value
+  above 1 under a Decode that does not fold (a CoronaMix of an HDR color over a map) follows the Decode's power of
+  2.2, not the extended curve (3.78: 18.6 against 22.2). Blender 5.2
+  renders of the saved probe scenes agree within 0.0092 on every CoronaBitmap, CoronaColor, swatch and mask plane,
+  gamma on and off. A first pass that rendered to an EXR output file clamped the bitmap at 1.0 and gave a Bitmap
+  automatic 128 0.2195 with the gamma off (0.502 in the passes rendered into an HDR bitmap, as V-Ray): not used.
 - Normal and bump images (maxdrop-em3.159), V-Ray 5.2 renders read through VRayBumpNormals and Corona 12 renders
   through CGeometry_NormalsShading (both store (n + 1) / 2; an orthographic top camera), 8-bit PNGs: a flat
   (128, 128, 255) and a tilted (180, 100, 220) normal map under VRayNormalMap, Normal Bump and CoronaNormal, a
@@ -1470,9 +1643,9 @@ picker and Material Editor switches off).
   Corona 12), except a VRayBitmap below a normal map, which V-Ray reads as stored (below a CoronaNormal assumed
   alike: not probed). A scene whose gamma setting is not found is taken as gamma on, as for swatches. CoronaNormal's
   Add gamma is folded into its image's gamma only for an image without an Output and not read for its alpha (else
-  a line in the report). One reading MaxDrop does not
-  follow: a VRayBitmap From 3ds Max directly in a VRayMtl bump slot with the gamma off is decoded (below
-  VRayNormalMap's bump input it is stored, as on a data input; maxdrop-6n0.6.19). V-Ray bends a normal tilted over
+  a line in the report). A first reading of a
+  VRayBitmap From 3ds Max directly in a VRayMtl bump slot with the gamma off (decoded) does not reproduce: it is
+  stored there too (maxdrop-6n0.6.19, below). V-Ray bends a normal tilted over
   about 44 degrees back toward the surface: the tilted map decoded renders 44.2 degrees for 59.2, and so does that
   decoded normal stored in a file read at 1.0 (V-Ray's limit, not the decode; MaxDrop draws it unbent). The rule is
   in `maxdrop/convert/texmaps.py` (colorspace, `_vray_image`, `_add_gamma`). Blender 5.2 renders (EEVEE and Cycles)
@@ -1502,9 +1675,81 @@ picker and Material Editor switches off).
   0.05 times with the sun, as a dome's multiplier already is (the untextured row). Neither is within a factor 2 of
   the target on every float row (the plan's gate); a float dome texture keeps its own decode, the smaller worst case
   (about 21 times against 1664; `convert/lights.py`, `dome_texture`; a line in the report), and the display-referred
-  light is maxdrop-6n0.6.20. On an 8-bit display a value above 1 is white
+  light is maxdrop-6n0.6.20 (below). On an 8-bit display a value above 1 is white
   in both. An 8-bit dome texture keeps the material rule (within 0.007 of the target). A rule that sees the sky
-  decoded only from the camera would need the World's nodes (a Light Path), not drawn (maxdrop-6n0.6.21).
+  decoded only from the camera needs the World's nodes (a Light Path): drawn since maxdrop-6n0.6.21 (below).
+- Maps at a color root and in a mask (maxdrop-6n0.6.18), V-Ray 5.2 renders of VRayLightMtl planes (a VRayMtl's
+  self-illumination for the slot amounts) under an orthographic camera (a Falloff plane tilted 60 degrees: facing
+  ratio 0.5), each plane's internal value, a 9 x 9 pixel mean; greys and colors are swatches (VRayColor), Bm a 128
+  grey 8-bit PNG and CBm a (200, 100, 50) PNG (Bitmaps, automatic gamma). With the gamma on and off the internal value
+  is the same on every swatch row (a Bm row with the gamma on: the image decoded first):
+
+  | Map | internal value | shown with the gamma off (Blender linear) |
+  |---|---|---|
+  | Falloff 40 -> 220, Towards / Away, Perpendicular / Parallel; (200, 40, 40) -> (40, 60, 220) | 0.333 / 0.510; (0.471, 0.196, 0.510) | 0.091 / 0.223; (0.188, 0.032, 0.223) |
+  | Falloff of map 1 Bm and color 2 220 | off 0.682, on 0.541 | 0.423 |
+  | Color Correction: brightness 20 over 128; contrast 30 over 100; gamma 2.0 over 128; gain 50 % over 200 | 0.702; 0.360; 0.708; 0.392 | 0.451; 0.106; 0.460; 0.127 |
+  | Color Correction over (200, 100, 50): saturation -50 %; hue 120 | (0.637, 0.441, 0.343); (0.196, 0.784, 0.392) | (0.364, 0.164, 0.096); (0.032, 0.578, 0.127) |
+  | Output: level 0.5 over 200; offset 0.2 over 100; level 0.5 over Bm | 0.392; 0.592; off 0.251, on 0.110 | 0.127; 0.310; 0.051 |
+  | RGB Tint (200, 50, 0) / (0, 150, 100) / (30, 0, 255) over (200, 100, 50) | (0.638, 0.384, 0.350) | (0.365, 0.122, 0.100) |
+  | self-illumination 40, its map VRayColor 220 / Bm at 50 %; (200, 40, 40), its map (40, 60, 220) at 25 % | 0.510 / off 0.329, on 0.188; (0.627, 0.176, 0.333) | 0.223 / 0.089; (0.351, 0.026, 0.091) |
+  | Mix black -> white by a Mix 40 -> 220 at 50 % / by VRayColor 128 / by Bm; by a Composite 40 under 220 at 50 %; by the Falloff | 0.510 / 0.511 / off 0.511, on 0.312; 0.510; 0.510 | 0.223 / 0.225 / 0.225; 0.223; 0.223 |
+  | Mix black -> white by a Color Correction: brightness 20 over 128; monochrome / invert / red to all over (200, 100, 50) or CBm | 0.702; 0.458 / 0.542 / 0.784 | 0.451; 0.177 / 0.256 / 0.578 |
+
+  So with the gamma off V-Ray computes each of them on the values it holds (a swatch and a Bitmap as stored) and the
+  display shows the result decoded, as em3.158's Mix: at a color root converted in STORED under one Decode (a Tint or
+  an Output over a constant folded exactly), a slot's amount below 1 mixing the input's own value as stored with its
+  map (a Standard's Diffuse Level other than 1 on its diffuse map keeps the decoded mix, while with a Diffuse Level
+  map the diffuse at level 1 takes the stored one: neither measured with an amount); in a mask the mean
+  of it decoded (a Mix, Composite, CoronaMix or Falloff: Decode mean; a Color Correction, Tint or Output: the mean
+  after the color, `_mask_mean`). Corona 12 renders (CoronaLightMtl planes, a pass and a time limit) give the same
+  internal values for a Mix, Composite, Falloff, Color Correction, Output, Tint, CoronaMix and a Mix in a mask, gamma
+  on and off. Two gamma-on differences the probe showed are fixed with it: a Color Correction's saturation is HSL
+  (towards (max + min) / 2, which the builder draws in Math nodes; the Hue / Saturation / Value node's HSV gave
+  (0.784, 0.588, 0.490)), and a custom rewiring in a mask picks its channel (red to all 0.784; the mask rule's grey
+  gave 0.457). Before, 26 of the 36 gamma-off planes were off by more than 0.02 (worst 0.327); Blender 5.2 renders of
+  the probe scenes now agree with V-Ray within 0.0084 on every plane, gamma on and off, and with the Corona renders
+  within 0.0082. A first Corona pass in a 3dsmaxbatch session whose earlier scripts had failed rendered a Bitmap
+  automatic decoded with the gamma off (0.2195, both modes alike): run again in a session of its own it gave 0.502.
+  Such a pass is caught by a control row (a Bitmap automatic) rendered in both modes.
+- A VRayBitmap From 3ds Max height (maxdrop-6n0.6.19), V-Ray 5.2 through VRayBumpNormals, em3.159's ramp: with the
+  gamma off it is read as stored in every slot tried (VRayMtl bump directly, under an Output, under a Mix, Normal
+  Bump's and VRayNormalMap's bump input), with it on decoded, as a Bitmap automatic (slope ratio about 1 against
+  3.3; VRayBitmap None stored and sRGB decoded in both modes). em3.159's reading of the bump slot (decoded with the
+  gamma off) does not reproduce: its own probe script run again in a fresh 3dsmaxbatch session gives stored (1.73 /
+  1.73 degrees at 0.25 / 0.75 of a tooth), as the em3.159 table row says. A Standard material's bump does not reach
+  VRayBumpNormals (flat in both modes): not measured. Blender 5.2 renders of the probe scenes show V-Ray's stored or
+  decoded pattern on every plane; the rule is unchanged.
+- The sky and the light of a gamma-off dome (maxdrop-6n0.6.21, maxdrop-6n0.6.20), V-Ray 5.2, em3.166's scenes again
+  and mirrors (VRayMtl reflection 255 / 128, Fresnel off, glossiness 1) beside a white floor under a VRayBitmap Auto
+  of a uniform EXR, each camera's 32 x 32 render averaged:
+
+  | Dome | white / grey mirror | floor | sky |
+  |---|---|---|---|
+  | EXR 0.5 | 0.500 / 0.251 | 0.4995 | 0.500 |
+  | EXR 4.0 | 4.000 / 2.008 | 3.9995 | 4.000 |
+  | EXR 0.5, multiplier 2 | 1.000 / 0.502 | 0.9997 | 1.000 |
+
+  The gamma on gives the same. The sky is the multiplier times the texel, a mirror the sky times its reflection. With
+  the gamma off camera rays now see the sky's value decoded (`build/world.py`: a second Background, the sRGB curve of
+  texture x strength, picked by the Light Path's Is Camera Ray; an untextured dome its color as stored x strength,
+  decoded): Blender 5.2 renders (Cycles and EEVEE) of every float and untextured sky of em3.166's scenes and these
+  within 0.02 of srgb_to_linear(V-Ray) (2 % above 1); floors and planes as em3.166 measured. Other rays keep the
+  texture's own decode: a mirror of the 0.5 sky would be exact with the camera's reading (0.214; the light's gives
+  0.5) and the grey one nearer (0.046 against 0.051; 0.108), but a rough reflection of the sun's 2000 would take the
+  camera's reading as the material rule's floor does (1664 times the target): reflections follow the light, and so
+  does the sky seen through glass (transmission rays: 0.5 for a target of 0.214; not rendered). The camera's sky is the
+  value at the import's Light Strength, V-Ray's at the default one. An 8-bit
+  dome texture keeps the material rule for every ray (exact at multiplier 1, em3.166). The display-referred light
+  (maxdrop-6n0.6.20): V-Ray's internal value is the same with the gamma on and off on every probe row (em3.123,
+  em3.158, em3.165, em3.166 and the rows above), and the gamma-on import matches it within 0.007 to 0.0092, so a
+  gamma-off scene imported on those values (the gamma-on rules, a Bitmap read as stored) and shown through Blender's
+  Raw view, which puts the value on the display as it is (checked on 4.2, 4.5 and 5.2: a 0.5 emission saves byte 128,
+  Standard 188), would match V-Ray's display on every floor, plane and sky. Not done: the view belongs to the whole
+  Blender scene (an import into a file with other content, or a gamma-on scene imported with it, cannot both be
+  right), and as an option it needs image rules of its own (a Bitmap's gamma override read as stored, CoronaNormal's
+  Add gamma) across the gamma-off rules. The cost stays as em3.166's table measures it (a dome at 0.5 lights a white
+  floor 2.3 times the target).
 
 ## Summary properties
 
@@ -1595,6 +1840,9 @@ Reference parameters, checked against the oracle's targets on every fixture:
   `opacity_texmap`, `displacement_texmap` at 1, 2, 3, as corpus scene B has them; VRayMtlWrapper, Double Sided and
   Shellac at 1, 2) and, for Composite and class `0xC90017A5` (no fixture `0x0013` entry: texmap_rules' Composite
   keeps its maps as block references), from corpus scene B's (format 20000); every object of scene A agrees.
+  Output `map1` (0) at slot 0 comes from scene A alone (maxdrop-6n0.6.3): its 8 Output maps hold the map at owner
+  slot 0 (1 the TexOutput, 2 the block), the map 3ds Max reports, and 2 of them store -1; the fixtures (3ds Max
+  2020) store that index directly and list only `output` (2) at 1 in `0x0013`.
   `test_materials.py` checks each entry against the fixtures' tables. Only a block without
   `0x0013` uses it: for a stored -1, and for a stored index that is none of the owner's references when the owner
   holds one at that slot (scene A stores 3704 such indices: 3702 equal the slot's, 2 are stale, a Normal Bump's
@@ -1628,6 +1876,11 @@ of pblock_animated's 6 controllers. A Float List with an entry of another class 
 sum of the rest. Not measured: an hsv parameter (not read); a float controller on an integer parameter (int, bool, radio
 button...; no fixture has one): a whole number is read as that integer, a fraction not (the class default); a
 percent or angle parameter takes the controller's value as stored, like its stored value.
+What a read meets is a line in the import report, under the material or map (maxdrop-6n0.6.32): each issue
+`parameter_value` gives (between two Bezier Color keys, a saved value beside several keys without its interval,
+keys of an unknown layout, a list weight not stored, another class, a damaged controller), and a parameter left at
+its default; in a map's graph it marks the graph approximated. A dome light's VRayBitmap reads its rotation and
+switches the same way.
 
 Transient parameters are mostly not stored (VRayMtl: 25 of the 80 parameters of block 1, among them
 `bump_multiplier` 102 and the `texmap_*` 109-128 that mirror block 4). Some are stored anyway with a stale value
@@ -1639,6 +1892,13 @@ parameter a `0x0002` container: `0x0003` `u32` index, an empty `0x0004` on some 
 `0x0100` + ParamType: `0x0100` float, `0x0101` int, `0x0104` bool (fixtures: the Bitmap's Placement and Output,
 the Standard material's sampler); `0x0102` color and `0x0103` point3 follow the SDK's ParamType, no fixture has
 them.
+A parameter a controller holds has an empty `0x0200` + ParamType instead (no value), and the block's own
+references (`0x2034`) hold the controllers, one per such parameter in index order: stack_basic's Noise block
+animates entry 7 alone, a Bezier Float at slot 0; the Standard shader blocks of standard_physical and
+standard_shaders animate 22 entries (0, 2, 4 to 10, 21 to 33), entry 2 (`0x0202`, a color) a Bezier Color at slot 1,
+the bools On/Off controllers. A map's Coordinates and Output parameters held by a controller are read at frame 0
+as a ParamBlock2's are (`convert/params.py` `old_value`; maxdrop-6n0.6.32); no fixture animates a Placement or an
+Output, so that path is not measured.
 
 ## Materials and maps
 
@@ -1686,13 +1946,13 @@ values by the fixture scripts or read by the tests):
 | | 2 BRDF | 10 brdf_type (4 = GGX), 54 anisotropy, 58 anisotropy_rotation (stored in degrees, as shown), 69 soften, 86 gtr_gamma, 89 brdf_useRoughness |
 | | 3 options | 11 option_traceReflection, 13 option_doubleSided, 22 option_cutOff, 84 option_opacityMode |
 | | 4 maps | map, on, multiplier: 100 / 150 / 200 diffuse, 101 / 151 / 201 reflection, 102 / 152 / 202 refraction, 103 / 153 / 203 bump, 104 / 154 / 204 reflectionGlossiness, 105 refractionGlossiness, 106 displacement, 109 refractionIOR, 110 hilightGlossiness, 111 reflectionIOR, 112 / 162 / 212 opacity, 113 roughness, 117 self_illumination, 119 metalness (multipliers in percent: 63.0 = 63 %) |
-| VRay2SidedMtl `(0x6066686A, 0x11731B4B)` | 0 | 0 frontMtl, 1 backMtl, 7 translucency, 3 backMtlOn, 4 texmap_translucency, 8 force1SidedSubMtls |
-| VRayBlendMtl `(0x3DA0041B, 0x0F436E31)` | 0 | 0 baseMtl, 1 coatMtl (table), 2 blend (color table), 3 texmap_blend, 4 texmap_blend_multiplier, 6 coatMtl_enable, 5 additiveMode |
+| VRay2SidedMtl `(0x6066686A, 0x11731B4B)` | 0 | 0 frontMtl, 1 backMtl, 7 translucency, 3 backMtlOn, 4 texmap_translucency, 8 force1SidedSubMtls; V-Ray 5.2 renders an empty frontMtl's side not at all at translucency black (the back shows backMtl when backMtlOn, nothing otherwise); at the default translucency (0.5) the front is half transparent, with no front or back color (maxdrop-6n0.6.4) |
+| VRayBlendMtl `(0x3DA0041B, 0x0F436E31)` | 0 | 0 baseMtl, 1 coatMtl (table), 2 blend (color table), 3 texmap_blend, 4 texmap_blend_multiplier, 6 coatMtl_enable, 5 additiveMode; V-Ray 5.2 renders an empty baseMtl as nothing below the coats (a coat at blend grey: alpha 0.5; blend black: not rendered) (maxdrop-6n0.6.4) |
 | Shell Material `(0x255, 0)` | 0 | 2 originalMaterial, 3 bakedMaterial, 0 viewportMtlIndex, 1 renderMtlIndex |
 | VRayOverrideMtl `(0x15D20E6B, 0x54E217EB)` | 0 | 0 baseMtl, 2 giMtl, 4 reflectMtl, 6 refractMtl, 8 shadowMtl (getSubMtl order), each followed by its switch (1 baseMtl_on ... 9 shadowMtl_on); V-Ray 5.2 renders baseMtl for the camera whatever baseMtl_on says, and an empty baseMtl black (maxdrop-em3.136) (vray_more) |
 | VRayMtlWrapper `(0x409517DF, 0x3A5F44B6)` | 0 | 0 baseMtl, 2 generateGIMult (vray_more) |
 | Double Sided `(0x210, 0)` | 0 | 0 material1 (facing), 1 material2 (back), 2 / 3 map1Enabled / map2Enabled, 4 translucency (percent); V-Ray 5.2 renders both sides whatever the switches say, an empty material1 not at all (the front is not rendered), the scanline renders a side switched off black, and an empty material1 too (an empty material2: not measured) (maxdrop-em3.136) (vray_more) |
-| Shellac `(0x46EE536A, 0)` | 0 | 0 shellacMtl1 (base), 1 shellacMtl2, 2 shellacColorBlend (percent) (vray_more) |
+| Shellac `(0x46EE536A, 0)` | 0 | 0 shellacMtl1 (base), 1 shellacMtl2, 2 shellacColorBlend (percent); V-Ray 5.2 and the scanline render an empty shellacMtl1 as shellacMtl2, at blend 0 too (maxdrop-6n0.6.4) (vray_more) |
 | VRayLightMtl `(0x7CCF263E, 0x3F5B39B9)` | 0 | 0 color, 1 multiplier, 2 / 3 texmap (on), 5 / 6 opacity_texmap (on), 9 displacement_texmap (vray_more) |
 | VRayFastSSS2 `(0x3F2C5FAA, 0x750008BC)` | 0 | 26 diffuse_color, 27 / 28 / 29 texmap_diffuse_color (on, multiplier), 36 diffuse_amount, 2 sub_surface_color, 16 scatter_color, 57 overall_color, 0 scatter_radius (a plain float in centimeters whatever the system unit), 22 scale, 31 IOR, 40 specular_color, 44 specular_amount, 51 specular_glossiness, 3 / 4 / 5 texmap_bump (on, multiplier), 85 / 86 / 87 texmap_opacity (on, multiplier) (vray_more) |
 | VRayCarPaintMtl `(0x38312C74, 0x47280883)` | 0 | 0 base_color, 1 / 2 / 3 texmap_base_color (on, multiplier), 4 base_reflection, 8 base_glossiness, 12 flake_color, 16 flake_glossiness, 27 coat_color, 31 coat_strength, 39 coat_glossiness, 55 / 56 / 57 texmap_base_bump (on, multiplier: 30 as created, V-Ray 5.2) (vray_more) |
@@ -1763,8 +2023,15 @@ numbers on the four shaders: a grey 128 map at amount 100 renders 0.502 of the l
 255 at level 150 1.25; switched off, the level alone; a pure red, green or blue map 1/3, yellow 2/3 (the mean of its
 channels). A flat diffuse map with it: grey 128 at level 50 renders 64; at amount 50 lerp(swatch, 128, 0.5) x 0.5,
 and with the level map lerp(0.5, map, its amount) in place of 0.5. So the diffuse is lerp(swatch, diffuse map,
-amount) x lerp(level, mean(level map), amount), on stored values with the gamma off (gamma on not rendered: assumed
-the same product on linear values). MaxDrop scales the diffuse map by the level as the swatch rule makes it
+amount) x lerp(level, mean(level map), amount), on stored values with the gamma off, and the same product on linear
+values with the gamma on (maxdrop-6n0.6.14, gamma 2.2, files in 2.2, the four shaders alike: a swatch and a Checker
+grey as stored, 128 grey as a level map 0.502 of the level-100 pixel as with the gamma off; a 128 grey PNG level map
+0.2192 (decoded: (128 / 255)^2.2 = 0.2195); a 64 grey PNG 0.0470 (0.0476); the 128 PNG at amount 50 and level 50 0.3594; a
+(200, 100, 50) PNG level map 0.2470, the mean of its decoded channels; the 128 PNG as the diffuse map at level 50
+0.1096 linear; the color PNG at 61 % with a 64 grey PNG level map at 62 % and level 40 0.0925 0.0307 0.0113 linear,
+the product of lerp(swatch, decoded map, 0.61) and lerp(0.4, 0.0476, 0.62)): what MaxDrop draws with the gamma on,
+the level as is and the level map a mask read linear.
+MaxDrop scales the diffuse map by the level as the swatch rule makes it
 (`MapRef.scale`, before the amount mixes it with the swatch times the level; gamma off: the sRGB curve, not clamped,
 since Blender decodes the map: the decoded map times the decoded level is within 0.006 linear of the decoded product
 for levels up to 100 %, where a plain x level is up to 0.29 too bright). With a Diffuse Level map the base color is
@@ -1819,6 +2086,62 @@ renders its map1 through its Output part (a red (200, 50, 50) map: 0.784, 0.196,
 changes nothing, 0.682, 0.564, 0.564 with the one above; opacity 0.392 and 0.207); the file stores the switch off. MaxDrop ignores an Output's map1Enabled when the scene's renderer (Renderer ClassIDA / B of the summary stream)
 is Corona's, `(0x62A85DCC, 0x523C3604)` (Corona 12); measured with Corona's own materials, assumed for others.
 Corona's opacity with few passes is noisy (up to 0.006 at 4 passes, the mean at 64).
+Other materials and maps under Corona (maxdrop-6n0.6.23; Corona 12, gamma off, 32 passes, the furnace 64): in a Standard
+diffuse slot (white furnace, no light, specular level 0) an Output switched off over the red Checker renders its
+map too, 0.784, 0.196, 0.196, as switched on and as the Checker directly (a white Standard reads 1.0), and in a
+CoronaPhysicalMtl base slot the same (0.745, 0.191, 0.194 in all three). A VRayMtl does not render under Corona 12
+(white diffuse: 1.0, 0.125, 0.125; the Checker in it 1.0, 0.201, 0.201), so an Output in it cannot be read: the
+scene-wide rule stands. The map switches of Mix (map1, map2, mask), RGB Multiply (map1, map2), Composite (a
+layer and a layer mask) and Falloff (map1, map2), off and on over the red Checker beside green and blue own
+colors in a CoronaLightMtl / VRayLightMtl texmap: Corona renders each exactly as V-Ray 5.2 (off: the own color, or
+the amount for a mask). Color Correction has no map switch. A VRayDirt renders white in Corona 12 with its
+unoccluded map on or off (V-Ray: the map, or the unoccluded color), so MaxDrop draws a VRayDirt white in a Corona
+scene (measured in a light material's texmap; other slots, a normal map's normal slot among them, assumed).
+The renderer ClassID of another Corona version: none at hand; the 371 local `.max` files name one Corona
+renderer, Corona 12's. V-Ray keeps one renderer ClassID, `(0x73BAB286, 0x77F8FD0C)`, from a 3.60 save (3ds Max
+2015) to 5.2: assumed for Corona.
+A wrapper as a mask in a color graph, measured (maxdrop-6n0.6.2; 3ds Max 2020, V-Ray 5.2 with linear color mapping,
+GI and default lights off, a VRayLightMtl texmap Mix black -> white at amount 0 whose mask is the map, V-Ray's
+internal value): a VRayColor (200, 100, 50) gives 0.4575; an RGB Tint of rows (128, 0, 0), (0, 64, 0), (0, 0, 32)
+over it 0.1722, the empty Tint 0.2928; an Output of RGB level 0.5 over it 0.2287, the empty Output 0.5; the Tint
+over a 128 grey PNG 0.1470 with the gamma off and 0.0643 with it on, an Output of 0.5 over a (200, 100, 50) PNG
+0.2287 and 0.1235. Every constant row is the same with the gamma on and off. So a mask below a Tint or an Output is
+the mean of the wrapper's output on the values V-Ray holds (swatches and the Tint's rows as stored, an image by the
+scene's input rule), which a gamma-off scene shows decoded: MaxDrop converts the wrapper's map as a color with the
+gamma on and as stored with it off, and there takes the mean first and decodes it after (a Tint over a constant
+folded exactly; otherwise a power of 2.2, within 0.005 of V-Ray on these planes). A Color Correction's saturation of
+-50 over the VRayColor gives 0.4739, over the PNG 0.4739 off and 0.2770 on: not Blender's HSV saturation, so a
+Color Correction directly as a mask keeps its input's mean (a grey). The same rule is assumed for Corona, a Corona
+layer mask and a Diffuse Level map (not measured). With the gamma off a colored PNG as the mask itself gives
+the decoded mean (0.4575 shown as 0.1768), where MaxDrop drew the mean of the decoded channels (0.2456), and an RGB
+Tint on a color input renders the tint of the stored color, decoded ((0.638, 0.384, 0.350) shown as (0.365, 0.122,
+0.100); MaxDrop draws (0.334, 0.057, 0.048)): the Tint left as it is.
+Since maxdrop-6n0.6.36 an image read as stored (a Bitmap, a VRayBitmap From 3ds Max) as a gamma-off mask is that
+image as Non-Color, the mean of its channels, then the sRGB curve in Math nodes (exact; a grey as before): the PNG
+mask renders 0.1768 in Blender 5.2 (EEVEE, the 6n0.6.2 probe), and the Color Correction of saturation -50 over it
+0.1768 where V-Ray gives 0.1906 (was 0.4119); every other row of the probe unchanged. Assumed, not measured: the
+same for such an image anywhere in a mask graph (below an RGB Multiply, a Falloff, a Color Correction), a Corona
+layer mask and a Diffuse Level map, as a swatch there is the rule of its mean; a Color Correction that rewires
+channels in a gamma-off mask picks them from the stored color, the mean decoded after it, as an RGB Tint.
+Since maxdrop-6n0.6.18 (measured there) a Color Correction in a mask, rewired or not, takes the color V-Ray holds (the
+color with the gamma on, STORED with it off), its saturation drawn in HSL, and the mask is the mean after it, decoded
+with the gamma off through the exact sRGB curve (Decode mean, as an RGB Tint's and an Output's now; they were a power
+of 2.2): no longer its input's grey. A Mix, Composite, CoronaMix or Falloff in a gamma-off mask is computed on the
+stored values too, an image below it read as stored.
+At a gamma-off color root a Mix of two colors, a Composite and a CoronaMix take their masks as stored (em3.158):
+unchanged.
+Color Correction's saturation and hue, measured on V-Ray 5.2 (maxdrop-6n0.6.38; VRayLightMtl planes, gamma on, the
+internal values): six VRayColors ((200, 100, 50), (230, 128, 26), (40, 80, 200), 128 grey, (250, 20, 120), (20, 200,
+120)) and a (200, 100, 50) PNG, saturation -100 / -50 / +50 / +100 %, hue 30 / 120 and hue 30 with saturation +50.
+Every channel is lerp(L, c, 1 + saturation), L = (max + min) / 2 (HSL), after the hue shift (HSV's rotation, which
+keeps max and min, so the order does not matter), and a channel below 0 is 0, while above 1 it is kept: (200, 100,
+50) at +100 % gives 1.078 0.294 0 (the light at multiplier 0.5 renders 0.539; getPixels reads any value above 1 as 1,
+a VRayColor 0.6 at multiplier 2 included), and an Output offset of +0.2 over it gives 0.2 on blue (a Mix and an Output
+keep a negative input: an offset of -0.5 over 0.2 mixed 50 % with white gives 0.35). The PNG is decoded first (2.2).
+The builder's HSL step (maxdrop-6n0.6.18) renders every row within 0.0005 of V-Ray (EEVEE 5.2) where no channel leaves
+0..1; with a saturation above 0 % it now ends in a Vector Math MAXIMUM of 0, so a channel that would fall below 0 is 0
+in the graph as in 3ds Max (an emission showed a negative channel as 0 already). The hue is the Hue / Saturation /
+Value node's (equal on every row).
 
 ### The Falloff mix curve
 
@@ -1871,10 +2194,11 @@ CoronaLegacyMtl, CoronaBitmap and CoronaNormal.
 | CoronaSkinMtl `(0xBEC41C73, 0x44CFDE95)` | 101 skinColor, 102 skinLevel, 103 sssAmount, 104 sssRadiusScale, 105 / 106 / 107 sss1 color, radius (world units), weight, 108-110 sss2, 111-113 sss3, 114 reflection1Color, 115 reflection1Level, 116 reflection1Glossiness, 117 reflection1Ior, 118-121 the second reflection, 122 opacityColor, 123 opacityLevel; maps 124-144 (skin color 124 ... bump 144), each switched on by its id + 21, amounts at its id + 42 |
 | CoronaHairMtl `(0x22C05DD6, 0xCA41F546)` | 101 colorTint, 102 colorDiffuse (black), 103 colorOpacity, 104 / 105 / 106 their levels, 107 ior, 108 glossiness, 109 softness, 110 colorlessGlossiness, 111 highlightShift; maps 112-120 (tint, diffuse, opacity, ior, glossiness, softness, colorless glossiness, highlight shift, bump), each switched on by its id + 9, amounts at its id + 18 (fractions; MAXScript shows percent but for bump); 141 melanin, 142 pheomelanin, 143 randomizeMelanin, maps 144 / 145 (switches 146 / 147, amounts 148 / 149); 150 colorlessSpecular, 151 coloredSpecular, 152 transmission (maps 153-155, switches 156-158, amounts 159-161); 162 glintStrength (163 / 164 / 165); 166 giSimplification |
 | CoronaVolumeMtl `(0x39874782, 0x378CDE97)` | 101 absorptionDist (world units; 0 off), 102 absorptionColor, 201 emissionDist, 202 emissionColor, 203 scatteringColor, 204 scatteringDirectionality, 205 / 207 scattering map (on), 206 / 208 absorption map (on), 209 singleBounce, 210 / 211 emission map (on), 212 mappingMode, 213 stepSize, 214 allowMixing, 215 alphaMode |
+| CoronaPhysicalMtl and CoronaLegacyMtl media (maxdrop-em3.163) | CoronaPhysicalMtl: 262 / 263 volumetricAbsorptionTexmap (on), 264 its amount, 272 / 273 volumetricScatteringTexmap (on), 274 its amount, 282 scatterDirectionality, 283 scatterSingleBounce. CoronaLegacyMtl: 215 scatterColor, 216 scatterDirectionality, 305 / 306 / 307 absorption map (on, amount), 308 / 309 / 310 scatter map (on, amount), 315 singleBounceOnly, 427 mediaMode (1 volumetric, the default) |
 | CoronaShadowCatcherMtl `(0x398ACEAD, 0xACDC3625)` | 301 backplateColor, 302 / 360 backplateTexmap (on), 303 alphaMode, 304 shadowAmount, 306 reflectLevel, 307 colorReflect, 308 reflectIor, 309 reflectGlossiness, 310 projectionMode, 311 preserveAspectRatio, 312 useEnviroOffscreen, 313 offscreenColor, 350 / 361 offscreen map, 351 / 362 Fresnel IOR map, 352 / 363 glossiness map, 353 / 364 bump (355 bumpAmount), 354 / 365 reflection color map, 356 projectReflectionMaps, 357 legacyReflect, 358 legacyEnable |
 | CoronaScannedMtl `(0x766665AA, 0x448ADEBB)` | 0 filename (the `.ctf` file), 1 twoSided, 7 tilingFactor, 10-19 filter and paint colors, 20 gamma, 21 saturation, 40-48 clear coat, 64 alphaMode; its uvgen a nameless part at slot 1 |
 | CoronaSlicerMtl `(0x90ACB313, 0x394847CD)` | 500 capMaterial, 501 capMtlOn, 502 createCaps, 503 excludeList (node table), 504 excludeListIncludeMode |
-| CoronaRaySwitchMtl `(0x6816116A, 0xABE651DE)` | 1600 giMtl, 1601 reflectMtl, 1602 refractMtl, 1603 directMtl, 1610-1613 their switches |
+| CoronaRaySwitchMtl `(0x6816116A, 0xABE651DE)` | 1600 giMtl, 1601 reflectMtl, 1602 refractMtl, 1603 directMtl, 1610-1613 their switches; Corona 12 renders nothing to the camera (alpha 0) for a directMtl empty or switched off, whatever giMtl holds (maxdrop-6n0.6.4) |
 | CoronaSelectMtl `(0xC74E9F94, 0xC319F213)` | 311 mtlCount, 312 materials (table), 313 selected (zero-based: its default is 0) |
 | CoronaLightMtl `(0x53B7717A, 0x500D5093)` | 110 intensity, 111 texmap, 112 texmapOn, 113 color, 150 opacityTexmap, 151 opacityTexmapOn, 168 twosidedEmission |
 | CoronaBitmap `(0xABBA5784, 0x65484244)` | 101 filename (asset), 103 uvwChannel, 105 uvwScale, 106 uvwOffset (point3), 107 filteringBlur, 108 / 109 tilingU / V (0 none, 1 repeat, 2 mirror), 114 realWorldScale, 117 monoChannelOutput, 118 rgbChannelOutput (1 alpha as gray), 119 clippingOn, 120 clippingMode (0 crop, 1 place), 121-124 clipping u, v, width, height, 125 gamma (-1 automatic), 129 wAngle (radians), 130 uAngle (the U offset times 2 pi, kept in step by Corona); its Output part at slot 1 |
@@ -1908,7 +2232,18 @@ above (maxdrop-em3.161): Blender's Mix types for them clamp to 0..1 (exclusion f
 bottom of 0 at 0 under a top of 1. Vector Math's Divide gives 0 for a divisor of 0, so burn is max(0, nz - (1 - a) / b)
 and dodge 1 - max(0, nz - a / (1 - b)), nz = ceil(min(|divisor|, 1)), 0 for a divisor of 0. Checked by a Cycles
 emission bake against `texmaps.blend_value` (every operation, both modes, layers -0.5 to 3, exactly 0 and 1 too).
-The gamma operation over a bottom map draws a ColorCorrect gamma: a negative channel of that map stays negative.
+The gamma operation over a bottom map draws a ColorCorrect gamma; in sRGB mode with a Vector Math ABSOLUTE before
+its Gamma node (`ColorCorrect.magnitude`), as Corona raises a negative bottom map's magnitude too (maxdrop-6n0.6.40,
+renderMap: a flat 64 / 128 / 192 CoronaBitmap under a 128 top swatch gives 0.015595, 0.125628, 0.425696, gamma on
+and off alike, and the same with multiplierBottom -1; the exponent 0.7310 is the top as stored, (128 / 255)^(1 /
+2.2), pinned by the fixture box FixtureCoronaMixGammaGrey). In linear mode a negative bottom gives no number in
+Corona (NaN, shown 0); MaxDrop leaves it negative.
+A Mix node's color input clamps its own value at 0: a constant layer below 0 goes in through a Combine XYZ node.
+So does every Mix node's (maxdrop-6n0.6.26: Mix maps, CoronaMix mix and multiply, RGB Multiply, Composite layers) and
+an RGB node standing for a constant (`_Tree.socket`); a Cycles emission bake of a Mix (0.5) and a Multiply of a white
+image with a constant side of -0.5 gives 0.25 and -0.5 (was 0.5 and 0, the constant taken as 0). The other users
+of that stand-in (Color Correction, an Output or RGB Tint over a constant, a normal map's constant color) now get
+the negative value too, where they got 0: not measured against a renderer.
 
 Corona 12 renders (maxdrop-em3.115): `3dsmaxbatch`, CoronaRenderer with tone mapping off (`colorMap_enabled`) and a
 pass and a time limit, read with `getPixels ... linear:true` (a CoronaLightMtl patch at 0.5 / 1.0 reads 0.49999 /
@@ -1924,8 +2259,10 @@ pass and a time limit, read with `getPixels ... linear:true` (a CoronaLightMtl p
   specular level, F0 = 0.08 x level (0.5 is F0 0.04, IOR 1.5), and the file stores the level (MAXScript's setter
   converts both on a mode change: set the mode before the values); 2 renders as an IOR (not a mode the UI offers).
   No base IOR reflects more than F0 0.25 (IOR 3: an IOR of 4 or 10 and a specular of 4 all give 0.25), and an IOR
-  below 1 reflects as its reciprocal (0.5 as 2); MaxDrop caps only the specular levels (an IOR below 1 is clamped
-  to 1). The renderer's `defautIorMode` (Corona's spelling) only picks a new material's mode.
+  below 1 reflects as its reciprocal (0.5 as 2); MaxDrop takes the base IOR of a material that does not refract so
+  (maxdrop-6n0.6.22) and keeps a refracting one's (clamped to 1..100, named outside 1..3: its refraction through such
+  an IOR was not measured), the clearcoat IOR as it is. The renderer's `defautIorMode` (Corona's spelling) only picks
+  a new material's mode.
 - CoronaPhysicalMtl edgeColor (161) on a metal (spheres under a white background, roughness 0, read along a row):
   per channel, a white edge brightens the grazing reflection above Schlick's and a black one darkens it (base 230 /
   153 / 77 at 82 degrees: Schlick 0.947 / 0.785 / 0.625; edge black 0.741 / 0.513 / 0.521, the default 0.75 0.938 /
@@ -1944,6 +2281,103 @@ pass and a time limit, read with `getPixels ... linear:true` (a CoronaLightMtl p
   0.4555, 0.386, 0.324, 0.272, 0.2295, 0.1945, 0.165, 0.140, 0.1185, 0.099, 0.082, 0.0665, 0.051, 0.035, 0
   (`materials.CORONA_LEGACY_GLOSS`). From 0.35 up the profiles agree (log rms 0.005 to 0.02, 0.038 at 0.85); below
   0.3 no PBR-mode glossiness gives the same lobe (log rms 0.05 at 0.3, 0.24 at 0): the closest one.
+
+Corona 12 media (maxdrop-em3.163; `3dsmaxbatch`, tone mapping off, the gamma off, read with `getPixels ... linear:true`,
+the swatch's 0-255 value / 255 rendered as the linear color: MaxDrop decodes a gamma-off swatch from sRGB as every
+other color, so the numbers below are in the renderer's space). Boxes 30 x 30 x h world units over a CoronaLightMtl
+plane of intensity 1 in a black environment, an orthographic camera looking down through them, and in a white
+furnace:
+
+- Absorption (CoronaVolumeMtl, and CoronaPhysicalMtl and CoronaLegacyMtl refracting at IOR 1: the same numbers):
+  the transmission is the absorption color at the distance and color^(h / distance) for a grey at every thickness
+  (128 grey at distance 10, h 1 / 2.5 / 5 / 7.5 / 10 / 15 / 20 / 30 / 40: 0.93339, 0.84172, 0.70849, 0.59634, 0.50195,
+  0.35563, 0.25196, 0.12647, 0.06348; distance 20 at h 20 and 40 as distance 10 at 10 and 20; stepSize 0.1 the
+  same). A tinted color couples its channels a little away from its distance (204 / 128 / 51 at distance 10: h 5
+  0.899 / 0.714 / 0.455 for 0.894 / 0.709 / 0.447, h 20 0.614 / 0.238 / 0.030 for 0.640 / 0.252 / 0.040; the law
+  applied in AP1 or Rec. 2020 primaries does not fit either). MaxDrop uses the per-channel law, exact at the distance.
+- Scattering: the scattering color is the albedo of the extinction the absorption makes. Absorption white, or its
+  distance 0, and nothing scatters (the box is invisible); absorption 128 grey with scattering white gives 0.997 in
+  the furnace. So per channel sigma_t = -ln(absorption color) / distance, sigma_s = scattering color x sigma_t,
+  sigma_a the rest; the directionality is a Henyey-Greenstein g. Over the emitter at h 10 (absorption 128 grey,
+  distance 10): scattering white 0.683 (0.674 in a second render), 128 grey 0.570, white with directionality 0.6 /
+  -0.6 0.863 / 0.6075, single bounce on 0.598; in the furnace: white 0.997, 128 grey 0.6775, 128 grey at 0.6 0.691.
+- Emission: its color over its distance per unit length, absorbed as any light (255 / 128 / 64 at distance 10, no
+  absorption: h 5 0.5 / 0.251 / 0.125, h 10 1.0 / 0.502 / 0.251; distance 20 at h 10 half; with absorption 128 grey
+  at distance 10: h 10 0.7226 / 0.3627 / 0.1814, e / sigma (1 - e^(-sigma h))). Distance 0: none.
+- CoronaVolumeMtl renders no surface (1.0 over the emitter and in the furnace with everything off).
+- No medium in thin mode (CoronaPhysicalMtl useThinMode, CoronaLegacyMtl thin: 1.0 through the slab), and a
+  CoronaLegacyMtl in mediaMode 0 renders the slab black. A CoronaPhysicalMtl at refraction 0.5 lets about 0.25 x the
+  absorbed color through (0.2205 / 0.1288 / 0.0497): the medium whatever the amount.
+
+Cycles (Blender 5.2, 256 samples, Volume Bounces and Max Bounces 64) with the same slabs, the coefficients per meter on
+a Volume Scatter (density the largest sigma_s, color each channel's share), a Volume Absorption (density the largest
+sigma_a, color 1 - the share) and an Emission (strength 1 / distance) on the Volume socket: absorption and emission
+exact; scattering white 0.681, 128 grey 0.566, directionality 0.6 / -0.6 0.868 / 0.603; furnace 0.992, 0.677, 0.692.
+Blender's default Volume Bounces of 0 scatters once (as Corona's single bounce): MaxDrop does not change it. An unlinked Surface with nothing
+on the Volume socket renders black there: a volume-only material keeps its Principled BSDF at Alpha 0.
+Since maxdrop-6n0.6.29 that holds only without a medium. With one on Volume, a volume-only material (alpha 0, no
+alpha map, no layers) leaves Surface unlinked: an Alpha-0 Principled BSDF spends two of Cycles' 8 transparent bounces
+per box (Blender 4.2.23 and 5.2, 20 m boxes over an emitter of 1: one box 1.0, six or twelve stacked 0.0 in Cycles,
+EEVEE 1.0), the unlinked Surface 1.0 at any count, and a camera inside an absorbing box (0.05 / m, 19.5 m) reads 0.379
+both ways in Cycles and EEVEE (e^-0.975 = 0.377). Its viewport color is 0.1 opaque, so Solid view shows the scene in
+it. The em3.163 scattering slab (128 grey at 10, scattering white, h 10, the emitter the slab's footprint) renders
+0.601 at Volume Bounces 0 (Corona single bounce 0.598) and 0.678 at 64 (Corona 0.683): the import names a medium that
+scatters in the report and leaves the setting as it is (owner, 2026-11-24), but one with single bounce on, which
+Blender's default renders as Corona does.
+
+Corona 12 CoronaHairMtl on a mesh (maxdrop-em3.164; `3dsmaxbatch`, tone mapping off, the gamma off, read with
+`getPixels ... linear:true` as a mean of 31 x 31 pixels, the swatch's 0-255 value / 255 rendered as the linear color as
+for the media above). Planes 40 x 40 in a white furnace (white environment, no light: 1.0 everywhere), seen from the
+top by an orthographic camera:
+
+- Every channel reads R + P0 x exp(-u): R = 0.070, the colorless specular (colorlessSpecular black removes it:
+  melanin 0 then 0.929, melanin 1 0.011 / 0 / 0), P0 = 0.929. A plane turned 90 degrees about its normal reads the
+  same, one tilted 60 degrees 1% darker. The default (melanin 0.5) reads 0.396 / 0.232 / 0.099; melanin 0, 0.1 ...
+  1 at pheomelanin 0: 0.995, 0.961 / 0.937 / 0.881, 0.858 / 0.775 / 0.613, 0.710 / 0.567 / 0.348, 0.548 / 0.375 /
+  0.178, 0.396 / 0.232 / 0.099, 0.272 / 0.144 / 0.074, 0.184 / 0.098 / 0.069, 0.128 / 0.079 / 0.069, 0.097 / 0.072
+  / 0.070, 0.081 / 0.070 / 0.070; at pheomelanin 1: 0.995, 0.983 / 0.964 / 0.908, 0.934 / 0.862 / 0.684, 0.857 /
+  0.715 / 0.436, 0.761 / 0.551 / 0.244, 0.651 / 0.398 / 0.133, 0.535 / 0.274 / 0.083, 0.424 / 0.184 / 0.067, 0.326
+  / 0.127 / 0.065, 0.245 / 0.095 / 0.066, 0.183 / 0.079 / 0.068.
+- u has the channel shape of the absorption Blender's Principled Hair BSDF uses (Cycles' eumelanin 0.506 / 0.841 /
+  1.653, ratios 1 : 1.66 : 3.27, read 1 : 1.67 : 3.25; pheomelanin 0.343 / 0.733 / 1.924, 1 : 2.14 : 5.61, read
+  1 : 2.2 : 5.7), the same at every melanin. Pheomelanin is the share of the melanin that is red, as Blender's
+  Melanin Redness (melanin 0 with pheomelanin 0.6 reads as melanin 0; u mixes linearly in it), but Corona's absorbs
+  0.685 x Cycles' coefficients. Fit: u = (7.68 m^2 + 1.2 m^3) x ((1 - p) eumelanin + 0.685 p pheomelanin), largest
+  error 0.009 over both sweeps; nine held-out mixes (pheomelanin 0.2 ... 0.8, melanin 0.3 ... 0.8) within 0.006
+  (`materials.hair_color`). Not the color Principled Hair's parametrization gives the same melanin (0.031 / 0.011 /
+  0.002 at the default).
+- Tint (colorTint x levelTint): a grey t adds 0.054 ln(t)^2 to u (0.25: 0.837, 0.5: 0.905 of 0.929; black: the
+  floor only). A CoronaColor in the tint slot renders as the same swatch would (melanin 0, 204 / 128 / 51: 0.995 /
+  0.981 / 0.887, not 0.8 / 0.5 / 0.2), added to the melanin's u at any melanin.
+- Diffuse (colorDiffuse x levelDiffuse): a grey d gives d + (1 - d) x the hair, exactly (0.5 at melanin 0.5: 0.699 /
+  0.617 / 0.551; 0.25 by levelDiffuse 0.5: 0.551 / 0.427 / 0.328; 0.25 at melanin 0.8: 0.350 / 0.313 / 0.305). A
+  colored d weighs the hair less than 1 - its mean: 204 / 128 / 51 by 0.32 at melanin 0.5 (0.926 / 0.576 / 0.232)
+  and 0.39 at 0.8, pure red by 0.39, pure blue by 0.09, 51 / 128 / 204 by about 0.25; MaxDrop uses 1 - its largest
+  channel.
+- Transmission color: multiplies the hair's TT part (0.5 grey: melanin 0.5 0.237 / 0.152 / 0.085, melanin 0 0.567;
+  255 / 128 / 64 at melanin 0: 0.996 / 0.568 / 0.350; black: 0.078 / 0.072 / 0.070 at melanin 0.5). Colored specular
+  black: 0.945 at melanin 0 (TRT is small on a plane). IOR 1.3 / 2.0: 0.398 / 0.223 / 0.074 and 0.412 / 0.267 /
+  0.156 (the floor and the transmitted part both move). Glossiness 0.2 / 0.9, softness 0 / 0.5, colorless
+  glossiness 0.5 / 1, highlight shift 0 / 5 and GI simplification 0: within 0.01 of the default (no change of
+  the furnace albedo; a lit highlight was not compared). Glint strength 1: 0.433 / 0.278 / 0.149 (0: 0.396 / 0.234 / 0.103); randomizeMelanin 0.5: 0.447 /
+  0.368 / 0.293.
+- Hair and Fur strands (maxdrop-6n0.6.30): Corona 12 does not shade them with a CoronaHairMtl. Strands grown on a
+  plane whose own faces are black (a window mean of 0.027 without the modifier), tip and root colors white, seen
+  from the side in the furnace, read 0.494 with or without a Hair and Fur render effect and in each of its
+  `hairMode` values (0, 1, 2). They take Hair and Fur's own tip and root colors (red: 0.685 / 0.098 / 0.026, grey
+  128: 0.424), not the growth object's material: a Multi/Sub whose sub-material at the strands' MaterialGeomMtlID
+  is a red CoronaLightMtl, a CoronaHairMtl at melanin 0 or one at melanin 1 reads 0.494 alike. MAXScript refuses
+  `MR_Shader` set to a CoronaColor or a CoronaHairMtl (an exception; an access violation in em3.164). A Corona
+  forum answer of 2016 points to instanced geometry with a material of its own instead (a mesh: the rule above).
+  An earlier end-on view followed the melanin only because its window held the growth plane, which carried the
+  material.
+
+Cycles (Blender 5.2, 256 samples) with the same planes: a Principled BSDF at IOR 1.55, roughness 0.5 reads 0.043 +
+0.957 x its base color in that furnace. MaxDrop's base (0.070 + 0.929 x hair - 0.043) / 0.957 reads Corona's numbers
+within 0.009 over the sweeps, the tints, a grey diffuse and a 0.5 grey transmission at melanin 0.5; a colored diffuse
+(204 / 128 / 51: 0.879 / 0.561 / 0.246 for 0.926 / 0.576 / 0.232) and a transmission color at melanin 0 (0.5 grey:
+0.535 for 0.567; 255 / 128 / 64: 0.535 / 0.302 for 0.568 / 0.350 in green and blue: the rule scales the TRT part too)
+within 0.05. Other IORs were not checked in the furnace (Corona's floor and the Principled's both rise with the IOR).
 
 VRayBitmap `(0x6769144B, 0x02C1017D)` (vray_texmaps, 3ds Max 2020 + V-Ray 5.2; the V-Ray SDK's
 `pb2vrayhdri.h`). MAXScript's `VRayHDRI`, its name before V-Ray 5, is the same class. References: 0 block 0, 1
@@ -2075,15 +2509,16 @@ Not shown by any fixture yet, so not stated above:
   revolution (1 + dot from 5e-7 to 1e-3), between two Smooth Rotation keys opposite quaternions or controls (3ds Max
   stored none: linear, an issue each); the bare Euler orders 1 to 5 and 100 (read as the SDK numbers
   them: 1 = XZY ... 5 = ZYX, 100 = XYZ); the Euler orders 106 to 108 (an issue).
-- Shown by probes (maxdrop-em3.144, 3ds Max 2020), not read yet: parameter 1 of a list's block is Average (an `i32`,
-  1 when on): a Position and a Scale List then divide the weighted sum by the weights' sum (50 % and 100 %:
-  `[0.667, 12, 11.33]` from `[10, 20, 30]` and `[-4, 8, 2]`), a Rotation List with it gave the later entry alone
-  (30 deg about X at 50 %, 80 deg about Z at 100 %: 80 deg about Z), rule not known; a Scale List entry of a weight
-  below 1 along a turned axis is not `I + (S - I) * weight` (0.48 off at 60 % and 30 %); the out-of-range types are
-  a chunk `0x8499` of 30 bytes beside the keys, and cycle, loop, ping pong, linear and relative repeat give other
-  values than the constant one taken (keys at 10, 30, 50: 12.5, 12.5, 10, -10, 7.5 at frame 0 instead of 0); a
-  Linear tangent beside a custom key stores a tangent 3ds Max does not draw with (1.5 off; the slope to the
-  neighbouring key is 2e-2 off).
+- Controllers the probes of maxdrop-6n0.6.12 left open (3ds Max 2020): a Scale List weight other than 100 % after an
+  entry along a turned axis, and a Scale List average of turned scales (no rule tried fits: an issue each); Loop
+  that reads a time outside the keys over a range moved off them other than wider on both sides (Loop on one side
+  only, a range shifted past a key), and the types switched off beside a moved range (not probed: as Cycle and
+  Constant, an issue); MAXScript's #identity type (0: the controller reads zero; an issue); an animated or
+  unreadable Average switch (read as off, no issue) and an animated weight of a list with Average on (not probed:
+  read as the stored ones).
+  A file saved by a script that never evaluated a Bezier controller after its keys changed keeps stale smooth and
+  auto tangents (a smooth key read as flat, 0.31 off at frame 0 in a dry run); 3ds Max computes them on evaluation,
+  so a file saved from the user interface holds current ones, and the fixtures evaluate every node before saving.
 - The Falloff mix curve in other formats ([The Falloff mix curve](#the-falloff-mix-curve); maxdrop-em3.130), seen
   only in files not committed: falloff_curve's script saved by 3ds Max 2020 as 2017, 2018 and 2019 (formats 19000,
   20000, 21000) stores every curve as its 3ds Max 2020 file does (`0x2035`, `0x204B` (not decoded), `0x1000`, one

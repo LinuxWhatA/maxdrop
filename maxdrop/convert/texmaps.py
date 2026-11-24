@@ -22,7 +22,8 @@ Image (None: automatic, sRGB; 1.0 for an EXR or HDR file): with the gamma on its
 input gamma (colors.Swatches.file_in); with the gamma off none, whatever its override, as 3ds Max reads the image as
 stored then (maxdrop-em3.38), an EXR or HDR file too (the display-referred scene shows it decoded; maxdrop-em3.123).
 A VRayBitmap's own decode on a color input or a mask is shown decoded once more with the gamma off (_shown,
-maxdrop-em3.123; CoronaBitmap's is not: a Corona render is not measured, maxdrop-em3.165).
+maxdrop-em3.123), and so is a CoronaBitmap's, and CoronaColor's HDR color (Corona 12 renders, maxdrop-em3.165: Corona
+holds them, and a swatch as stored, the same with the gamma on and off).
 The color space (colorspace): a gamma of 2.2 is sRGB, any other Linear Rec.709 (sRGB
 primaries: Blender converts them into the scene's working space; the builder falls back to Non-Color where the color
 space is missing) and the builder applies the gamma (1.0: none), on every input alike; on any but a COLOR input an
@@ -35,32 +36,49 @@ except that V-Ray reads a VRayBitmap below a normal map as stored whatever its t
 nothing with it off. A 128 grey PNG as glossiness, opacity or a mask renders 0.2195 with the gamma on (Bitmap auto or
 2.2, CoronaBitmap auto, VRayBitmap From 3ds Max), 0.502 with it off (Bitmap whatever its override; CoronaBitmap and
 VRayBitmap sRGB keep their curve: 0.2195, 0.2159).
+With the gamma off an image read as stored as a mask in a color graph is the mean of its stored pixel, decoded
+(_stored_mask; V-Ray 5.2, maxdrop-6n0.6.36): a (200, 100, 50) PNG 0.4575 internal, not the mean of its decoded channels.
 Constants are linear, a swatch made so by the scene's swatch rule (convert/colors.py: linear with the gamma on, the
 sRGB curve with it off): in a COLOR graph always linear RGB (also when the input itself is a float, as specular and
 transmission are: the builder takes the mean of the graph's color there, the measure materials.py uses); in a MASK
 graph a float, the scene's rule applied to the mean of the swatch (V-Ray 5.2 renders a red mask as 1 / 3 before any
 gamma; TexmapConverter._swatch); in a DATA or BUMP graph the mean of the swatch as stored, whatever the gamma (a grey
-64 VRayColor renders glossiness 0.251 in both modes); the mean of the color for one that is linear already
-(CoronaColor's HDR color; its temperature with the gamma on). In a NORMAL graph, and below a wrapper that works on
+64 VRayColor renders glossiness 0.251 in both modes); the mean of the color for one that is not a swatch
+(CoronaColor's HDR color, decoded on a mask with the gamma off; its temperature with the gamma on). In a NORMAL graph, and below a wrapper that works on
 color (an RGB Tint other than the identity, an Output part that changes anything, a Color Correction) in a DATA or
 BUMP graph (the kinds DATA_RGB and BUMP_RGB, rgb_kind), a swatch keeps its three channels as stored, and so do the
 Tint's rows, the mean taken at the float input by the builder (maxdrop-em3.128). Measured: an empty RGB Tint of rows
 128 / 64 / 32 renders 0.293 on opacity with the gamma off, the mean of the tinted white with the rows as stored
 (maxdrop-em3.76); that a colored constant keeps its color below the wrapper, Color Correction, and the rows in a
 normal input are assumed by the same rule. Images and masks below such a wrapper are as in DATA / BUMP (base_kind;
-which output the wrapper asks an image for is not measured); a MASK graph keeps its rule of the mean below a wrapper
-too (maxdrop-6n0.6.2).
+which output the wrapper asks an image for is not measured). In a MASK graph an RGB Tint or an Output part takes its
+map as the color V-Ray holds (COLOR with the gamma on, STORED with it off: _wrapper_input) and the mask is the mean of
+its output, decoded after the mean with the gamma off (_mask_mean; V-Ray 5.2 renders, maxdrop-6n0.6.2: rows 128 / 64 /
+32 over a VRayColor (200, 100, 50) mask 0.1722 in both modes; assumed for Corona, a Corona layer mask and a Diffuse
+Level map, which are MASK graphs too); an image there takes its RGB output's alpha rule, as in a color graph (not
+measured). A Color Correction in a mask does the same (maxdrop-6n0.6.18: brightness 20 over a VRayColor 128 0.702 in
+both modes; saturation -50 over that VRayColor 0.4739, the mean of the HSL saturation the builder draws).
 With the gamma off V-Ray computes a Mix or Composite on the stored values (DISPLAY_MIXES; V-Ray 5.2 renders,
 maxdrop-em3.158): its internal value is the one the gamma on gives (a Mix of greys 40 and 220 at 50 % renders 0.510,
 by a 0.502 mask 0.511, a Composite of 64 + 64 in Addition 0.502), which the display-referred scene shows decoded
 (0.223, 0.225, 0.216 linear). Such a map at a color root is converted in the kind STORED (a swatch as stored, an
-image by its own decode, a Bitmap or a VRayBitmap From 3ds Max as stored, a mask DATA; a CoronaBitmap and the HDR
-color encoded so they show as at a color root, maxdrop-em3.165), every map below it too, under one Decode (drawn as
+image by its own decode, a Bitmap or a VRayBitmap From 3ds Max as stored, a mask DATA; CoronaColor's HDR color as
+stored), every map below it too, under one Decode (drawn as
 a power of 2.2, within 0.009 of the sRGB curve on 0..1; a constant, or a Mix of constants, folded exactly; a lone
 image, a peel, is its map again as a color). A Mix between its colors black and white stays a Mix of decoded colors
 by a decoded mask or amount (exact: maxdrop-em3.36). An RGB Multiply at a color root is left as it is: the decoded
-product is within 0.005 of V-Ray's (128 x 128: 0.047 against 0.052). Falloff, CoronaMix, the wrappers and a slot's
-amount at a color root, and a Mix inside a mask, keep decoded values (not measured).
+product is within 0.005 of V-Ray's (128 x 128: 0.047 against 0.052). Corona 12 computes a Mix and a CoronaMix on
+the values it holds, the same with the gamma on and off (maxdrop-em3.165: a 50 % Mix of CoronaBitmaps 64 and 192
+renders 0.2917, a CoronaMix's operations their renderMap values): a CoronaMix is in DISPLAY_MIXES too. So are a
+Falloff, a Color Correction, an Output and an RGB Tint (V-Ray 5.2 renders, maxdrop-6n0.6.18, the same internal value
+in both modes: a Falloff of greys 40 / 220 at facing ratio 0.5 0.510, brightness 20 over 128 0.702, an Output's level
+0.5 over 200 0.392; Corona 12 alike): a Tint or an Output over a constant folded exactly. A slot's amount below 1 on a
+color input mixes the input's own value as stored with its map in STORED, under one Decode (a VRayMtl
+self-illumination of 40 with a VRayColor 220 at 50 % 0.510; a Standard's Diffuse Level other than 1 on its diffuse
+map, a scale, keeps the decoded mix, while _leveled's diffuse at level 1 takes the stored one: neither measured with
+an amount; an amount of 0 is the value alone). Inside a mask such a mix (MASK_MIXES: a Mix, Composite, CoronaMix or Falloff, not
+black to white) is computed on the held values too, and the mask is the mean of it decoded (Decode mean; a Mix of greys
+40 / 220 at 50 % as a mask 0.510, shown 0.223).
 
 The graph's nodes (frozen dataclasses): Image (an image map: the file as the scene stores it, the one the texture lookup
 found, Mapping, Crop, TexOutput, color space, gamma, alpha), Constant, Invert, Decode (a gamma-off color mixed on
@@ -94,16 +112,18 @@ files, the map angle kept, a height map in a bump slot a Bump node instead of dr
   (V-Ray 5.2), From 3ds Max the image as stored, decoded as a Bitmap's.
   An environment mapping type (angular, cubic, spherical, mirrored ball), a map
   source, ACEScg primaries, RGB output intensity, an unusable transfer function or multiplier are issues.
-- CoronaColor -> Constant (color and hex as swatches, the HDR color linear, the temperature Corona's own linear
+- CoronaColor -> Constant (color and hex as swatches, the HDR color as stored, decoded with the gamma off on a color
+  input or mask, the temperature Corona's own linear
   color from CORONA_KELVIN, times the multiplier, decoded as a swatch with the gamma off). VRayColor -> Constant:
   its swatch times its RGB multiplier, then to the power of its color gamma (that order measured), made linear as a
   swatch; in temperature mode its color holds V-Ray's temperature color. Its alpha below 1, RGB primaries other
   than sRGB and unusable values are issues. CoronaMix: operation mix -> Mix(bottom, top, amount, mask), multiply ->
   Multiply, add, subtract, divide, min, max, difference, screen, overlay, color dodge, color burn, linear burn,
   linear light, hard light and exclusion -> Blend (in gamma 2.2 with mix in sRGB on, as Corona does: CM_BLENDS),
-  gamma over a grey top color -> ColorCorrect gamma, all under a Mix for an amount below 1 or a mask; soft light,
-  vivid light, pin light, hard mix (and gamma over another top) peeled to the first bitmap (an issue naming the
-  operation); each layer times its multiplier plus its offset (CM_OFFSET_SCALE), measured.
+  gamma over a grey top color (its own or a map that converts to a constant, decided on the converted layers) ->
+  ColorCorrect gamma (of a bottom map's magnitude in sRGB mode), all under a Mix for an amount below 1 or a mask; soft light, vivid light, pin light, hard mix
+  (and gamma over another top) peeled to the first bitmap (an issue naming the operation); each layer times its
+  multiplier plus its offset (CM_OFFSET_SCALE), measured.
 - Kept as nodes (the allow-list): Mix (color 1 / 2 where a map is off or missing, the mask, the mix amount; Use
   Curve as mix_factor: folded into the mix amount, over a mask a Smoothstep), RGB Multiply, Color Correction (its
   rewiring first: monochrome, invert or custom channels, an alpha source drawn as one or zero, an issue; hue shift
@@ -140,7 +160,7 @@ files, the map angle kept, a height map in a bump slot a Bump node instead of dr
   leaves the mix amount, a lost Composite layer is left out (both approximations); a normal map class keeps its
   other map.
 - The slot itself: a glossiness map feeding roughness (MapRef.invert) is under an Invert; a MapRef.scale other than 1
-  (Standard's Diffuse Level) multiplies the map; a slot amount below 1 mixes
+  (Standard's Diffuse Level, a Fresnel-off VRayMtl's metalness) multiplies the map; a slot amount below 1 mixes
   the input's value with the map (Mix(Constant(value), map, amount)), above 1 multiplies the map; in a bump input the
   amount is the Bump's strength, in a normal input it scales the NormalMap's strengths. A Standard material's
   Diffuse Level map (materials.DiffuseLevel) makes the base color graph Multiply(the diffuse at level 1, a Tint of
@@ -155,6 +175,7 @@ reader/materials.py (placement, output_invert, bitmap_gamma, mix_curve); what th
 mathutils.
 """
 import collections
+import contextlib
 import dataclasses
 import math
 
@@ -174,9 +195,9 @@ FLOATS = (DATA, MASK)  # the kinds a map gives one number to: its mono output
 DATA_RGB, BUMP_RGB = "data rgb", "bump rgb"
 _RGB_KINDS = {DATA: DATA_RGB, BUMP: BUMP_RGB}
 _BASE_KINDS = {v: k for k, v in _RGB_KINDS.items()}
-# A map V-Ray computes on stored values in a gamma-off scene (DISPLAY_MIXES) at a color root, and every map below it:
-# a color as V-Ray holds it there (swatches as stored, images by their own decode, a Bitmap as stored), which the
-# display-referred scene shows decoded (the Decode above it).
+# A map V-Ray or Corona computes on stored values in a gamma-off scene (DISPLAY_MIXES) at a color root, and every map
+# below it: a color as the renderer holds it there (swatches as stored, images by their own decode, a Bitmap as stored,
+# CoronaColor's HDR color as stored), which the display-referred scene shows decoded (the Decode above it).
 STORED = "stored"
 STORED_RGB = (DATA_RGB, BUMP_RGB, NORMAL, STORED)  # the kinds whose swatch is its three channels as stored
 _AS_STORED = (DATA, NORMAL, BUMP, STORED)  # the kinds that take an image read as stored as it is (colorspace)
@@ -262,10 +283,11 @@ BLEND_OPS = (BLEND_ADD, BLEND_SUBTRACT, BLEND_DIVIDE, BLEND_MIN, BLEND_MAX, BLEN
 # renderMap (maxdrop-em3.28, maxdrop-em3.117): 0 add, 1 subtract (bottom - top, at least 0), 3 divide (bottom /
 # top), 4 minimum, 5 maximum, 8 difference, 9 screen, 10 overlay, 11 color dodge, 12 color burn, 13 linear burn, 14
 # linear light, 16 hard light, 20 exclusion (Blend's formulas, Corona's own). 7 gamma is bottom^(1 / top) (drawn
-# only for a grey top that is its color: _corona_gamma_exponent); 15 soft light (Photoshop's, not Blender's), 17 vivid
-# light, 18 pin light and 19 hard mix have no node (peeled). mixInSRgb (on by default) runs the operation on
-# |layer|^(1 / 2.2) and raises the magnitude of the result to 2.2 (linear light: black over black renders white);
-# multiply, divide, min and max come out the same either way. The amount lerp is linear in both modes.
+# for a top that converts to a grey constant, or over a constant bottom: _gamma_layers); 15 soft light
+# (Photoshop's, not Blender's), 17 vivid light, 18 pin light and 19 hard mix have no node (peeled). mixInSRgb (on by
+# default) runs the operation on |layer|^(1 / 2.2) and raises the magnitude of the result to 2.2 (linear light: black
+# over black renders white); multiply, divide, min and max come out the same either way, a negative layer's sign kept
+# (renderMap P5), so they are not CM_GAMMA_OPS. The amount lerp is linear in both modes.
 CM_BLENDS = {0: BLEND_ADD, 1: BLEND_SUBTRACT, 3: BLEND_DIVIDE, 4: BLEND_MIN, 5: BLEND_MAX, 8: BLEND_DIFFERENCE,
              9: BLEND_SCREEN, 10: BLEND_OVERLAY, 11: BLEND_DODGE, 12: BLEND_BURN, 13: BLEND_LINEAR_BURN,
              14: BLEND_LINEAR_LIGHT, 16: BLEND_HARD_LIGHT, 20: BLEND_EXCLUSION}
@@ -367,8 +389,8 @@ class Image:
     FileAssetMetaData3's); found: the textures.Found of the lookup, None without a lookup or when the file was not
     found; gamma: the gamma 3ds Max reads it with in this scene (linear = pixel ^ gamma: its override, or the file
     input gamma), None for automatic (sRGB; 1.0 for an EXR or HDR file); with the gamma off on a color input or a
-    mask the one the display-referred scene shows it with (None, sRGB, for an image read as stored; _shown; a
-    CoronaBitmap keeps its own, Corona not measured); 1.0 for a VRayBitmap below a normal map (read as stored), its
+    mask the one the display-referred scene shows it with (None, sRGB, for an image read as stored; _shown, a
+    CoronaBitmap's too); 1.0 for a VRayBitmap below a normal map (read as stored), its
     decode over 2.2 below a CoronaNormal that adds gamma (_add_gamma); alpha: the image's alpha is used, not its
     color."""
     index: int
@@ -398,8 +420,10 @@ class Invert:
 @dataclasses.dataclass(frozen=True)
 class Decode:
     """A gamma-off scene's display-referred color (a graph of kind STORED) as linear, what the display shows of it:
-    the sRGB curve, drawn as a power of SRGB_GAMMA (a constant folded exactly)."""
+    the sRGB curve, drawn as a power of SRGB_GAMMA (a constant folded exactly). mean: the mean of the input's channels
+    through the exact sRGB curve, a float (an image read as stored as a gamma-off mask: _stored_mask)."""
     input: object
+    mean: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -436,7 +460,8 @@ class Blend:
 class ColorCorrect:
     """rewire: the source of the red, green and blue outputs (REWIRE_NONE: unchanged; codes as CC_REWIRE's), applied
     first; hue: shift in turns; saturation: factor (1 = unchanged); brightness, contrast: added fractions; gain:
-    factor; gamma: the advanced mode's (1 = none)."""
+    factor; gamma: the advanced mode's (1 = none); magnitude: the gamma takes each channel's magnitude, so a negative
+    one comes out positive (a CoronaMix gamma in sRGB mode, maxdrop-6n0.6.40), else a channel at or below 0 stays."""
     input: object
     rewire: tuple = REWIRE_NONE
     hue: float = 0.0
@@ -445,6 +470,7 @@ class ColorCorrect:
     contrast: float = 0.0
     gain: float = 1.0
     gamma: float = 1.0
+    magnitude: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -683,17 +709,9 @@ def _ref(m, pid, tab=0):
     return v.index if isinstance(v, pblock.Reference) else None
 
 
-def _old(part, index, default):
-    """A value of a part's old ParamBlock (slot order: the first one)."""
-    if part is None or not part.legacy:
-        return default
-    v = part.legacy[min(part.legacy)].get(index)
-    return float(v) if _finite(v) else default
-
-
 def rgb_kind(kind):
     """The kind of a color wrapper's input below a map of that kind: DATA_RGB in a data graph, BUMP_RGB in a height,
-    the kind itself elsewhere (a color, a normal; a mask keeps its rule of the mean)."""
+    the kind itself elsewhere (a color, a normal, a mask: see _wrapper_input for a Tint's or Output's in a mask)."""
     return _RGB_KINDS.get(kind, kind)
 
 
@@ -703,11 +721,9 @@ def base_kind(kind):
 
 
 def _linear(rgb, kind):
-    """A linear color (not a swatch) as a Constant of the input's kind: its channels in a color input and where a
-    swatch keeps its channels (STORED_RGB), else their mean. In STORED its channels encoded by the sRGB curve, so the
-    Decode above shows the color a color root shows (CoronaColor's HDR color: kept linear there, maxdrop-em3.165)."""
-    if kind == STORED:
-        return Constant(tuple(colors.linear_to_srgb(c) for c in rgb))
+    """A color as the renderer holds it (not a swatch) as a Constant of the input's kind: its channels in a color
+    input and where a swatch keeps its channels (STORED_RGB: in STORED the Decode above shows it decoded, as a
+    gamma-off color root does CoronaColor's HDR color, maxdrop-em3.165), else their mean."""
     return Constant(tuple(rgb) if kind == COLOR or kind in STORED_RGB else sum(rgb) / 3.0)
 
 
@@ -735,15 +751,28 @@ def _auto_gamma(gamma, name):
 def _shown(gamma):
     """The gamma Blender reads an image with when a gamma-off scene shows the map's own decode (gamma: linear =
     pixel ^ gamma; None: the sRGB curve) decoded once more, as V-Ray 5.2 shows a VRayBitmap and a float file there
-    (maxdrop-em3.123): 2.2 x its own (2.2 itself: sRGB, exact), SRGB_TWICE for the sRGB curve."""
+    (maxdrop-em3.123) and Corona 12 a CoronaBitmap (maxdrop-em3.165): 2.2 x its own (2.2 itself: sRGB, exact),
+    SRGB_TWICE for the sRGB curve."""
     return SRGB_TWICE if gamma is None else gamma * SRGB_GAMMA
 
 
+def _stored_mask(image, kind, stored):
+    """An image read as stored (a Bitmap, a VRayBitmap From 3ds Max, with the gamma off) as a mask in a color graph:
+    V-Ray mixes by the mean of the stored pixel, which the display-referred scene shows decoded (maxdrop-6n0.6.36,
+    measured in maxdrop-6n0.6.2: a (200, 100, 50) PNG renders 0.4575, shown 0.1768; the mean of the decoded channels
+    is 0.2456), so the image as stored (Non-Color) under a Decode of its mean through the exact sRGB curve, which
+    leaves a grey as the sRGB image gave it. An image whose mono output is its alpha stays as it is: Blender never
+    decodes an alpha (not measured)."""
+    if kind != MASK or not stored or image.alpha:
+        return image
+    return Decode(dataclasses.replace(image, colorspace=NON_COLOR), mean=True)
+
+
 def unshown(image):
-    """A Bitmap's or VRayBitmap's color Image made in a gamma-off scene with its own decode again (_shown undone;
-    None, an image read as stored, gives linear): for a float file lighting a scene, where the display decode of a
-    sun's values far above 1 lights it orders of magnitude too bright (convert.lights.dome_texture; measured in
-    maxdrop-em3.166)."""
+    """A Bitmap's, VRayBitmap's or CoronaBitmap's color Image made in a gamma-off scene with its own decode again
+    (_shown undone; None, an image read as stored, gives linear): for a float file lighting a scene, where the display
+    decode of a sun's values far above 1 lights it orders of magnitude too bright (convert.lights.dome_texture;
+    measured in maxdrop-em3.166 with V-Ray; a CoronaBitmap's alike, maxdrop-em3.165)."""
     g = image.gamma
     own = 1.0 if g is None else (None if abs(g - SRGB_TWICE) <= GAMMA_TOLERANCE else g / SRGB_GAMMA)
     return dataclasses.replace(image, gamma=own, colorspace=colorspace(COLOR, own))
@@ -765,12 +794,38 @@ class TexmapConverter:
     (reader.metadata's renderer class_id; None: not known), for the rules a renderer changes (corona)."""
 
     def __init__(self, graph, assets=None, textures=None, swatches=None, renderer=None):
-        self.graph, self.assets, self.textures = params.at_frame_zero(graph), assets, textures
+        self.graph, self.assets, self.textures = params.at_frame_zero(graph, self._heard), assets, textures
         self.swatches = swatches if swatches is not None else colors.of_graph(graph)
         self.corona = renderer is not None and tuple(renderer) == CORONA_RENDERER
         self.stats = TexmapStats()
         self._counted, self._done, self._reported = set(), {}, set()
         self._nodes, self._firsts = {}, {}  # keyed (object, kind, depth)
+        self._walks = []  # the walks being filled, innermost last: where a controller's line goes
+
+    def _heard(self, index, line):
+        """A line of a parameter read through its controller (params.frame_zero): the innermost walk's issue, which
+        it marks approximated (the value is one, or the default); stats only outside a walk."""
+        if self._walks:
+            self._walks[-1].approximated = True
+            self._issue(self._walks[-1], index, line)
+        else:
+            self.note(index, line)
+
+    @contextlib.contextmanager
+    def _into(self, walk):
+        """with self._into(walk): walk is the innermost one, where a controller's line goes."""
+        self._walks.append(walk)
+        try:
+            yield
+        finally:
+            self._walks.pop()
+
+    def _old(self, part, index, default, m, what):
+        """A float of a part's old ParamBlock (params.old_value: a controller's at frame 0 too), default when it has
+        none; a line goes under map m, what naming the part."""
+        heard = params.hearing(self._heard, m.index, "%r %s" % (m.name, what))
+        v = params.old_value(self.graph.scene, part, index, heard, number=True)
+        return float(v) if _finite(v) else default
 
     def _issue(self, walk, index, reason):
         self.note(index, reason)
@@ -800,10 +855,20 @@ class TexmapConverter:
         if key in self._done:
             return self._done[key]
         walk = _Walk()
-        root = self._node(ref.index, kind, walk, 0, ())
+        # a gamma-off color input mixed with its own value by an amount below 1: V-Ray mixes the stored values and the
+        # display-referred scene shows the result decoded (maxdrop-6n0.6.18), as a Mix at a color root; a scale (a
+        # Standard's Diffuse Level other than 1 on its diffuse map, a Fresnel-off VRayMtl's metalness, linear) keeps
+        # the decoded mix (not measured with an
+        # amount; _leveled's diffuse at level 1 takes the stored one); an amount of 0 is the value alone, exact
+        stored = (kind == COLOR and not self.swatches.linear and 0.0 < ref.amount < 1.0 and value is not None
+                  and ref.scale == 1.0)
+        root = self._node(ref.index, STORED if stored else kind, walk, 0, ())
         out = None
         if root is not None:
-            root = self._slot(root, ref, kind, value, walk)
+            if stored:
+                root = self._decoded(self._slot(root, ref, STORED, _stored_value(value), walk), walk, 0, ())
+            else:
+                root = self._slot(root, ref, kind, value, walk)
             if tree_size(root) > MAX_NODES:
                 image = first_image(root)
                 if image is not None and _has_decode(root):  # it may be in STORED: its map again as a color
@@ -833,14 +898,15 @@ class TexmapConverter:
             if isinstance(root, Bump):
                 return Bump(root.input, root.strength * amount)
             return NormalMap(root, amount)
-        if kind == COLOR and isinstance(value, (int, float)) and not isinstance(value, bool):
-            value = (float(value),) * 3  # a color graph is RGB throughout, also on a float input
+        rgb = kind in (COLOR, STORED)  # a color graph is RGB throughout, also on a float input
+        if rgb and isinstance(value, (int, float)) and not isinstance(value, bool):
+            value = (float(value),) * 3
         if ref.scale != 1.0:
-            root = Multiply(root, Constant((ref.scale,) * 3 if kind == COLOR else ref.scale))
+            root = Multiply(root, Constant((ref.scale,) * 3 if rgb else ref.scale))
         if amount < 1.0 and value is not None:
             return Mix(Constant(value), root, amount)
         if amount > 1.0:
-            return Multiply(root, Constant(amount if kind != COLOR else (amount,) * 3))
+            return Multiply(root, Constant((amount,) * 3 if rgb else amount))
         return root
 
     def _get(self, i, walk, depth, chain):
@@ -873,7 +939,8 @@ class TexmapConverter:
         hit = self._nodes.get(key)
         if hit is None:
             sub = _Walk()
-            node = self._convert_node(i, kind, sub, depth, chain)
+            with self._into(sub):
+                node = self._convert_node(i, kind, sub, depth, chain)
             hit = self._nodes[key] = (node, sub.approximated, tuple(sub.issues))
         walk.merge(hit[1], hit[2])
         return hit[0]
@@ -889,9 +956,15 @@ class TexmapConverter:
             return self._normal(m, NORMAL_MAPS[key], kind, walk, depth, chain)
         rule = _KEEP.get(key)
         if rule is not None:
-            if kind == COLOR and not self.swatches.linear and key in DISPLAY_MIXES and not _black_white(self, m):
-                return self._decoded(rule(self, m, STORED, walk, depth, chain), walk, depth, chain)
+            if not self.swatches.linear and ((kind == COLOR and key in DISPLAY_MIXES)
+                                             or (kind == MASK and key in MASK_MIXES)) and not _black_white(self, m):
+                node = rule(self, m, STORED, walk, depth, chain)
+                if kind == MASK:
+                    return self._decoded_mask(node, walk, depth, chain)
+                return self._decoded(node, walk, depth, chain)
             return rule(self, m, kind, walk, depth, chain)
+        if key == VRAY_DIRT and self.corona:  # what Corona 12 renders, not a peel (_vray_dirt)
+            return self._swatch(WHITE, kind)
         rule = _PEEL.get(key)
         if rule is not None:
             node = rule(self, m, kind, walk, depth, chain)
@@ -913,6 +986,20 @@ class TexmapConverter:
             return Constant(tuple(colors.srgb_to_linear(c) for c in value))
         return Decode(node)
 
+    def _decoded_mask(self, node, walk, depth, chain):
+        """A STORED node as a mask in a color graph of a gamma-off scene: V-Ray mixes by the mean of the value it
+        holds, which the display-referred scene shows decoded (maxdrop-6n0.6.18: a Mix of greys 40 / 220 at 50 % as
+        a mask renders 0.510 in both modes, shown 0.223), so the mean through the exact sRGB curve (Decode mean): a
+        constant (or a Mix of constants) folded, a lone image (a peel) its map converted again as a mask."""
+        if node is None:
+            return None
+        if isinstance(node, Image):
+            return self._node(node.index, MASK, walk, depth, chain) or node
+        value = _constant_value(node)
+        if value is not None:
+            return Constant(self.swatches.channel(sum(value) / 3.0))
+        return Decode(node, mean=True)
+
     def _peel_to_image(self, m, kind, walk, depth, chain, why):
         """The first image below map m, counted as a peel; None (unsupported, an issue) without one."""
         image = self._first_image(m, kind, walk, depth, chain)
@@ -931,7 +1018,8 @@ class TexmapConverter:
         if key not in self._firsts:
             self._firsts[key] = (None, False, ())  # a cycle back to here finds nothing
             sub = _Walk()
-            image = self._first_image_walk(m, kind, sub, depth, chain)
+            with self._into(sub):
+                image = self._first_image_walk(m, kind, sub, depth, chain)
             self._firsts[key] = (image, sub.approximated, tuple(sub.issues))
         image, approximated, issues = self._firsts[key]
         walk.merge(approximated, issues)
@@ -1018,7 +1106,7 @@ class TexmapConverter:
         if key == classids.CORONA_BITMAP:
             return self._corona_image(m, kind, walk, entry, found, out)
         uv = next((p for _s, p in sorted(m.parts.items()) if p.superclass == classids.SC_UVGEN), None)
-        mapping = self._mapping(uv)
+        mapping = self._mapping(uv, m)
         if key == classids.VRAY_BITMAP:
             return self._vray_image(m, kind, walk, entry, found, out, mapping)
         self._placement_issues(m, walk, "Bitmap", mapping)
@@ -1029,8 +1117,9 @@ class TexmapConverter:
             crop = Crop(*clip, place=m.param(BM_CROP_PLACE, 0) == 1)
         gamma = self._bitmap_gamma(self._gamma(m), entry.name)
         alpha = m.param(BM_MONO if kind in FLOATS else BM_RGB, 0) == 1
-        return Image(m.index, entry.name, entry.path, entry.resolved, found, mapping, crop, self._output(out),
-                     colorspace(kind, gamma, not self.swatches.linear), gamma, alpha)
+        stored = not self.swatches.linear
+        return _stored_mask(Image(m.index, entry.name, entry.path, entry.resolved, found, mapping, crop,
+                                  self._output(out, m), colorspace(kind, gamma, stored), gamma, alpha), kind, stored)
 
     def _placement_issues(self, m, walk, cls, mapping):
         """The issues of a UVGen's mapping that no UVs can draw."""
@@ -1074,15 +1163,16 @@ class TexmapConverter:
         if not mult <= MAX_MULTIPLIER:
             self._issue(walk, m.index, "VRayBitmap %r: multiplier %r not converted: 1" % (m.name, mult))
             mult = 1.0
-        output = self._output(out) or TexOutput()
+        output = self._output(out, m) or TexOutput()
         output = dataclasses.replace(output, amount=output.amount * mult)
         alpha = m.param(VB_MONO if kind in FLOATS else VB_RGB, 0) == 1
         if not self.swatches.linear and kind in (COLOR, MASK):
             # gamma off: From 3ds Max reads any file as stored, which the scene shows decoded (a Bitmap's rule);
             # every other transfer function is V-Ray's own decode, shown decoded once more
             gamma = None if stored else _shown(gamma)
-        return Image(m.index, entry.name, entry.path, entry.resolved, found, mapping, crop,
-                     None if output == TexOutput() else output, colorspace(kind, gamma, stored), gamma, alpha)
+        return _stored_mask(Image(m.index, entry.name, entry.path, entry.resolved, found, mapping, crop,
+                                  None if output == TexOutput() else output, colorspace(kind, gamma, stored), gamma,
+                                  alpha), kind, stored)
 
     def _bitmap_gamma(self, override, name):
         """A Bitmap's gamma as 3ds Max reads it in this scene (maxdrop-em3.38, V-Ray 5.2 renders): with the gamma on
@@ -1127,7 +1217,9 @@ class TexmapConverter:
 
     def _corona_image(self, m, kind, walk, entry, found, out):
         """A CoronaBitmap's Image. Its tiling, offset and W angle place the image as a Bitmap's do (measured in
-        3ds Max); its environment mode applies only to an environment map."""
+        3ds Max); its environment mode applies only to an environment map. Its gamma applies with the gamma on and
+        off (Corona 12 renders the same internal value); with it off a color input or a mask shows it decoded once
+        more (_shown, maxdrop-em3.165)."""
         def mode(pid):
             v = m.param(pid, 0)
             return v if v in (0, 1, 2) else 1
@@ -1151,38 +1243,44 @@ class TexmapConverter:
             crop = Crop(*clip, place=m.param(CB_CLIP_MODE, 0) == 1)
         gamma = _num(m, CB_GAMMA, -1.0)  # -1: automatic
         gamma = _auto_gamma(gamma if 0.1 <= gamma <= 10.0 else None, entry.name)
-        if kind == STORED:  # a color root shows its own decode (maxdrop-em3.165): the Decode above undone
-            gamma = 1.0 if gamma is None else gamma / SRGB_GAMMA
+        if not self.swatches.linear and kind in (COLOR, MASK):
+            # gamma off: Corona 12 holds its own decode, in both modes, which the scene shows decoded once more
+            # (maxdrop-em3.165), as V-Ray a VRayBitmap's; in STORED the Decode above does that
+            gamma = _shown(gamma)
         alpha = m.param(CB_MONO if kind in FLOATS else CB_RGB, 0) == 1
-        return Image(m.index, entry.name, entry.path, entry.resolved, found, mapping, crop, self._output(out),
+        return Image(m.index, entry.name, entry.path, entry.resolved, found, mapping, crop, self._output(out, m),
                      colorspace(kind, gamma), gamma, alpha)
 
-    def _mapping(self, uv):
+    def _mapping(self, uv, m):
         if uv is None:
             return Mapping()
         p = reader_materials.placement(self.graph.scene, uv.index)
         source = p.source if p.source in (EXPLICIT, OBJECT_XYZ, VERTEX_COLOR, WORLD_XYZ) else EXPLICIT
         channel = 1 if p.channel is None else p.channel
         channel = 0 if source == VERTEX_COLOR else (channel if 0 <= channel <= 99 else 1)
+        def old(index, default):
+            return self._old(uv, index, default, m, "Coordinates")
+
         return Mapping(
             channel=channel,
-            tiling=(_old(uv, UV_U_TILING, 1.0), _old(uv, UV_V_TILING, 1.0)),
-            offset=(_old(uv, UV_U_OFFSET, 0.0), _old(uv, UV_V_OFFSET, 0.0)),
-            angle=(_old(uv, UV_U_ANGLE, 0.0), _old(uv, UV_V_ANGLE, 0.0), _old(uv, UV_W_ANGLE, 0.0)),
+            tiling=(old(UV_U_TILING, 1.0), old(UV_V_TILING, 1.0)),
+            offset=(old(UV_U_OFFSET, 0.0), old(UV_V_OFFSET, 0.0)),
+            angle=(old(UV_U_ANGLE, 0.0), old(UV_V_ANGLE, 0.0), old(UV_W_ANGLE, 0.0)),
             tile=p.tile,
             mirror=p.mirror,
             axis=p.axis if p.axis in (0, 1, 2) else 0,
             source=source,
             environment=p.environment,
             real_world=p.real_world,
-            blur=_old(uv, UV_BLUR, 1.0))
+            blur=old(UV_BLUR, 1.0))
 
-    def _output(self, part):
-        """The TexOutput of a map's Output part, None when it changes nothing."""
+    def _output(self, part, m):
+        """The TexOutput of map m's Output part, None when it changes nothing."""
         if part is None:
             return None
-        out = TexOutput(reader_materials.output_invert(self.graph.scene, part.index), _old(part, OUT_AMOUNT, 1.0),
-                        _old(part, OUT_LEVEL, 1.0), _old(part, OUT_OFFSET, 0.0))
+        out = TexOutput(reader_materials.output_invert(self.graph.scene, part.index),
+                        *(self._old(part, pid, default, m, "Output") for pid, default in
+                          ((OUT_AMOUNT, 1.0), (OUT_LEVEL, 1.0), (OUT_OFFSET, 0.0))))
         return None if out == TexOutput() else out
 
     def _gamma(self, m):
@@ -1349,7 +1447,8 @@ def _mix_curve(conv, m, walk):
 
 def _own_part(conv, m):
     """The TexOutput of the map's own Output part, None when it changes nothing."""
-    return conv._output(next((p for _s, p in sorted(m.parts.items()) if p.superclass == classids.SC_TEXOUTPUT), None))
+    return conv._output(next((p for _s, p in sorted(m.parts.items()) if p.superclass == classids.SC_TEXOUTPUT), None),
+                        m)
 
 
 def _own_output(conv, m, node):
@@ -1398,7 +1497,9 @@ def _falloff(conv, m, kind, walk, depth, chain):
 
 
 def _vray_dirt(conv, m, kind, walk, depth, chain):
-    """13 unoccluded_color, 17 texmap_unoccluded_color, 18 its switch. The color only when the map is not used."""
+    """13 unoccluded_color, 17 texmap_unoccluded_color, 18 its switch. The color only when the map is not used. Corona
+    12 does not render a VRayDirt: white, its map on or off (maxdrop-6n0.6.23), so white in a Corona scene, exact
+    (TexmapConverter._node; measured in a light material's texmap, assumed for other slots)."""
     if conv._on(m, 17, 18) is not None:
         return conv._sub(m, 17, 18, kind, walk, depth, chain)
     return conv._constant(m, 13, kind, (1.0, 1.0, 1.0))
@@ -1413,8 +1514,8 @@ CORONA_RENDERER = (0x62A85DCC, 0x523C3604)
 
 def _wrapped(conv, m, map_pid, on_pid, kind, walk, depth, chain, empty=WHITE):
     """The map of a wrapper that has no color of its own (Output, RGB Tint, VRayColor2Bump), in kind (the caller's
-    rgb_kind when the wrapper changes the color); without a used map the swatch empty: an Output or RGB Tint renders
-    as over a white map, a VRayColor2Bump the color C2B_EMPTY (3ds Max 2020 renderMap and V-Ray 5.2 renders with the
+    _wrapper_input when the wrapper changes the color); without a used map the swatch empty: an Output or RGB Tint
+    renders as over a white map, a VRayColor2Bump the color C2B_EMPTY (3ds Max 2020 renderMap and V-Ray 5.2 renders with the
     gamma off, maxdrop-em3.76; V-Ray with the gamma on and Corona 12 with it off and on render the same,
     maxdrop-em3.127, but for an Output switched off in Corona: _output_map). In a normal input (a normal map's normal
     slot) that color as stored: V-Ray tilts the normal by an Output's or RGB Tint's white as by a white map, and
@@ -1424,30 +1525,55 @@ def _wrapped(conv, m, map_pid, on_pid, kind, walk, depth, chain, empty=WHITE):
     return conv._sub(m, map_pid, on_pid, kind, walk, depth, chain)
 
 
+def _wrapper_input(conv, kind):
+    """The kind of the map below a wrapper that changes the color (an RGB Tint other than the identity, an Output
+    part that changes anything, a Color Correction in a mask) in a graph of that kind: rgb_kind; in a mask the color
+    V-Ray holds, COLOR with the gamma on (linear), STORED with it off (swatches, the Tint's rows and a Bitmap as
+    stored), the mean taken after it (_mask_mean; maxdrop-6n0.6.2, maxdrop-6n0.6.18)."""
+    if kind == MASK:
+        return COLOR if conv.swatches.linear else STORED
+    return rgb_kind(kind)
+
+
+def _mask_mean(conv, node, kind):
+    """A color wrapper's node as a mask in a gamma-off scene: V-Ray mixes by the mean of the color it holds, the same
+    value as with the gamma on, which the display-referred scene shows decoded (maxdrop-6n0.6.2: a Tint of rows
+    128 / 64 / 32 over a VRayColor (200, 100, 50) renders 0.1722 in both modes, decoded 0.0251), so the mean through
+    the exact sRGB curve (Decode mean), as _decoded_mask draws a mix; a Tint or an Adjust over a Constant folded.
+    Elsewhere the node: the builder takes the mean of a color socket on a float input."""
+    if node is None or kind != MASK or conv.swatches.linear:
+        return node
+    value = _constant_value(node)
+    if value is not None:
+        return Constant(conv.swatches.channel(sum(value) / 3.0))
+    return Decode(node, mean=True)
+
+
 def _output_map(conv, m, kind, walk, depth, chain):
     """0 map1, 1 map1Enabled; its Output part as an Adjust (its clamp and color map curve are not read) over its map
-    as a color (rgb_kind); an Output part that changes nothing leaves the map in its own kind, as with no wrapper.
-    Corona 12 renders map1 with map1Enabled off (Corona's own materials measured, maxdrop-em3.127): in a scene that
-    renders with Corona the switch is not read."""
+    as a color (_wrapper_input; in a gamma-off mask the mean decoded after it, _mask_mean); an Output part that
+    changes nothing leaves the map in its own kind, as with no wrapper. Corona 12 renders map1 with map1Enabled off
+    (Corona's own materials measured, maxdrop-em3.127): in a scene that renders with Corona the switch is not read."""
     out = _own_part(conv, m)
-    node = _wrapped(conv, m, 0, None if conv.corona else 1, kind if out is None else rgb_kind(kind), walk, depth,
-                    chain)
-    return node if node is None or out is None else Adjust(node, out)
+    node = _wrapped(conv, m, 0, None if conv.corona else 1, kind if out is None else _wrapper_input(conv, kind),
+                    walk, depth, chain)
+    return node if node is None or out is None else _mask_mean(conv, Adjust(node, out), kind)
 
 
 def _rgb_tint(conv, m, kind, walk, depth, chain):
-    """0 / 1 / 2 red / green / blue (swatches: made linear in a color graph and a mask, as stored in a data graph, a
-    height or a normal, as every swatch there; em3.76 measured 0.293 on opacity for rows 128 / 64 / 32 over white,
-    gamma off), 3 map1, 4 map1Enabled: a Tint over its map as a color (rgb_kind) unless the identity, which leaves
-    the map in its own kind."""
-    rows = COLOR if kind in (COLOR, MASK) else rgb_kind(kind)
+    """0 / 1 / 2 red / green / blue (swatches: made linear in a color graph, as stored in a data graph, a height, a
+    normal and a gamma-off mask, as every swatch there; em3.76 measured 0.293 on opacity for rows 128 / 64 / 32 over
+    white, gamma off), 3 map1, 4 map1Enabled: a Tint over its map as a color (_wrapper_input; in a gamma-off mask
+    the mean decoded after it, _mask_mean) unless the identity, which leaves the map in its own kind."""
+    inner = _wrapper_input(conv, kind)
+    rows = COLOR if kind == COLOR else inner
     tint = tuple(conv._constant(m, pid, rows, d).value
                  for pid, d in ((TINT_RED, (1.0, 0.0, 0.0)), (TINT_GREEN, (0.0, 1.0, 0.0)),
                                 (TINT_BLUE, (0.0, 0.0, 1.0))))
     if all(abs(c - (1.0 if i == j else 0.0)) <= 1e-6 for j, row in enumerate(tint) for i, c in enumerate(row)):
         return _wrapped(conv, m, 3, 4, kind, walk, depth, chain)
-    node = _wrapped(conv, m, 3, 4, rgb_kind(kind), walk, depth, chain)
-    return None if node is None else Tint(node, *tint)
+    node = _wrapped(conv, m, 3, 4, inner, walk, depth, chain)
+    return None if node is None else _mask_mean(conv, Tint(node, *tint), kind)
 
 
 def _color2bump(conv, m, kind, walk, depth, chain):
@@ -1461,10 +1587,11 @@ def _color2bump(conv, m, kind, walk, depth, chain):
     return node
 
 
-def _sides(conv, m, ids, kind, walk, depth, chain):
+def _sides(conv, m, ids, kind, walk, depth, chain, known=None):
     """The nodes of a two-map wrapper's sides ((map pid, switch pid) each), None where no map is used, and per side
-    whether a used map converted to nothing."""
-    nodes = tuple(conv._sub(m, pid, on, kind, walk, depth, chain) for pid, on in ids)
+    whether a used map converted to nothing. known: {map pid: node} of sides the caller converted already."""
+    known = known or {}
+    nodes = tuple(known[pid] if pid in known else conv._sub(m, pid, on, kind, walk, depth, chain) for pid, on in ids)
     lost = tuple(n is None and conv._on(m, pid, on) is not None for n, (pid, on) in zip(nodes, ids))
     return nodes, lost
 
@@ -1506,9 +1633,17 @@ def _black_white(conv, m):
 
 
 def _constant_value(node):
-    """The RGB value of a Constant, or of a Mix of Constants by its amount or a Constant mask; None otherwise."""
+    """The RGB value of a Constant, of a Mix of Constants by its amount or a Constant mask, or of a Tint or an Adjust
+    over a Constant (the builder's math); None otherwise."""
     if isinstance(node, Constant):
         return _rgb3(node.value)
+    if isinstance(node, Tint) and isinstance(node.input, Constant):
+        c, rows = _rgb3(node.input.value), (node.red, node.green, node.blue)
+        return tuple(sum(c[k] * rows[k][i] for k in range(3)) for i in range(3))
+    if isinstance(node, Adjust) and isinstance(node.input, Constant):
+        o = node.output
+        return tuple(o.amount * (o.level * (1.0 - c) - o.offset if o.invert else o.level * c + o.offset)
+                     for c in _rgb3(node.input.value))
     if not (isinstance(node, Mix) and isinstance(node.a, Constant) and isinstance(node.b, Constant)
             and (node.mask is None or isinstance(node.mask, Constant))):
         return None
@@ -1518,6 +1653,11 @@ def _constant_value(node):
 
 def _rgb3(v):
     return tuple(v[:3]) if isinstance(v, tuple) else (v,) * 3
+
+
+def _stored_value(value):
+    """A gamma-off input's own value (linear: a swatch made so by the sRGB curve) as the renderer holds it, RGB."""
+    return tuple(colors.linear_to_srgb(c) for c in _rgb3(value))
 
 
 def _mask(conv, m, pid, on_pid, kind, walk, depth, chain):
@@ -1547,8 +1687,8 @@ def _mix(conv, m, kind, walk, depth, chain):
             return _other_side(conv, m, (a, b), walk)
     a = a or conv._constant(m, 4, kind, (0.0, 0.0, 0.0))
     b = b or conv._constant(m, 5, kind, (1.0, 1.0, 1.0))
-    if kind == COLOR and not conv.swatches.linear:  # only black to white: _convert_node sends the rest to STORED
-        factor = conv.swatches.channel(factor)
+    if kind in (COLOR, MASK) and not conv.swatches.linear:  # only black to white: _convert_node sends the rest
+        factor = conv.swatches.channel(factor)  # to STORED
     return Mix(a, b, factor, mask)
 
 
@@ -1566,24 +1706,32 @@ def _color_correction(conv, m, kind, walk, depth, chain):
     """0 color, 1 map, 2 rewireMode, 7 hueShift (degrees), 8 saturation (%), 10 tintStrength, 11 lightnessMode
     (0 standard: 12 brightness, 13 contrast; 1 advanced: 18 gainRGB (%), 22 gammaRGB, 26 pivotRGB, 30 liftRGB).
     Its color only without a map (3ds Max's rule): a map that converts to nothing leaves the input its own value.
-    The map and the color are a color (rgb_kind): the correction acts on it, a float input takes the mean after."""
-    node = conv._sub(m, 1, None, rgb_kind(kind), walk, depth, chain)
+    The map and the color are a color (rgb_kind): the correction acts on it, a float input takes the mean after. In
+    a mask they are the color V-Ray holds (_wrapper_input: COLOR with the gamma on, STORED with it off), the mean
+    taken after the correction, decoded with the gamma off (_mask_mean), as a Tint's or Output's (V-Ray 5.2 renders,
+    maxdrop-6n0.6.18: brightness 20 over a VRayColor 128 as a mask 0.702 in both modes; a rewiring picks from that
+    color, red to all over (200, 100, 50) 0.784, monochrome 0.4575, as maxdrop-6n0.6.36 assumed; saturation -50 % the
+    mean of the builder's HSL saturation, 0.4739, maxdrop-6n0.6.2)."""
+    inner = _wrapper_input(conv, kind)
+    node = conv._sub(m, 1, None, inner, walk, depth, chain)
     if node is None:
         if conv._on(m, 1, None) is not None:
             return None
-        node = conv._constant(m, 0, rgb_kind(kind), (0.0, 0.0, 0.0))
+        node = conv._constant(m, 0, inner, (0.0, 0.0, 0.0))
     if _num(m, 10, 0.0) != 0.0:
         walk.approximated = True
         conv._issue(walk, m.index, "Color Correction %r: tint not converted" % (m.name,))
     rewire = _rewire(conv, m, walk)
     hue, saturation = _num(m, 7, 0.0) / 360.0, 1.0 + _num(m, 8, 0.0) / 100.0
     if m.param(11, 0) != 1:
-        return ColorCorrect(node, rewire, hue, saturation, _num(m, 12, 0.0) / 100.0, _num(m, 13, 0.0) / 100.0)
-    if _num(m, 26, 1.0) != 1.0 or _num(m, 30, 0.0) != 0.0:
-        walk.approximated = True
-        conv._issue(walk, m.index, "Color Correction %r: pivot and lift not converted" % (m.name,))
-    return ColorCorrect(node, rewire, hue, saturation, gain=_num(m, 18, 100.0) / 100.0,
-                        gamma=max(0.01, _num(m, 22, 1.0)))
+        cc = ColorCorrect(node, rewire, hue, saturation, _num(m, 12, 0.0) / 100.0, _num(m, 13, 0.0) / 100.0)
+    else:
+        if _num(m, 26, 1.0) != 1.0 or _num(m, 30, 0.0) != 0.0:
+            walk.approximated = True
+            conv._issue(walk, m.index, "Color Correction %r: pivot and lift not converted" % (m.name,))
+        cc = ColorCorrect(node, rewire, hue, saturation, gain=_num(m, 18, 100.0) / 100.0,
+                          gamma=max(0.01, _num(m, 22, 1.0)))
+    return _mask_mean(conv, cc, kind)
 
 
 def _rewire(conv, m, walk):
@@ -1673,12 +1821,18 @@ def _corona_color(conv, m, kind, walk, depth, chain):
     scaling the swatch value: 2 x 128 = 255); the temperature is Corona's own linear color (corona_kelvin) times the
     multiplier with the gamma on, decoded as a swatch (clamped) with it off: VRayColor's and CoronaColor's 3000 K
     render the same values with the gamma on and off (V-Ray 5.2, renderMap; maxdrop-em3.38), which a gamma-off
-    scene shows as stored. The HDR color is linear already (with the gamma off V-Ray 5.2 renders it as stored; kept linear, Corona not
-    measured: maxdrop-em3.165). colorSpace (61)
-    changed nothing in renderMap: not read."""
+    scene shows as stored. The HDR color times the multiplier is rendered as stored, unclamped, with the gamma on and
+    off (V-Ray 5.2 and Corona 12, maxdrop-em3.165): linear with the gamma on; with it off the scene shows it decoded,
+    above 1 on the extended curve (2.0: 4.954), on a color input per channel, on a mask the mean (a swatch's rule);
+    in STORED as stored (the Decode above shows it); on a data input as stored. colorSpace (61) changed nothing in
+    renderMap: not read."""
     method, mult = m.param(CC_METHOD, 0), max(0.0, _num(m, CC_MULTIPLIER, 1.0))
     if method == 1:
         rgb = tuple(max(0.0, c) * mult for c in _vec(m, CC_HDR, (1.0, 1.0, 1.0)))
+        if not conv.swatches.linear and kind == COLOR:
+            return Constant(tuple(colors.srgb_to_linear(c) for c in rgb))
+        if not conv.swatches.linear and kind == MASK:
+            return Constant(colors.srgb_to_linear(sum(rgb) / 3.0))
         return _linear(rgb, kind)
     swatch = None
     if method == 2:
@@ -1753,20 +1907,58 @@ def _corona_layer(node, mult, offset):
     return Adjust(node, TexOutput(level=mult, offset=add))
 
 
-def _corona_gamma_exponent(conv, m, kind):
+def _corona_gamma_exponent(top, srgb):
     """The exponents of a CoronaMix gamma (bottom^(1 / e) per channel, renderMap: e is the top, in sRGB mode
-    |top|^(1 / 2.2)) when its top is its color (no map, or the map off), a Constant: a float or a tuple. None when the
-    top is a map or a channel's exponent is outside CM_GAMMA_RANGE (Corona's result is no number at a top of 0)."""
-    if conv._on(m, CM_MAP_TOP, CM_TOP_ON) is not None:
+    |top|^(1 / 2.2)) from its converted top layer: a float or a tuple. None when the top is not a Constant (a map that
+    converts to one, CoronaColor or VRayColor, is; maxdrop-6n0.6.24) or a channel's exponent is outside
+    CM_GAMMA_RANGE (Corona's result is no number at a top of 0)."""
+    if not isinstance(top, Constant):
         return None
-    top = _corona_layer(conv._constant(m, CM_COLOR_TOP, kind, (1.0, 1.0, 1.0)), _num(m, CM_MULT_TOP, 1.0),
-                        _num(m, CM_OFFSET_TOP, 0.0)).value
-    srgb = _flag(m, CM_SRGB, True)
-    es = tuple((abs(t) ** (1.0 / CM_SRGB_GAMMA) if srgb else t) for t in (top if isinstance(top, tuple)
-                                                                          else (top,)))
+    v = top.value
+    es = tuple((abs(t) ** (1.0 / CM_SRGB_GAMMA) if srgb else t) for t in (v if isinstance(v, tuple) else (v,)))
     if not all(CM_GAMMA_RANGE[0] <= e <= CM_GAMMA_RANGE[1] for e in es):
         return None
-    return es if isinstance(top, tuple) else es[0]
+    return es if isinstance(v, tuple) else es[0]
+
+
+def _cm_top(conv, m, kind, node):
+    """A CoronaMix's top layer: its map's node, else its color, times its multiplier plus its offset."""
+    return _corona_layer(node or conv._constant(m, CM_COLOR_TOP, kind, (1.0, 1.0, 1.0)), _num(m, CM_MULT_TOP, 1.0),
+                         _num(m, CM_OFFSET_TOP, 0.0))
+
+
+def _cm_bottom(conv, m, kind, node):
+    """A CoronaMix's bottom layer, as _cm_top."""
+    return _corona_layer(node or conv._constant(m, CM_COLOR_BOTTOM, kind, (0.0, 0.0, 0.0)),
+                         _num(m, CM_MULT_BOTTOM, 1.0), _num(m, CM_OFFSET_BOTTOM, 0.0))
+
+
+def _gamma_layers(conv, m, kind, walk, depth, chain):
+    """Whether a CoronaMix gamma can be drawn, decided layer by layer before the rest is converted, so a peeled one
+    converts no more than it must: its top first (drawable only as a constant, a map that converts to one included),
+    then, for one exponent per channel, its bottom (a constant). A map that converts to nothing leaves the decision
+    to the lost-side rule (drawable). None when it cannot be drawn, else {map pid: node} of the layers it converted,
+    which _corona_mix draws without converting them again."""
+    top = conv._sub(m, CM_MAP_TOP, CM_TOP_ON, kind, walk, depth, chain)
+    layers = {CM_MAP_TOP: top}
+    if top is None and conv._on(m, CM_MAP_TOP, CM_TOP_ON) is not None:
+        return layers
+    exponent = _corona_gamma_exponent(_cm_top(conv, m, kind, top), _flag(m, CM_SRGB, True))
+    if exponent is None:
+        return None
+    if not isinstance(exponent, tuple) or len(set(exponent)) == 1:
+        return layers
+    bottom = layers[CM_MAP_BOTTOM] = conv._sub(m, CM_MAP_BOTTOM, CM_BOTTOM_ON, kind, walk, depth, chain)
+    return layers if bottom is None or isinstance(_cm_bottom(conv, m, kind, bottom), Constant) else None
+
+
+def _corona_peel(conv, m, op, kind, walk, depth, chain):
+    """A CoronaMix whose operation is not drawn: its first bitmap (an issue naming the operation), else nothing."""
+    name = CM_OP_NAMES.get(op, repr(op))
+    image = conv._peel_to_image(m, kind, walk, depth, chain, "operation %s and no bitmap below" % (name,))
+    if image is not None:
+        conv._issue(walk, m.index, "CoronaMix %r: operation %s drawn as its first bitmap" % (m.name, name))
+    return image
 
 
 def _gamma_value(v, e):
@@ -1783,22 +1975,19 @@ def _corona_mix(conv, m, kind, walk, depth, chain):
     """result = mix(bottom, operation(bottom, top), amount), the mask map replacing the amount (renderMap: an add at
     amount 0.8 under a 0.25 mask weighs 0.25), always a linear mix. Operation mix -> Mix(bottom, top, amount, mask),
     multiply -> Multiply, the operations of CM_BLENDS -> Blend (gamma 2.2 for CM_GAMMA_OPS with mixInSRgb on), gamma
-    -> a ColorCorrect gamma of the bottom for a grey top that is its color (two colors folded per channel), each
-    under a Mix when the amount is below 1 or a mask is set; any other operation (and a gamma over another top) is
-    peeled to its first bitmap. Each layer is its map, or its color where the map is missing or switched off, times
-    its multiplier plus its offset times CM_OFFSET_SCALE (measured, the multiplier first)."""
+    -> a ColorCorrect gamma of the bottom for a grey top (its color, or a map that converts to a constant; two
+    constants folded per channel; in sRGB mode of the bottom's magnitude, maxdrop-6n0.6.40), each under a Mix when the amount is below 1 or a mask is set; any other operation
+    (and a gamma over another top) is peeled to its first bitmap, a gamma as decided on its converted layers
+    (_gamma_layers, maxdrop-6n0.6.24). Each layer is its map, or its color where the map is missing or switched off,
+    times its multiplier plus its offset times CM_OFFSET_SCALE (measured, the multiplier first)."""
     op = m.param(CM_OPERATION, 0)
-    exponent = _corona_gamma_exponent(conv, m, kind) if op == CM_GAMMA else None
-    if isinstance(exponent, tuple) and len(set(exponent)) > 1 and conv._on(m, CM_MAP_BOTTOM, CM_BOTTOM_ON) is not None:
-        exponent = None  # a colored top over a map: one exponent per channel, which no node draws
-    if op not in (CM_MIX, CM_MULTIPLY) and op not in CM_BLENDS and exponent is None:
-        name = CM_OP_NAMES.get(op, repr(op))
-        image = conv._peel_to_image(m, kind, walk, depth, chain, "operation %s and no bitmap below" % (name,))
-        if image is not None:
-            conv._issue(walk, m.index, "CoronaMix %r: operation %s drawn as its first bitmap" % (m.name, name))
-        return image
+    if op not in (CM_MIX, CM_MULTIPLY, CM_GAMMA) and op not in CM_BLENDS:
+        return _corona_peel(conv, m, op, kind, walk, depth, chain)
+    layers = _gamma_layers(conv, m, kind, walk, depth, chain) if op == CM_GAMMA else {}
+    if layers is None:
+        return _corona_peel(conv, m, op, kind, walk, depth, chain)
     (bottom, top), lost = _sides(conv, m, ((CM_MAP_BOTTOM, CM_BOTTOM_ON), (CM_MAP_TOP, CM_TOP_ON)), kind, walk,
-                                 depth, chain)
+                                 depth, chain, layers)
     mask = _mask(conv, m, CM_MASK, CM_MASK_ON, kind, walk, depth, chain)
     amount = min(1.0, max(0.0, _num(m, CM_AMOUNT, 1.0)))
     if any(lost):
@@ -1813,10 +2002,12 @@ def _corona_mix(conv, m, kind, walk, depth, chain):
             return None
         if w is None:
             return _other_side(conv, m, (bottom, top), walk)
-    bottom = _corona_layer(bottom or conv._constant(m, CM_COLOR_BOTTOM, kind, (0.0, 0.0, 0.0)),
-                           _num(m, CM_MULT_BOTTOM, 1.0), _num(m, CM_OFFSET_BOTTOM, 0.0))
-    top = _corona_layer(top or conv._constant(m, CM_COLOR_TOP, kind, (1.0, 1.0, 1.0)),
-                        _num(m, CM_MULT_TOP, 1.0), _num(m, CM_OFFSET_TOP, 0.0))
+    bottom, top = _cm_bottom(conv, m, kind, bottom), _cm_top(conv, m, kind, top)
+    exponent = _corona_gamma_exponent(top, _flag(m, CM_SRGB, True)) if op == CM_GAMMA else None
+    if isinstance(exponent, tuple) and len(set(exponent)) > 1 and not isinstance(bottom, Constant):
+        exponent = None  # a colored top over a map: one exponent per channel, which no node draws
+    if op == CM_GAMMA and exponent is None:  # a lost map's color in its place (amount 0) and still not drawable
+        return _corona_peel(conv, m, op, kind, walk, depth, chain)
     if op == CM_MIX:
         return Mix(bottom, top, amount, mask)
     if op == CM_MULTIPLY:
@@ -1827,8 +2018,9 @@ def _corona_mix(conv, m, kind, walk, depth, chain):
             if _flag(m, CM_SRGB, True):
                 v = tuple(abs(c) for c in v) if isinstance(v, tuple) else abs(v)
             result = Constant(_gamma_value(v, exponent))
-        else:
-            result = ColorCorrect(bottom, gamma=exponent if isinstance(exponent, float) else exponent[0])
+        else:  # a map bottom too (renderMap: multiplierBottom -1 gives the positive one's values, 6n0.6.40)
+            result = ColorCorrect(bottom, gamma=exponent if isinstance(exponent, float) else exponent[0],
+                                  magnitude=_flag(m, CM_SRGB, True))
     else:
         blend = CM_BLENDS[op]
         gamma = CM_SRGB_GAMMA if blend in CM_GAMMA_OPS and _flag(m, CM_SRGB, True) else 1.0
@@ -1839,7 +2031,10 @@ def _corona_mix(conv, m, kind, walk, depth, chain):
     return result if mask is None and amount == 1.0 else Mix(bottom, result, amount, mask)
 
 
-DISPLAY_MIXES = (MIX, COMPOSITE)  # in STORED under a Decode at a gamma-off color root (V-Ray 5.2, maxdrop-em3.158)
+# the maps computed on the values the renderer holds in a gamma-off scene: at a color root in STORED under a Decode
+# (_convert_node), and those not a wrapper of their own (_wrapper_input) in a mask the mean of it decoded
+MASK_MIXES = (MIX, COMPOSITE, classids.CORONA_MIX, FALLOFF)
+DISPLAY_MIXES = MASK_MIXES + (COLOR_CORRECTION, OUTPUT, RGB_TINT)
 _KEEP = {MIX: _mix, RGB_MULTIPLY: _rgb_multiply, COLOR_CORRECTION: _color_correction, COMPOSITE: _composite,
          classids.CORONA_COLOR: _corona_color, classids.CORONA_MIX: _corona_mix, classids.VRAY_COLOR: _vray_color,
          FALLOFF: _falloff, OUTPUT: _output_map, RGB_TINT: _rgb_tint, VRAY_COLOR2BUMP: _color2bump}

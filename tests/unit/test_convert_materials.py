@@ -169,6 +169,7 @@ class Helpers(unittest.TestCase, Close):
         self.close(mat.ior_from_reflectance(0.04), 1.5)
         self.close(mat.ior_from_reflectance(0.0), 1.0)
         self.assertTrue(math.isfinite(mat.ior_from_reflectance(1.0)))
+        self.close(mat.ior_from_reflectance(mat.CORONA_MAX_F0), mat.CORONA_MAX_IOR, "the cap's IOR and F0 agree")
 
     def test_class_name(self):
         self.assertEqual(mat.class_name(classids.SC_MATERIAL, classids.VRAY_MTL), "VRayMtl")
@@ -248,32 +249,67 @@ class VRayMtlRules(unittest.TestCase, Close):
     def test_fresnel_off_grey_reflection_keeps_diffuse(self):
         """A grey swatch below 1 without a reflection map is the mirror drawing, not a metal: V-Ray 5.2 renders R +
         (1 - R) x the diffuse (maxdrop-em3.153, 128 grey over 200 40 40: 0.8925 0.5801 0.5801 facing the camera);
-        within NEUTRAL_REFLECTION of grey the mean is the weight."""
+        the weight is the brightest channel, the mirror white for grey (maxdrop-6n0.6.16: no cliff near grey)."""
         for swatch in ((0.5, 0.5, 0.5), (0.99, 0.99, 0.99), (0.25, 0.25, 0.25), (0.509, 0.5, 0.491)):
             b1 = {1: (1.0, 0.0, 0.0), 2: swatch, 8: 0, 91: 0.2}
             conv, ir = _convert(_vray(0, b1=b1))
             self.assertFalse(ir.fresnel, str(swatch))
-            self.close(ir.metallic.value, 0.2, str(swatch))
-            self.close(ir.base_color.value, (1.0, 0.0, 0.0), str(swatch))
-            self.close(ir.specular.value, sum(swatch) / 3.0, str(swatch))
+            self.close(ir.metallic.value, 0.0, str(swatch))
+            self.close(ir.base_color.value, (0.8, 0.0, 0.0), str(swatch))
+            self.close(ir.specular.value, max(swatch), str(swatch))
+            self.close(ir.mirror_color, tuple(c / max(swatch) for c in swatch), str(swatch))
             self.assertIsNone(ir.specular.map)
         conv, ir = _convert(_vray(0, b1={2: (0.5, 0.5, 0.5), 5: (1.0, 1.0, 1.0), 8: 0}))  # glass stays glass
         self.close(ir.metallic.value, 0.0)
         self.close(ir.transmission.value, 1.0)
         self.close(ir.base_color.value, (1.0, 1.0, 1.0))
 
-    def test_fresnel_off_full_or_colored_reflection_is_metal(self):
-        """A full reflection (mean 1 or more) and a colored one (channel spread above NEUTRAL_REFLECTION) keep the
-        metal in the reflection color: the white mirror copy would drop the tint."""
-        for swatch in ((1.0, 1.0, 1.0), (0.55, 0.5, 0.45), (0.9, 0.5, 0.1), (0.3, 0.2, 0.25)):
+    def test_fresnel_off_full_reflection_is_metal(self):
+        """A reflection whose brightest channel is 1 or more keeps the metal in the reflection color: what the
+        tinted mirror gives at weight 1 (build draws no mirror there)."""
+        for swatch in ((1.0, 1.0, 1.0), (1.0, 0.6, 0.2), (1.0, 0.3, 0.3)):
             b1 = {1: (1.0, 0.0, 0.0), 2: swatch, 8: 0, 91: 0.2}
             conv, ir = _convert(_vray(0, b1=b1))
             self.close(ir.metallic.value, 1.0, str(swatch))
             self.close(ir.base_color.value, swatch, str(swatch))
+            self.close(ir.mirror_color, (1.0, 1.0, 1.0), str(swatch))
         b1 = {1: (1.0, 0.0, 0.0), 2: (0.2, 0.1, 0.05), 8: 0, 91: 0.2}  # colored, below METAL_REFLECTION
         conv, ir = _convert(_vray(0, b1=b1))
-        self.close(ir.metallic.value, 0.2)
-        self.close(ir.base_color.value, (1.0, 0.0, 0.0))
+        self.close(ir.metallic.value, 0.0)
+        self.close(ir.base_color.value, (0.8, 0.0, 0.0))
+        self.close(ir.specular.value, 0.35 / 3.0, "the mean: a dim one stays the white mirror")
+        self.close(ir.mirror_color, (1.0, 1.0, 1.0))
+
+    def test_fresnel_off_colored_reflection_is_a_tinted_mirror(self):
+        """A colored swatch from METAL_REFLECTION up, below 1, without a reflection map: the mirror by its brightest
+        channel, its copy tinted R / max(R): R_c + (1 - max R) d_c per channel, between the metal and V-Ray's R_c +
+        (1 - R_c) d_c (maxdrop-6n0.6.16; em3.153's probe: 230 128 26 over 40 80 200 renders 0.9175 0.6582 0.8060,
+        the copy 0.917 0.533 0.179, the metal 0.900 0.503 0.102)."""
+        for swatch in ((0.55, 0.5, 0.45), (0.9, 0.5, 0.1), (0.3, 0.2, 0.25), (0.902, 0.502, 0.102)):
+            b1 = {1: (1.0, 0.0, 0.0), 2: swatch, 8: 0, 91: 0.2}
+            conv, ir = _convert(_vray(0, b1=b1))
+            self.assertFalse(ir.fresnel, str(swatch))
+            self.close(ir.metallic.value, 0.0, str(swatch))
+            self.close(ir.base_color.value, (0.8, 0.0, 0.0), str(swatch))
+            self.close(ir.specular.value, max(swatch), str(swatch))
+            self.assertIsNone(ir.specular.map)
+            self.close(ir.mirror_color, tuple(c / max(swatch) for c in swatch), str(swatch))
+        b1 = {1: (1.0, 0.0, 0.0), 2: (0.9, 0.5, 0.1), 8: 0, 91: 1.0}
+        conv, ir = _convert(_vray(0, b1=b1))
+        self.close((ir.metallic.value, ir.specular.value), (0.0, 0.9), "metalness 1: the tinted mirror alone")
+        self.close(ir.base_color.value, (0.0, 0.0, 0.0), "no diffuse (maxdrop-6n0.6.39: V-Ray renders R)")
+        self.assertEqual(mat.MaterialIR(0, "x").mirror_color, (1.0, 1.0, 1.0), "every other rule: white")
+
+    def test_fresnel_off_reflection_map_at_zero_amount_is_the_swatch(self):
+        """A reflection map at 0 % amount shows nothing of itself: the swatch alone, as with the map switched off
+        (V-Ray renders both alike): no MapRef left, so build never takes the twin for an unconverted map."""
+        for swatch, metal in (((0.8, 0.8, 0.8), 0.0), ((0.9, 0.5, 0.1), 0.0), ((1.0, 1.0, 1.0), 1.0)):
+            b1 = {1: (1.0, 0.0, 0.0), 2: swatch, 8: 0, 91: 0.2}
+            conv, ir = _convert(_vray(0, b1=b1, b4={101: Ref(1), 201: 0.0}), _map(1))
+            self.assertIsNone(ir.specular.map, str(swatch))
+            self.assertIsNone(ir.base_color.map, str(swatch))
+            self.close(ir.metallic.value, metal, str(swatch))
+            self.close(ir.specular.value, max(swatch) if metal < 1 else 1.0, str(swatch))
 
     def test_fresnel_off_reflection_map_at_full_amount_keeps_diffuse(self):
         """A reflection map at full amount hides the swatch in V-Ray: no metal however bright the swatch; the
@@ -281,23 +317,23 @@ class VRayMtlRules(unittest.TestCase, Close):
         b1 = {1: (1.0, 0.0, 0.0), 2: (1.0, 1.0, 1.0), 8: 0, 91: 0.2}
         for amount in (100.0, 150.0):
             conv, ir = _convert(_vray(0, b1=b1, b4={101: Ref(1), 201: amount}), _map(1))
-            self.close(ir.metallic.value, 0.2, str(amount))
-            self.close(ir.base_color.value, (1.0, 0.0, 0.0), str(amount))
+            self.close(ir.metallic.value, 0.0, str(amount))
+            self.close(ir.base_color.value, (0.8, 0.0, 0.0), str(amount))
             self.assertIsNone(ir.base_color.map)
             self.assertEqual(ir.specular.map, mat.MapRef(1, amount / 100.0, False))
 
     def test_fresnel_off_swatch_shows_in_proportion_below_full_amount(self):
         b1 = {1: (1.0, 0.0, 0.0), 2: (0.8, 0.8, 0.8), 8: 0, 91: 0.2}
         conv, ir = _convert(_vray(0, b1=b1, b4={101: Ref(1), 201: 75.0}), _map(1))  # 0.8 x 0.25 = 0.2 shown
-        self.close(ir.metallic.value, 0.2)
-        self.close(ir.base_color.value, (1.0, 0.0, 0.0))
+        self.close(ir.metallic.value, 0.0)
+        self.close(ir.base_color.value, (0.8, 0.0, 0.0))
         conv, ir = _convert(_vray(0, b1=b1, b4={101: Ref(1), 151: 0, 201: 100.0}), _map(1))  # map switched off
-        self.close(ir.metallic.value, 0.2, "a grey swatch alone: the mirror drawing")
-        self.close(ir.base_color.value, (1.0, 0.0, 0.0))
+        self.close(ir.metallic.value, 0.0, "a grey swatch alone: the mirror drawing")
+        self.close(ir.base_color.value, (0.8, 0.0, 0.0))
         tinted = {**b1, 2: (0.85, 0.8, 0.75)}
         conv, ir = _convert(_vray(0, b1=tinted, b4={101: Ref(1), 151: 0, 201: 100.0}), _map(1))
-        self.close(ir.metallic.value, 1.0)
-        self.close(ir.base_color.value, (0.85, 0.8, 0.75))
+        self.close(ir.metallic.value, 0.0, "a tinted swatch alone: the tinted mirror")
+        self.close(ir.mirror_color, (1.0, 0.8 / 0.85, 0.75 / 0.85))
         self.assertIsNone(ir.base_color.map)
         white = {**b1, 2: (1.0, 1.0, 1.0)}
         conv, ir = _convert(_vray(0, b1=white, b4={101: Ref(1), 201: 75.0}), _map(1))  # 1 x 0.25: the threshold
@@ -313,17 +349,68 @@ class VRayMtlRules(unittest.TestCase, Close):
         self.close(ir.base_color.value, (1.0, 0.0, 0.0))
         conv, ir = _convert(_vray(0, b1={2: (0.2, 0.2, 0.2), 8: 1}))
         self.assertTrue(ir.fresnel)
-        conv, ir = _convert(_vray(0, b1={2: (0.9, 0.8, 0.7), 8: 0}))  # the metal rule: Metallic 1 wins in build
+        conv, ir = _convert(_vray(0, b1={2: (0.9, 0.8, 0.7), 8: 0}))  # bright, colored: the tinted mirror
         self.assertFalse(ir.fresnel)
+        self.close((ir.metallic.value, ir.specular.value), (0.0, 0.9))
+        conv, ir = _convert(_vray(0, b1={2: (1.0, 0.8, 0.7), 8: 0}))  # full: the metal rule, Metallic 1 wins in build
         self.close(ir.metallic.value, 1.0)
         self.assertTrue(mat.MaterialIR(0, "x").fresnel, "every other rule: the IOR's Fresnel")
 
     def test_fresnel_on_or_dark_reflection_keeps_diffuse(self):
-        for b1 in ({1: (1.0, 0.0, 0.0), 2: (0.8, 0.8, 0.8), 8: 1, 91: 0.2},
-                   {1: (1.0, 0.0, 0.0), 2: (0.2, 0.2, 0.2), 8: 0, 91: 0.2}):  # 0.2 < METAL_REFLECTION
+        for b1, metal, red in (({1: (1.0, 0.0, 0.0), 2: (0.8, 0.8, 0.8), 8: 1, 91: 0.2}, 0.2, 1.0),
+                               ({1: (1.0, 0.0, 0.0), 2: (0.2, 0.2, 0.2), 8: 0, 91: 0.2}, 0.0, 0.8)):  # dim, off
             conv, ir = _convert(_vray(0, b1=b1))
-            self.close(ir.metallic.value, 0.2)
-            self.close(ir.base_color.value, (1.0, 0.0, 0.0))
+            self.close(ir.metallic.value, metal)
+            self.close(ir.base_color.value, (red, 0.0, 0.0))
+
+    def test_fresnel_off_metalness_scales_the_diffuse(self):
+        """Fresnel off outside the metal rule: V-Ray 5.2 renders R_c + (1 - m)(1 - R_c) d_c for a metalness m
+        (maxdrop-6n0.6.39, white environment: 128 grey over 40 80 200 at m 1 0.502, at 0.5 0.541 0.580 0.697; 40
+        grey at m 1 0.157, black at m 1 0): Metallic 0 and the diffuse times 1 - m (its map by MapRef.scale, dropped
+        at m 1), the mirror drawing as at m 0; k through the swatch rule."""
+        for metal, k in ((1.0, 0.0), (0.5, 0.5), (0.2, 0.8)):
+            for refl in ((0.502,) * 3, (0.902, 0.502, 0.102), (0.157,) * 3, (0.0,) * 3):
+                with self.subTest(metal=metal, refl=refl):
+                    b1 = {1: (0.157, 0.314, 0.784), 2: refl, 8: 0, 91: metal}
+                    conv, ir = _convert(_vray(0, b1=b1, b4={100: Ref(1), 200: 60.0}), _map(1))
+                    self.close(ir.metallic.value, 0.0)
+                    self.close(ir.base_color.value, tuple(k * c for c in (0.157, 0.314, 0.784)))
+                    top, shown = max(refl), sum(refl) / 3.0
+                    bright = shown >= mat.METAL_REFLECTION
+                    self.close(ir.specular.value, top if bright else shown)
+                    self.close(ir.mirror_color, tuple(c / top for c in refl) if bright else (1.0, 1.0, 1.0),
+                               "the mirror as at m 0")
+                    if k == 0.0:
+                        self.assertIsNone(ir.base_color.map, "nothing of the diffuse shows")
+                    else:
+                        self.assertEqual(ir.base_color.map, mat.MapRef(1, 0.6, False, k))
+        for sw in (colors.GAMMA_ON, colors.GAMMA_OFF):
+            with self.subTest(linear=sw.linear):
+                b1 = {1: (0.5, 0.5, 0.5), 2: (0.502,) * 3, 8: 0, 91: 0.5}
+                conv = mat.MaterialConverter(FakeGraph(_vray(0, b1=b1, b4={100: Ref(1)}), _map(1)), swatches=sw)
+                ir = conv.convert(0)
+                self.close(ir.base_color.value, sw.color((0.25, 0.25, 0.25)), "scaled before the swatch rule")
+                self.close(ir.base_color.map.scale, sw.channel(0.5), "the map by the rule's factor")
+
+    def test_fresnel_off_metalness_left_as_is(self):
+        """Not measured, so as before: the metal rule (Metallic 1 in the reflection color), a metalness map, a
+        refracting material, and Fresnel on."""
+        b1 = {1: (1.0, 0.0, 0.0), 2: (1.0, 1.0, 1.0), 8: 0, 91: 0.5}
+        conv, ir = _convert(_vray(0, b1=b1))
+        self.close((ir.metallic.value, *ir.base_color.value), (1.0, 1.0, 1.0, 1.0))
+        b1 = {1: (1.0, 0.0, 0.0), 2: (0.502,) * 3, 8: 0, 91: 0.5}
+        conv, ir = _convert(_vray(0, b1=b1, b4={119: Ref(1)}), _map(1))
+        self.close(ir.metallic.value, 0.5)
+        self.assertEqual(ir.metallic.map, mat.MapRef(1))
+        self.close(ir.base_color.value, (1.0, 0.0, 0.0))
+        conv, ir = _convert(_vray(0, b1={**b1, 5: (0.5, 0.5, 0.5)}))
+        self.close(ir.metallic.value, 0.5)
+        self.close(ir.transmission.value, 0.5)
+        conv, ir = _convert(_vray(0, b1=b1, b4={102: Ref(1)}), _map(1))  # refracting by its map alone
+        self.close((ir.metallic.value, *ir.base_color.value), (0.5, 1.0, 0.0, 0.0))
+        self.assertEqual(ir.transmission.map, mat.MapRef(1))
+        conv, ir = _convert(_vray(0, b1={**b1, 8: 1}))
+        self.close((ir.metallic.value, *ir.base_color.value), (0.5, 1.0, 0.0, 0.0))
 
     def test_ior_without_refraction(self):
         conv, ir = _convert(_vray(0, b1={9: 1.4, 63: 2.2, 65: 0}))
@@ -469,12 +556,15 @@ def _wrapper(index, class_id, params, name="W"):
 class Wrappers(unittest.TestCase):
     def test_each_wrapper_peels_to_its_first_set_sub_material(self):
         cases = [
-            (classids.VRAY_OVERRIDE_MTL, {0: Ref(None), 2: Ref(1), 4: Ref(2)}, 1),  # empty base: the next slot
+            (classids.VRAY_OVERRIDE_MTL, {0: Ref(2), 2: Ref(1), 4: Ref(1)}, 2),
             (classids.VRAY_MTL_WRAPPER, {0: Ref(1)}, 1),
             (classids.DOUBLE_SIDED_MTL, {0: Ref(2), 1: Ref(1)}, 2),
             (classids.SHELLAC_MTL, {0: Ref(1), 1: Ref(2)}, 1),
-            (classids.VRAY_2SIDED_MTL, {0: Ref(None), 1: Ref(2)}, 2),
-            (classids.VRAY_BLEND_MTL, {0: Ref(None), 1: [Ref(None), Ref(2), Ref(1)]}, 2),  # coat table
+            (classids.SHELLAC_MTL, {0: Ref(None), 1: Ref(2)}, 2),  # an empty base: V-Ray and the scanline draw the coat
+            (classids.VRAY_2SIDED_MTL, {0: Ref(2), 1: Ref(1)}, 2),
+            (classids.VRAY_BLEND_MTL, {0: Ref(1), 1: [Ref(None), Ref(2)]}, 1),
+            (classids.CORONA_RAY_SWITCH_MTL, {1600: Ref(1), 1603: Ref(2), 1613: 1}, 2),  # directMtl
+            (classids.CORONA_RAY_SWITCH_MTL, {1600: Ref(None), 1603: Ref(2)}, 2),
             (classids.SHELL_MTL, {1: 1, 2: Ref(1), 3: Ref(2)}, 2),  # render index 1: baked
             (classids.SHELL_MTL, {1: 0, 2: Ref(1), 3: Ref(2)}, 1),
         ]
@@ -517,11 +607,76 @@ class Wrappers(unittest.TestCase):
                 self.assertEqual(conv.convert(0).name, "V1")
                 self.assertEqual(conv.stats.issues, [(0, off)] if issue else [])
 
+    def test_an_empty_first_slot_stops_where_the_renderer_does(self):
+        """Rendered in maxdrop-em3.136 (V-Ray 5.2) and maxdrop-6n0.6.4 (V-Ray 5.2, Corona 12): an empty VRayOverrideMtl
+        base renders black, an empty Double Sided facing material or VRay2SidedMtl front renders that side not at all,
+        a CoronaRaySwitchMtl's direct material empty or switched off renders nothing to the camera: the peel ends there
+        (the grey material, the reason in the report) instead of taking the next sub-material."""
+        OV, DS, TS, RS = (classids.VRAY_OVERRIDE_MTL, classids.DOUBLE_SIDED_MTL, classids.VRAY_2SIDED_MTL,
+                          classids.CORONA_RAY_SWITCH_MTL)
+        cases = [
+            (OV, {0: Ref(None), 2: Ref(1), 4: Ref(2)}, "Wrap: base material empty: V-Ray renders it black"),
+            (OV, {1: 1, 2: Ref(1)}, "Wrap: base material empty: V-Ray renders it black"),  # no base stored
+            (DS, {0: Ref(None), 1: Ref(2)},
+             "Wrap: facing material empty: V-Ray renders that side not at all, the scanline black"),
+            (DS, {0: Ref(None), 1: Ref(2), 2: 0},
+             "Wrap: facing material empty: V-Ray renders that side not at all, the scanline black"),
+            (TS, {0: Ref(None), 1: Ref(2), 3: 1}, "Wrap: front material empty: V-Ray renders that side not at all"),
+            (RS, {1600: Ref(1), 1601: Ref(2), 1603: Ref(None), 1613: 1},
+             "Wrap: direct material empty: Corona renders nothing to the camera"),
+            (RS, {1600: Ref(1), 1603: Ref(2), 1613: 0},
+             "Wrap: direct material switched off: Corona renders nothing to the camera"),
+            (RS, {1600: Ref(1), 1603: Ref(None), 1610: 0, 1613: 0},
+             "Wrap: direct material switched off: Corona renders nothing to the camera"),
+        ]
+        for class_id, params, reason in cases:
+            with self.subTest((class_id, params)):
+                conv = mat.MaterialConverter(FakeGraph(_wrapper(0, class_id, params, "Wrap"), _vray(1, "A"),
+                                                       _vray(2, "B")))
+                self.assertEqual(conv.peel(0), (None, reason))
+                ir = conv.convert(0)
+                self.assertTrue(ir.unknown)
+                self.assertEqual(ir.name, "Wrap")
+                self.assertEqual(conv.stats.issues, [(0, reason)])
+                self.assertEqual(conv.source_for(0, 0), 0, "a failed peel is its own answer")
+
+    def test_an_unnamed_wrapper_is_named_by_its_class(self):
+        cases = [(classids.VRAY_OVERRIDE_MTL, {2: Ref(1)}, "VRayOverrideMtl: base material empty: V-Ray renders it black"),
+                 (classids.VRAY_MTL_WRAPPER, {0: Ref(None)}, "VRayMtlWrapper: no sub-material"),
+                 (classids.DOUBLE_SIDED_MTL, {0: Ref(5)}, "Double Sided: sub-material 5 is not a material")]
+        for class_id, params, reason in cases:
+            with self.subTest(reason):
+                conv = mat.MaterialConverter(FakeGraph(_wrapper(0, class_id, params, ""), _vray(1), _map(5)))
+                self.assertEqual(conv.peel(0), (None, reason))
+        conv = mat.MaterialConverter(FakeGraph(_wrapper(0, classids.DOUBLE_SIDED_MTL, {0: Ref(1), 2: 0}, ""), _vray(1)))
+        self.assertEqual(conv.peel(0), (1, None))
+        self.assertEqual(conv.stats.issues, [(0, "Double Sided: facing material switched off: drawn all the same, as "
+                                                 "V-Ray renders it (the scanline renders it black)")])
+
+    def test_an_empty_blend_base_draws_its_coat_with_an_issue(self):
+        """V-Ray 5.2 renders a VRayBlendMtl without a base as its coats over nothing (transparent where the blend is
+        below white, maxdrop-6n0.6.4): the first set coat is drawn, a report line says so, once per wrapper object."""
+        line = ("Wrap: base material empty: drawn as its coat, which V-Ray renders over nothing (transparent where the "
+                "blend is below white)")
+        cases = [({0: Ref(None), 1: [Ref(None), Ref(2), Ref(1)]}, 2, [(0, line)]),
+                 ({1: [Ref(1)]}, 1, [(0, line)]),  # no base stored
+                 ({0: Ref(None), 1: [Ref(None)]}, None, [(0, "Wrap: no sub-material")])]
+        for params, want, issues in cases:
+            with self.subTest(params):
+                outer = _wrapper(6, classids.VRAY_MTL_WRAPPER, {0: Ref(0)}, "Outer")
+                conv = mat.MaterialConverter(FakeGraph(_wrapper(0, classids.VRAY_BLEND_MTL, params, "Wrap"), outer,
+                                                       _vray(1, "A"), _vray(2, "B")))
+                self.assertEqual(conv.peel(6)[0], want)
+                self.assertEqual(conv.peel(0)[0], want)  # _sub runs again on the same wrapper
+                conv.convert(0)
+                self.assertEqual(conv.stats.issues, issues)
+
     def test_a_facing_slot_switched_off_and_unused_is_no_issue(self):
-        """The facing-material line names only a facing material that is drawn: an empty one (the back is drawn) or
-        one that is not a material (the peel fails) gives none."""
+        """The facing-material line names only a facing material that is drawn: an empty one (the peel ends there)
+        or one that is not a material (the peel fails) gives none."""
         DS = classids.DOUBLE_SIDED_MTL
-        for params, want in [({0: Ref(None), 1: Ref(2), 2: 0}, (2, None)),
+        for params, want in [({0: Ref(None), 1: Ref(2), 2: 0}, (None, "Wrap: facing material empty: V-Ray renders that "
+                                                                     "side not at all, the scanline black")),
                              ({0: Ref(7), 1: Ref(2), 2: 0}, (None, "Wrap: sub-material 7 is not a material"))]:
             with self.subTest(params):
                 conv = mat.MaterialConverter(FakeGraph(_wrapper(0, DS, params, "Wrap"), _vray(2, "V2"), _map(7)))
@@ -604,13 +759,14 @@ class VRayBasic(unittest.TestCase, Close):
             conv = mat.MaterialConverter(graph)
             ir = conv.convert(by_name["FixtureVRay"])
             self.assertIsNone(conv.convert(None))  # the real graph: a node without a material
-        reflection = (0.309469, 0.361307, 0.417885)  # 151 162 173; mean 0.362887 >= 0.25, colored (spread
-        # 0.108 > NEUTRAL_REFLECTION), Fresnel off: metal
+        reflection = (0.309469, 0.361307, 0.417885)  # 151 162 173; mean 0.362887 >= 0.25, below 1, Fresnel off:
+        # the tinted mirror (maxdrop-6n0.6.16), weight the brightest channel
         self.assertEqual((ir.name, ir.source, ir.unknown), ("FixtureVRay", "VRayMtl", False))
-        self.close(ir.base_color.value, reflection, "base color = reflection (metal rule)")
-        self.close(ir.metallic.value, 1.0, "metallic")
+        self.close(ir.base_color.value, (0.549691, 0.016857, 0.02602), "201 31 41 mixed with 61 71 81 by 0.063986")
+        self.close(ir.metallic.value, 0.37, "reflection_metalness")
         self.close(ir.roughness.value, 0.83, "roughness = glossiness 0.83 (useRoughness on)")
-        self.close(ir.specular.value, 0.362887, "specular = mean reflection")
+        self.close(ir.specular.value, 0.417885, "specular = the brightest reflection channel")
+        self.close(ir.mirror_color, tuple(c / 0.417885 for c in reflection), "the mirror tinted R / max(R)")
         self.close(ir.transmission.value, 0.063986, "transmission = mean of 61 71 81")
         self.close(ir.ior, 1.61, "ior = refraction_ior (refracts)")
         self.assertTrue(ir.thin_walled)
@@ -1610,17 +1766,19 @@ def _lins(*s):
     return tuple(_lin(c) for c in s)
 
 
-def _hair_color(melanin, redness, tint, diffuse=(0.0, 0.0, 0.0)):
-    """CoronaHairMtl's base color as Blender's Principled Hair BSDF colors a strand (Cycles 4.2, svm/closure.h and
-    closure/bsdf_util.h: melanin remapped by -ln(1 - m), the eumelanin and pheomelanin absorption, the tint's
-    absorption at Radial Roughness 0.3), plus the diffuse color."""
-    x = 0.3
-    scale = (((((0.245 * x) + 5.574) * x - 10.73) * x + 2.532) * x - 0.215) * x + 5.969
-    c = -math.log(max(1.0 - melanin, 1e-4))
+def _hair_color(melanin, pheomelanin, tint, diffuse=(0.0, 0.0, 0.0), transmission=(1.0, 1.0, 1.0)):
+    """CoronaHairMtl's base color as Corona 12 renders the material on a plane in a white furnace (maxdrop-em3.164):
+    the color h = exp(-u) per channel, u = (7.68 m^2 + 1.2 m^3) x ((1 - p) x eumelanin + 0.685 p x pheomelanin)
+    (Cycles' absorption shapes) + 0.054 ln(tint)^2, times the transmission color; Corona renders 0.070 + 0.929 h, a
+    Principled BSDF 0.043 + 0.957 x its base (Cycles 5.2, IOR 1.55, roughness 0.5); a diffuse color d mixed in as d +
+    (1 - max d) x that base."""
+    k = 7.68 * melanin ** 2 + 1.2 * melanin ** 3
+    w = max(diffuse)
     out = []
-    for eu, pheo, t, d in zip((0.506, 0.841, 1.653), (0.343, 0.733, 1.924), tint, diffuse):
-        sigma = c * (1.0 - redness) * eu + c * redness * pheo + (math.log(min(1.0, max(1e-4, t))) / scale) ** 2
-        out.append(min(1.0, math.exp(-math.sqrt(sigma) * scale) + d))
+    for eu, pheo, t, d, tr in zip((0.506, 0.841, 1.653), (0.343, 0.733, 1.924), tint, diffuse, transmission):
+        u = k * ((1.0 - pheomelanin) * eu + 0.685 * pheomelanin * pheo) + 0.054 * math.log(min(1.0, max(1e-4, t))) ** 2
+        base = (0.070 + 0.929 * math.exp(-u) * tr - 0.043) / 0.957
+        out.append(min(1.0, d + (1.0 - w) * base))
     return tuple(out)
 
 
@@ -1758,7 +1916,7 @@ class Corona(unittest.TestCase, Close):
         self.assertEqual(ir.metallic.map, mat.MapRef(by_name["FixtureCColor"]))
         self.assertEqual(ir.emission_color.map, mat.MapRef(by_name["FixtureCMix"]))
         self.assertEqual(legacy.base_color.map, mat.MapRef(by_name["FixtureCMultiply"]))
-        self.assertEqual(legacy.specular.map, mat.MapRef(by_name["FixtureCAdd"]))
+        self.assertEqual(legacy.specular.map, mat.MapRef(by_name["FixtureCAdd"], scale=0.5), "levelReflect 0.5")
         self.assertEqual(legacy.roughness.map, mat.MapRef(by_name["FixtureCLegacyGloss"], 1.0, True))
         self.assertEqual(legacy.bump, mat.MapRef(by_name["FixtureCLegacyBump"], 0.5))
         self.assertEqual(legacy.alpha.map, mat.MapRef(by_name["FixtureCHdr"]))
@@ -1804,8 +1962,7 @@ class CoronaMore(unittest.TestCase, Close):
         self.assertEqual(self.ir("PhysTransl").issues, [], "translucency without thin mode: none in Corona 12")
         absorb = self.ir("PhysAbsorb")
         self.close(absorb.transmission.value, 1.0)
-        self.assertEqual(absorb.issues, ["CoronaPhysicalMtl 'FixtureCoronaPhysAbsorb': volumetric absorption and "
-                                         "scattering not converted"])
+        self.assertEqual(absorb.issues, [], "volumetric absorption and scattering: a medium (maxdrop-em3.163)")
         self.assertEqual(self.ir("PhysEdge").issues,
                          ["CoronaPhysicalMtl 'FixtureCoronaPhysEdge': metal edge color not converted"])
         spec = self.ir("PhysIorMode")
@@ -1831,9 +1988,19 @@ class CoronaMore(unittest.TestCase, Close):
         ir = self.ir("LegacyNoPbr")
         self.close(ir.roughness.value, 0.165, "glossiness 0.6, PBR mode off: CORONA_LEGACY_GLOSS")
         self.close(ir.transmission.value, 0.5)
-        self.assertEqual(ir.issues, [
-            "CoronaLegacyMtl 'FixtureCoronaLegacyNoPbr': translucency not converted",
-            "CoronaLegacyMtl 'FixtureCoronaLegacyNoPbr': absorption not converted"])
+        self.assertEqual(ir.issues, ["CoronaLegacyMtl 'FixtureCoronaLegacyNoPbr': translucency not converted"])
+
+    def test_physical_medium(self):
+        """FixtureCoronaPhysAbsorb: absorption 100 / 180 / 255 at 5 mm, scattering 40 grey (gamma off: decoded)."""
+        got = self.ir("PhysAbsorb").medium
+        self.assertIsNotNone(got)
+        _close_medium(self, got, _medium(_lins(100, 180, 255), 0.005, _lins(40, 40, 40)))
+
+    def test_legacy_medium(self):
+        """FixtureCoronaLegacyNoPbr: absorption 90 / 150 / 60 at 3 mm, no scattering (the default black)."""
+        got = self.ir("LegacyNoPbr").medium
+        self.assertIsNotNone(got)
+        _close_medium(self, got, _medium(_lins(90, 150, 60), 0.003, (0.0, 0.0, 0.0)))
 
     def test_layered(self):
         ir = self.ir("Layers")
@@ -1916,13 +2083,12 @@ class CoronaClasses(unittest.TestCase, Close):
         tint = tuple(0.9 * c for c in _lins(230, 200, 180))
         diffuse = tuple(0.5 * c for c in _lins(40, 30, 20))
         self.close(ir.base_color.value, _hair_color(0.3, 0.6, tint, diffuse))
-        tint_map = self.graph.get(ir.base_color.map.index)
-        self.assertEqual((tint_map.name, ir.base_color.map.amount), ("FixtureCHairTint", 0.5))
+        self.assertIsNone(ir.base_color.map, "Corona adds a tint map to the melanin's absorption: not drawn")
         self.close(ir.roughness.value, 0.3, "1 - glossiness 0.7")
         self.close(ir.ior, 1.6)
         self.close(ir.specular.value, 1.0)
         self.close(ir.alpha.value, 200 / 255 * 0.8, "the opacity swatch as stored times its level")
-        self.assertEqual(ir.issues, ["CoronaHairMtl 'FixtureCoronaHairSet': tint map drawn without the melanin color",
+        self.assertEqual(ir.issues, ["CoronaHairMtl 'FixtureCoronaHairSet': tint map not converted",
                                      "CoronaHairMtl 'FixtureCoronaHairSet': melanin map not converted"])
 
     def test_shadow_catchers(self):
@@ -1939,8 +2105,7 @@ class CoronaClasses(unittest.TestCase, Close):
         self.assertFalse(self.ir("HairSet").shadow_catcher)
 
     def test_named_greys(self):
-        for name, cls, what in (("Volume", "CoronaVolumeMtl", "volume not converted"),
-                                ("Scanned", "CoronaScannedMtl", "scanned material (.ctf) not read"),
+        for name, cls, what in (("Scanned", "CoronaScannedMtl", "scanned material (.ctf) not read"),
                                 ("Slicer", "CoronaSlicerMtl", "slicing not converted")):
             ir = self.ir(name)
             self.assertTrue(ir.unknown, name)
@@ -1950,6 +2115,18 @@ class CoronaClasses(unittest.TestCase, Close):
 
     def test_no_class_without_a_rule(self):
         self.assertEqual(dict(self.conv.stats.unknown), {})
+
+    def test_volume(self):
+        """FixtureCoronaVolume (maxdrop-em3.163): no surface (alpha 0), the medium of absorption 200 / 150 / 100 at
+        10 mm, scattering 120 grey, directionality 0.3, emission 255 / 128 / 0 at 5 mm (gamma off: decoded)."""
+        ir = self.ir("Volume")
+        self.assertFalse(ir.unknown)
+        self.assertEqual(ir.source, "CoronaVolumeMtl")
+        self.assertEqual(ir.issues, [])
+        self.close(ir.alpha.value, 0.0)
+        want = _medium(_lins(200, 150, 100), 0.01, _lins(120, 120, 120), 0.3,
+                       tuple(c / 0.005 for c in _lins(255, 128, 0)))
+        _close_medium(self, ir.medium, want)
 
     @unittest.skipIf(numpy is None, "numpy missing")  # assign() needs it
     def test_shadow_catcher_users(self):
@@ -2027,6 +2204,30 @@ class CoronaSynthetic(unittest.TestCase, Close):
         self.close(ir.metallic.value, 1.0, "the map switched off: the whole swatch")
         self.assertIsNone(ir.base_color.map)
 
+    def test_legacy_levels_scale_their_maps(self):
+        """The diffuse, reflection, refraction and opacity levels multiply the map in their slot as well as the color
+        (Corona's documentation): the MapRef's scale, the amount kept (maxdrop-6n0.6.6)."""
+        slots = (("base_color", "p121", "p141", "p290"), ("specular", "p122", "p142", "p291"),
+                 ("transmission", "p123", "p144", "p293"), ("alpha", "p127", "p146", "p295"))
+        for name, level_pid, map_pid, amount_pid in slots:
+            for level, want in ((0.5, mat.MapRef(1, 0.75, False, 0.5)), (1.0, mat.MapRef(1, 0.75)),
+                                (2.0, mat.MapRef(1, 0.75, False, 2.0))):
+                _conv, ir = _convert(_corona(0, classids.CORONA_LEGACY_MTL, **{level_pid: level, map_pid: Ref(1),
+                                                                                amount_pid: 0.75}), _map(1))
+                self.assertEqual(getattr(ir, name).map, want, "%s level %g" % (name, level))
+            _conv, ir = _convert(_corona(0, classids.CORONA_LEGACY_MTL, **{level_pid: 0.0, map_pid: Ref(1)}),
+                                 _map(1))
+            self.assertIsNone(getattr(ir, name).map, "%s level 0: no map" % name)
+        _conv, ir = _convert(_corona(0, classids.CORONA_LEGACY_MTL, p142=Ref(1)), _map(1))
+        self.assertIsNone(ir.specular.map, "levelReflect not stored: 0, no reflection")
+        _conv, ir = _convert(_corona(0, classids.CORONA_LEGACY_MTL, p102=(1.0,) * 3, p122=0.5, p182=999.0,
+                                     p142=Ref(1), p291=0.5), _map(1))
+        self.close(ir.metallic.value, 1.0, "level 0.5 x 0.5 = 0.25 shown: the metal")
+        self.assertEqual(ir.base_color.map, mat.MapRef(1, 0.5, False, 0.5), "the metal's map scaled too")
+        _conv, ir = _convert(_corona(0, classids.CORONA_LEGACY_MTL, p128=0.5, p158=Ref(1)), _map(1))
+        self.assertEqual(ir.emission_color.map, mat.MapRef(1), "self-illumination: the strength scales the map")
+        self.close(ir.emission_strength, 0.5)
+
     def test_legacy_defaults_reflect_nothing(self):
         _conv, ir = _convert(_corona(0, classids.CORONA_LEGACY_MTL))
         self.close(ir.specular.value, 0.0, "levelReflect 0")
@@ -2065,6 +2266,31 @@ class CoronaSynthetic(unittest.TestCase, Close):
         _conv, ir = _convert(_corona(0, classids.CORONA_PHYSICAL_MTL, p461=2, p171=2.0))
         self.close(ir.ior, 2.0)
         self.assertIn("IOR mode 2", ir.issues[0])
+
+    def test_physical_base_ior_outside_1_to_3(self):
+        """IOR mode 0: a base IOR below 1 reflects as its reciprocal, none more than IOR 3 (Corona 12 renders,
+        maxdrop-em3.115); the clearcoat IOR is left as it is (not measured); 0 or below never divides."""
+        for ior, want in ((0.5, 2.0), (4.0, 3.0), (10.0, 3.0), (2.5, 2.5), (1.0, 1.0), (3.0, 3.0), (0.0, 1.0),
+                          (-1.0, 1.0), (0.01, 3.0)):
+            for mode in ({}, {"p461": 0}):
+                _conv, ir = _convert(_corona(0, classids.CORONA_PHYSICAL_MTL, p171=ior, p221=4.0, **mode))
+                self.close(ir.ior, want, "%r %r" % (ior, mode))
+                self.close(ir.coat_ior, 4.0, "the coat as it is")
+                self.assertEqual(ir.issues, [], str(ior))
+
+    def test_physical_refracting_base_ior_outside_1_to_3_is_named(self):
+        """A refracting material keeps its IOR (its refraction through such an IOR was not measured), named when it
+        is outside 1..3; a transmission map counts as refracting."""
+        for ior, want, named in ((4.0, 4.0, True), (0.5, 1.0, True), (1.5, 1.5, False), (3.0, 3.0, False)):
+            _conv, ir = _convert(_corona(0, classids.CORONA_PHYSICAL_MTL, p171=ior, p191=0.5))
+            self.close(ir.ior, want, str(ior))
+            self.assertEqual(len(ir.issues), int(named), str(ir.issues))
+            if named:
+                self.assertIn("base IOR %g" % ior, ir.issues[0])
+                self.assertIn("drawn as IOR %g" % want, ir.issues[0])
+        _conv, ir = _convert(_corona(0, classids.CORONA_PHYSICAL_MTL, p171=4.0, p192=Ref(1)), _map(1))
+        self.close(ir.ior, 4.0, "a transmission map refracts")
+        self.assertEqual(len(ir.issues), 1)
 
     def test_physical_translucency_needs_thin_mode(self):
         for thin, issues in ((0, 0), (1, 1)):
@@ -2127,7 +2353,7 @@ class CoronaSynthetic(unittest.TestCase, Close):
     def test_ray_switch_and_select(self):
         rs = _corona(0, classids.CORONA_RAY_SWITCH_MTL, p1600=Ref(1), p1603=Ref(2), p1613=0)
         conv, ir = _convert(rs, _corona(1, classids.CORONA_PHYSICAL_MTL), _corona(2, classids.CORONA_LEGACY_MTL))
-        self.assertEqual(conv.peel(0), (1, None), "direct switched off: the GI material")
+        self.assertEqual(conv.peel(0), (None, "C: direct material switched off: Corona renders nothing to the camera"))
         sel = _corona(0, classids.CORONA_SELECT_MTL, p312=[Ref(1), Ref(None)], p313=1)
         conv, ir = _convert(sel, _corona(1, classids.CORONA_PHYSICAL_MTL))
         self.assertTrue(ir.unknown)
@@ -2161,17 +2387,38 @@ class CoronaSynthetic(unittest.TestCase, Close):
         self.close(ir.ior, 1.55)
         self.assertEqual((ir.issues, dict(conv.stats.unknown)), ([], {}))
 
-    def test_hair_color_numbers(self):
-        """Literal numbers, apart from _hair_color: Corona's default (melanin 0.5) is a dark brown."""
-        self.close(mat.HAIR_ROUGHNESS_SCALE, 5.888415, "Cycles' polynomial at 0.3")
-        got = mat.hair_color(0.5, 0.0, (1.0, 1.0, 1.0))
-        for g, want in zip(got, (0.030584, 0.011156, 0.001831)):
-            self.assertAlmostEqual(g, want, delta=2e-6)
-        self.close(mat.hair_color(0.0, 0.0, (0.5, 0.25, 1.0)), (0.5, 0.25, 1.0), "no melanin: the tint itself")
+    def test_hair_color_measured(self):
+        """Literal numbers, apart from _hair_color: Corona 12 renders of CoronaHairMtl on a plane in a white furnace
+        (maxdrop-em3.164) read R + P0 x color per channel, R = 0.070 (the colorless floor), P0 = 0.929; the color is
+        (read - R) / P0. The default (melanin 0.5) is a mid brown, not the near black of Principled Hair's
+        parametrization (0.031 / 0.011 / 0.002)."""
+        def measured(*read):
+            return tuple(max(0.0, (r - 0.070) / 0.929) for r in read)
+        cases = (((0.5, 0.0, (1.0, 1.0, 1.0)), measured(0.3960, 0.2317, 0.0993), "the default"),
+                 ((0.3, 0.0, (1.0, 1.0, 1.0)), measured(0.7098, 0.5675, 0.3480), "melanin 0.3"),
+                 ((0.8, 0.0, (1.0, 1.0, 1.0)), measured(0.1281, 0.0791, 0.0690), "melanin 0.8"),
+                 ((0.5, 0.6, (1.0, 1.0, 1.0)), measured(0.5302, 0.3170, 0.1164), "pheomelanin 0.6 (held out)"),
+                 ((0.3, 0.3, (1.0, 1.0, 1.0)), measured(0.7521, 0.6087, 0.3725), "pheomelanin 0.3 (held out)"),
+                 ((0.8, 1.0, (1.0, 1.0, 1.0)), measured(0.3259, 0.1271, 0.0647), "pheomelanin 1"),
+                 ((0.0, 0.0, (0.25, 0.5, 1.0)), (0.837 / 0.929, 0.905 / 0.929, 1.0), "a tint at melanin 0"),
+                 ((0.0, 0.6, (1.0, 1.0, 1.0)), (1.0, 1.0, 1.0), "pheomelanin is a share of the melanin"))
+        for args, want, what in cases:
+            for g, w in zip(mat.hair_color(*args), want):
+                self.assertAlmostEqual(g, w, delta=0.012, msg=what)
 
-    def test_hair_tint_map_without_melanin_is_no_issue(self):
-        conv, ir = _convert(_corona(0, classids.CORONA_HAIR_MTL, p141=0.0, p112=Ref(1)), _map(1))
-        self.assertEqual((ir.base_color.map, ir.issues), (mat.MapRef(1, 1.0), []))
+    def test_hair_tint_map_named(self):
+        """A tint map renders as its swatch would (added to the melanin's absorption): the swatch tint is used and the
+        map named, at any melanin."""
+        for melanin in (0.0, 0.5):
+            conv, ir = _convert(_corona(0, classids.CORONA_HAIR_MTL, p141=melanin, p112=Ref(1)), _map(1))
+            self.assertIsNone(ir.base_color.map)
+            self.close(ir.base_color.value, _hair_color(melanin, 0.0, (1.0, 1.0, 1.0)))
+            self.assertEqual(ir.issues, ["CoronaHairMtl 'C': tint map not converted"])
+
+    def test_hair_randomize_melanin_named(self):
+        _conv, ir = _convert(_corona(0, classids.CORONA_HAIR_MTL, p143=0.5))
+        self.close(ir.base_color.value, _hair_color(0.5, 0.0, (1.0, 1.0, 1.0)))
+        self.assertEqual(ir.issues, ["CoronaHairMtl 'C': randomize melanin not converted"])
 
     def test_layered_over_a_shadow_catcher_is_no_shadow_catcher(self):
         layered = _corona(0, classids.CORONA_LAYERED_MTL, p1000=Ref(1), p1001=[Ref(2)], p1004=[1])
@@ -2183,18 +2430,61 @@ class CoronaSynthetic(unittest.TestCase, Close):
 
     def test_hair_melanin_bounds(self):
         _conv, black = _convert(_corona(0, classids.CORONA_HAIR_MTL, p141=1.0, p142=0.5))
-        self.close(black.base_color.value, _hair_color(1.0, 0.5, (1.0, 1.0, 1.0)), "1 - melanin floored at 1e-4")
+        self.close(black.base_color.value, _hair_color(1.0, 0.5, (1.0, 1.0, 1.0)), "melanin 1: finite")
+        _conv, past = _convert(_corona(0, classids.CORONA_HAIR_MTL, p141=3.0, p142=-1.0))
+        self.close(past.base_color.value, _hair_color(1.0, 0.0, (1.0, 1.0, 1.0)),
+                   "melanin and pheomelanin clamped to 0..1")
         _conv, white = _convert(_corona(0, classids.CORONA_HAIR_MTL, p141=0.0))
-        self.close(white.base_color.value, (1.0, 1.0, 1.0), "no pigment, a white tint")
+        self.close(white.base_color.value, _hair_color(0.0, 0.0, (1.0, 1.0, 1.0)), "no pigment, a white tint")
+        self.assertTrue(all(c > 0.998 for c in white.base_color.value), "Corona: 0.995, the furnace 1")
         _conv, inked = _convert(_corona(0, classids.CORONA_HAIR_MTL, p141=0.0, p101=(0.0, 0.0, 0.0)))
         self.close(inked.base_color.value, _hair_color(0.0, 0.0, (0.0, 0.0, 0.0)), "a black tint floored at 1e-4")
-        self.assertTrue(all(c > 0 for c in inked.base_color.value))
+        self.assertTrue(all(0.02 < c < 0.05 for c in inked.base_color.value), "Corona: only the colorless floor")
 
-    def test_hair_diffuse_added_and_clamped(self):
+    def test_hair_base_renders_as_corona(self):
+        """The base color a Principled BSDF (Cycles 5.2, IOR 1.55, roughness 0.5) needs to read what Corona 12 reads
+        in a white furnace: the Principled reads 0.043 + 0.957 x its base, so the base is (read - 0.043) / 0.957
+        (the default read 0.396 / 0.232 / 0.099, melanin 1 0.081 / 0.070 / 0.070)."""
+        for params, read in (({}, (0.3960, 0.2317, 0.0993)), ({"p141": 1.0}, (0.0813, 0.0704, 0.0700)),
+                             ({"p141": 0.3}, (0.7098, 0.5675, 0.3480))):
+            _conv, ir = _convert(_corona(0, classids.CORONA_HAIR_MTL, **params))
+            for g, r in zip(ir.base_color.value, read):
+                self.assertAlmostEqual(g, (r - 0.043) / 0.957, delta=0.012, msg=params)
+
+    def test_hair_diffuse_mixed(self):
+        """Corona 12 renders: a grey diffuse d gives d + (1 - d) x the hair, exactly (0.5 at melanin 0.5 read 0.699 /
+        0.617 / 0.551; 0.5 at level 0.5 read 0.551 / 0.427 / 0.328); a colored one weighs the hair by about 1 - its
+        largest channel."""
+        def measured(*read):
+            return tuple((r - 0.043) / 0.957 for r in read)
+        for params, read in (({"p102": (0.5, 0.5, 0.5)}, (0.6988, 0.6171, 0.5513)),
+                             ({"p102": (0.5, 0.5, 0.5), "p105": 0.5}, (0.5505, 0.4272, 0.3277))):
+            _conv, ir = _convert(_corona(0, classids.CORONA_HAIR_MTL, **params))
+            for g, w in zip(ir.base_color.value, measured(*read)):
+                self.assertAlmostEqual(g, w, delta=0.012, msg=params)
         _conv, ir = _convert(_corona(0, classids.CORONA_HAIR_MTL, p141=0.0, p102=(1.0, 0.5, 0.0), p105=0.5))
-        self.close(ir.base_color.value, (1.0, 1.0, 1.0), "white plus the diffuse, at most 1")
+        self.close(ir.base_color.value, _hair_color(0.0, 0.0, (1.0, 1.0, 1.0), (0.5, 0.25, 0.0)),
+                   "white hair under half the weight")
+        for g, w in zip(ir.base_color.value, (1.0, 0.75, 0.5)):
+            self.assertAlmostEqual(g, w, delta=1e-3)
         _conv, ir = _convert(_corona(0, classids.CORONA_HAIR_MTL, p102=(1.0, 0.5, 0.0), p105=0.5))
         self.close(ir.base_color.value, _hair_color(0.5, 0.0, (1.0, 1.0, 1.0), (0.5, 0.25, 0.0)))
+        _conv, ir = _convert(_corona(0, classids.CORONA_HAIR_MTL, p102=(0.8, 128 / 255, 0.2)))
+        for g, w in zip(ir.base_color.value, measured(0.9264, 0.5760, 0.2317)):
+            self.assertAlmostEqual(g, w, delta=0.06, msg="a colored diffuse: approximately")
+
+    def test_hair_transmission(self):
+        """Corona 12 renders: the transmission color multiplies the pigment part (0.5 grey at melanin 0.5 read 0.237 /
+        0.152 / 0.085 against 0.396 / 0.232 / 0.099)."""
+        _conv, ir = _convert(_corona(0, classids.CORONA_HAIR_MTL, p152=(0.5, 0.5, 0.5)))
+        self.close(ir.base_color.value, _hair_color(0.5, 0.0, (1.0, 1.0, 1.0), transmission=(0.5, 0.5, 0.5)))
+        for g, read in zip(ir.base_color.value, (0.2372, 0.1521, 0.0848)):
+            self.assertAlmostEqual(g, (read - 0.043) / 0.957, delta=0.012)
+        _conv, ir = _convert(_corona(0, classids.CORONA_HAIR_MTL, p141=0.0, p152=(1.0, 0.5, 0.25)))
+        self.close(ir.base_color.value, _hair_color(0.0, 0.0, (1.0, 1.0, 1.0), transmission=(1.0, 0.5, 0.25)))
+        for g, read in zip(ir.base_color.value, (0.9956, 0.5676, 0.3497)):
+            self.assertAlmostEqual(g, (read - 0.043) / 0.957, delta=0.06, msg="at melanin 0: approximately")
+        self.assertEqual(ir.issues, [])
 
     def test_hair_maps(self):
         maps = [_map(i) for i in range(1, 6)]
@@ -2206,9 +2496,9 @@ class CoronaSynthetic(unittest.TestCase, Close):
         self.assertEqual(ir.bump, mat.MapRef(3, 0.5))
         self.assertEqual(ir.issues, ["CoronaHairMtl 'C': transmission map not converted"], "the glint map is off")
 
-    def test_volume_scanned_slicer_named(self):
-        for key, what in ((classids.CORONA_VOLUME_MTL, "volume"), (classids.CORONA_SCANNED_MTL, "scanned"),
-                          (classids.CORONA_SLICER_MTL, "slicing")):
+    def test_scanned_slicer_named(self):
+        """CoronaVolumeMtl has a rule since maxdrop-em3.163 (CoronaMedia)."""
+        for key, what in ((classids.CORONA_SCANNED_MTL, "scanned"), (classids.CORONA_SLICER_MTL, "slicing")):
             conv, ir = _convert(_corona(0, key))
             self.assertTrue(ir.unknown)
             self.close(ir.base_color.value, GREY)
@@ -2229,6 +2519,162 @@ class CoronaSynthetic(unittest.TestCase, Close):
         plan = mat.MeshSlots([10, 11, 12], [[catcher, catcher, catcher], [catcher, other, None]], None)
         self.assertEqual(mat.shadow_catcher_users(plan), [10], "every slot of the user a catcher")
         self.assertEqual(mat.shadow_catcher_users(mat.MeshSlots([10], [], None)), [], "no slot, no catcher")
+
+
+def _medium(color, meters, albedo, g=0.0, emission=(0.0, 0.0, 0.0)):
+    """The Medium of an absorption color reached at `meters`, a scattering albedo, a directionality and an emission
+    per meter: sigma_t = -ln(color) / meters per channel, sigma_s = albedo x sigma_t, sigma_a the rest."""
+    t = tuple(-math.log(c) / meters for c in color)
+    return mat.Medium(tuple(a * x for a, x in zip(albedo, t)), tuple((1.0 - a) * x for a, x in zip(albedo, t)), g,
+                      emission)
+
+
+def _close_medium(case, got, want):
+    for field in ("scattering", "absorption", "emission"):
+        for a, b in zip(getattr(got, field), getattr(want, field)):
+            case.assertAlmostEqual(a, b, delta=max(TOLERANCE, abs(b) * 1e-6), msg=field)
+    case.assertAlmostEqual(got.anisotropy, want.anisotropy, delta=TOLERANCE)
+
+
+class CoronaMedia(unittest.TestCase, Close):
+    """corona_medium and the three rules that make one (Corona 12 renders, maxdrop-em3.163): the absorption color is
+    reached at its distance, the scattering color is the albedo of that extinction, emission is its color over its
+    distance per unit length; distances in world units."""
+
+    def volume(self, **params):
+        return _convert(_corona(0, classids.CORONA_VOLUME_MTL, **params), *[_map(i) for i in range(1, 4)])
+
+    def test_volume_defaults_are_empty(self):
+        """As created: absorption distance 0 (off), scattering black, emission distance 0: no medium, nothing."""
+        _conv, ir = self.volume()
+        self.assertIsNone(ir.medium)
+        self.close(ir.alpha.value, 0.0, "no surface whatever the medium")
+        self.assertFalse(ir.unknown)
+        self.assertEqual(ir.issues, [])
+
+    def test_volume_in_world_units(self):
+        conv, ir = self.volume(p101=10.0, p102=(0.5, 0.25, 1.0), p203=(1.0, 0.5, 0.0), p204=-0.4)
+        _close_medium(self, ir.medium, _medium((0.5, 0.25, 1.0), 10.0 * conv.meters, (1.0, 0.5, 0.0), -0.4))
+        self.close(ir.medium.absorption[2], 0.0, "a white channel neither absorbs nor scatters")
+        self.close(ir.medium.scattering[2], 0.0)
+
+    def test_emission_without_absorption(self):
+        """Emission distance 10 with the absorption off: emission alone (Corona: 1.0 / 0.502 / 0.251 at h 10)."""
+        conv, ir = self.volume(p201=10.0, p202=(1.0, 0.5, 0.25))
+        self.close(ir.medium.scattering + ir.medium.absorption, (0.0,) * 6)
+        self.close(ir.medium.emission, tuple(c / (10.0 * conv.meters) for c in (1.0, 0.5, 0.25)))
+
+    def test_white_absorption_is_no_medium(self):
+        """Absorption white: no extinction, nothing to scatter (Corona: the slab is invisible)."""
+        _conv, ir = self.volume(p101=10.0, p102=(1.0, 1.0, 1.0), p203=(0.5, 0.5, 0.5))
+        self.assertIsNone(ir.medium)
+
+    def test_untrusted_numbers(self):
+        """A black channel, a tiny or non-finite distance, a directionality past 1: finite coefficients at most
+        MAX_MEDIUM_DENSITY, g inside (-1, 1)."""
+        for params in (dict(p101=10.0, p102=(0.0, 0.0, 0.0), p204=5.0), dict(p101=1e-30, p102=(0.5, 0.5, 0.5)),
+                       dict(p101=float("inf"), p102=(0.5, 0.5, 0.5), p204=float("nan")),
+                       dict(p101=-3.0, p102=(0.5, 0.5, 0.5), p201=1e-30, p202=(1.0, 1.0, 1.0))):
+            _conv, ir = self.volume(**params)
+            m = ir.medium
+            if m is None:
+                continue
+            values = m.scattering + m.absorption + m.emission
+            self.assertTrue(all(math.isfinite(v) and 0.0 <= v <= mat.MAX_MEDIUM_DENSITY for v in values), str(params))
+            self.assertTrue(math.isfinite(m.anisotropy) and -1.0 < m.anisotropy < 1.0, str(params))
+
+    def test_volume_named(self):
+        _conv, ir = self.volume(p101=10.0, p102=(0.5, 0.5, 0.5), p205=Ref(1), p207=1, p206=Ref(2), p208=1,
+                                p201=5.0, p210=Ref(3), p211=1, p209=1)
+        self.assertIsNotNone(ir.medium)
+        self.assertEqual(ir.issues, ["CoronaVolumeMtl 'C': absorption map not converted",
+                                     "CoronaVolumeMtl 'C': scattering map not converted",
+                                     "CoronaVolumeMtl 'C': single bounce not converted",
+                                     "CoronaVolumeMtl 'C': emission map not converted"])
+        self.assertTrue(ir.medium.single, "single bounce on: the builder names no Volume Bounces (maxdrop-6n0.6.33)")
+        _conv, off = self.volume(p101=10.0, p102=(0.5, 0.5, 0.5), p205=Ref(1), p207=0, p206=Ref(2), p208=0)
+        self.assertEqual(off.issues, [], "maps switched off")
+
+    def test_map_alone_is_named(self):
+        """A white swatch under a map that is on: no medium from the swatch, the map named all the same (Corona
+        renders the mapped absorption)."""
+        _conv, ir = _convert(_corona(0, classids.CORONA_PHYSICAL_MTL, p191=1.0, p261=(1.0, 1.0, 1.0), p281=4.0,
+                                     p262=Ref(1), p263=1), _map(1))
+        self.assertIsNone(ir.medium)
+        self.assertEqual(ir.issues, ["CoronaPhysicalMtl 'C': absorption map not converted"])
+        _conv, vol = self.volume(p201=5.0, p202=(0.0, 0.0, 0.0), p210=Ref(3), p211=1)
+        self.assertIsNone(vol.medium)
+        self.assertEqual(vol.issues, ["CoronaVolumeMtl 'C': emission map not converted"])
+        _conv, off = self.volume(p101=0.0, p205=Ref(1), p207=1, p209=1)
+        self.assertEqual(off.issues, [], "absorption distance 0: the medium is off, its maps with it")
+
+    def test_white_channel_is_zero_not_negative(self):
+        _conv, ir = self.volume(p101=10.0, p102=(0.5, 1.0, 1.0))
+        self.assertEqual([math.copysign(1.0, v) for v in ir.medium.absorption], [1.0, 1.0, 1.0])
+
+    def test_physical(self):
+        conv, ir = _convert(_corona(0, classids.CORONA_PHYSICAL_MTL, p191=1.0, p261=(0.5, 0.5, 0.5), p281=4.0,
+                                    p271=(0.25, 0.25, 0.25), p282=0.6))
+        _close_medium(self, ir.medium, _medium((0.5,) * 3, 4.0 * conv.meters, (0.25,) * 3, 0.6))
+        self.assertEqual(ir.issues, [])
+        self.assertFalse(ir.medium.single)
+
+    def test_physical_needs_refraction_and_solid(self):
+        """No refraction: nothing enters; thin mode: Corona renders no medium (probe: 1.0 through a thin slab)."""
+        for params in (dict(p191=0.0), dict(p191=1.0, p203=1), dict(p191=1.0, p281=0.0)):
+            full = dict(dict(p261=(0.5, 0.5, 0.5), p281=4.0), **params)
+            _conv, ir = _convert(_corona(0, classids.CORONA_PHYSICAL_MTL, **full))
+            self.assertIsNone(ir.medium, str(params))
+            self.assertEqual(ir.issues, [], str(params))
+
+    def test_physical_named(self):
+        _conv, ir = _convert(_corona(0, classids.CORONA_PHYSICAL_MTL, p191=1.0, p261=(0.5, 0.5, 0.5), p281=4.0,
+                                     p262=Ref(1), p263=1, p272=Ref(2), p273=1, p283=1), _map(1), _map(2))
+        self.assertIsNotNone(ir.medium)
+        self.assertEqual(ir.issues, ["CoronaPhysicalMtl 'C': absorption map not converted",
+                                     "CoronaPhysicalMtl 'C': scattering map not converted",
+                                     "CoronaPhysicalMtl 'C': single bounce not converted"])
+        self.assertTrue(ir.medium.single)
+
+    def test_legacy(self):
+        conv, ir = _convert(_corona(0, classids.CORONA_LEGACY_MTL, p123=1.0, p188=2.0, p190=(0.5, 0.25, 0.5),
+                                    p215=(1.0, 1.0, 1.0), p216=0.2, p427=1))
+        _close_medium(self, ir.medium, _medium((0.5, 0.25, 0.5), 2.0 * conv.meters, (1.0,) * 3, 0.2))
+        self.assertEqual(ir.issues, [])
+
+    def test_legacy_media_mode(self):
+        """mediaMode 1 is the medium, also when the file does not store it (an older Corona); 0 renders the slab
+        black in Corona 12: named, no medium."""
+        base = dict(p123=1.0, p188=2.0, p190=(0.5, 0.5, 0.5))
+        _conv, missing = _convert(_corona(0, classids.CORONA_LEGACY_MTL, **base))
+        self.assertIsNotNone(missing.medium)
+        _conv, zero = _convert(_corona(0, classids.CORONA_LEGACY_MTL, p427=0, **base))
+        self.assertIsNone(zero.medium)
+        self.assertEqual(zero.issues, ["CoronaLegacyMtl 'C': media mode 0 not converted (Corona 12 renders it black)"])
+
+    def test_legacy_needs_refraction_and_solid(self):
+        for params in (dict(p123=0.0), dict(p123=1.0, p210=1)):
+            _conv, ir = _convert(_corona(0, classids.CORONA_LEGACY_MTL, p188=2.0, p190=(0.5, 0.5, 0.5), **params))
+            self.assertIsNone(ir.medium, str(params))
+            self.assertEqual(ir.issues, [], str(params))
+
+    def test_legacy_named(self):
+        _conv, ir = _convert(_corona(0, classids.CORONA_LEGACY_MTL, p123=1.0, p188=2.0, p190=(0.5, 0.5, 0.5),
+                                     p305=Ref(1), p306=1, p308=Ref(2), p309=1, p315=1), _map(1), _map(2))
+        self.assertIsNotNone(ir.medium)
+        self.assertEqual(ir.issues, ["CoronaLegacyMtl 'C': absorption map not converted",
+                                     "CoronaLegacyMtl 'C': scattering map not converted",
+                                     "CoronaLegacyMtl 'C': single bounce not converted"])
+        self.assertTrue(ir.medium.single)
+
+    def test_layered(self):
+        """The base's medium is the material's (one Volume socket); a layer's is named."""
+        absorb = dict(p191=1.0, p261=(0.5, 0.5, 0.5), p281=4.0)
+        layered = _corona(0, classids.CORONA_LAYERED_MTL, p1000=Ref(1), p1001=[Ref(2)])
+        _conv, ir = _convert(layered, _corona(1, classids.CORONA_PHYSICAL_MTL, **absorb),
+                             _corona(2, classids.CORONA_PHYSICAL_MTL, **absorb))
+        self.assertIsNotNone(ir.medium, "the base's")
+        self.assertEqual(ir.issues, ["C: layer 2's medium not converted"])
 
 
 class CoronaLegacyGloss(unittest.TestCase, Close):
@@ -2426,6 +2872,19 @@ class Assign(unittest.TestCase):
                 conv = mat.MaterialConverter(FakeGraph(*objs))
                 self.assertEqual(conv.source_for(0, 0), 0 if peeled is None else peeled)
                 self.assertEqual((dict(conv.stats.peeled), conv._peels), ({}, {}))
+
+    def test_peel_and_source_for_share_the_wrapper_test(self):
+        """peel() and source_for's walk stop on one predicate (_is_wrapper), so a wrapper class added there reaches
+        both (maxdrop-6n0.7.5): each asks it of every object it walks."""
+        objs = (_wrapper(0, classids.VRAY_MTL_WRAPPER, {0: Ref(1)}), _vray(1, "A"),
+                _wrapper(2, classids.VRAY_MTL_WRAPPER, {0: Ref(1)}))
+        for walk in ("peel", "source_for"):
+            conv = mat.MaterialConverter(FakeGraph(*objs))
+            asked, real = [], conv._is_wrapper
+            conv._is_wrapper = lambda m, key: asked.append(m.index) or real(m, key)
+            self.assertEqual(conv.peel(0) if walk == "peel" else conv.source_for(2, 0), (1, None) if walk == "peel"
+                             else 1)
+            self.assertEqual(asked, [0, 1] if walk == "peel" else [2, 1], walk)
 
     def test_source_for_walks_each_wrapper_once(self):
         """An unpeeled wrapper many IDs wrap onto is walked once, not once per ID: a curve of 1000 IDs, half on a
@@ -2641,6 +3100,108 @@ class FrameZeroParams(unittest.TestCase, Close):
         self.assertEqual(params.frame_zero(s, Block(22), 0, mult), mult)  # point4: not read
         self.assertEqual(params.frame_zero(None, Block(0), 0, mult), mult)  # no scene
         self.assertEqual(params.frame_zero(s, Block(0), 0, 0.5), 0.5)  # a stored value as it is
+
+    def test_report_lines(self):
+        """What a controller's read meets is reported once per material and line however often the rules read it
+        (maxdrop-6n0.6.32): an approximation with the value, a controller left unread with its default."""
+        from unittest import mock
+        controllers = importlib.import_module(_PKG + ".reader.controllers")
+        params = importlib.import_module(_PKG + ".convert.params")
+        vray = self.by_name["FixtureAnimVRay"]
+        diffuse, gloss = (self.graph.get(vray).block(1).get(pid).index for pid in (1, 3))
+        real = controllers.parameter_value
+
+        def value(scene, i):
+            if i == diffuse:  # a color between two keys: interpolated, with its issue
+                return (0.2, 0.4, 0.6), [controllers.Issue(None, i, None, None, controllers.KEYS_INTERPOLATED)]
+            if i == gloss:  # another class
+                return None, [controllers.Issue(None, i, None, None, controllers.UNKNOWN_CLASS)]
+            return real(scene, i)
+
+        with mock.patch.object(controllers, "parameter_value", value):
+            conv = mat.MaterialConverter(self.graph, texmaps=self.tex)
+            ir = conv.convert(vray)
+            conv.convert(vray)
+            conv.graph.get(vray).param(1, 1)  # read again: no second line
+        self.close(ir.base_color.value, conv.swatches.color((0.2, 0.4, 0.6)))
+        self.close(ir.roughness.value, 0.0)  # glossiness 1.0, the default
+        lines = [(i, r) for i, r in conv.stats.issues if "at frame 0" in r]
+        self.assertEqual(sorted(lines), sorted([
+            (vray, "'FixtureAnimVRay': parameter 1 at frame 0 (controller %d): %s" % (
+                diffuse, controllers.KEYS_INTERPOLATED)),
+            (vray, "'FixtureAnimVRay': parameter 3 at frame 0 (controller %d): %s, %s" % (
+                gloss, controllers.UNKNOWN_CLASS, params.DEFAULT_USED))]))
+
+    def test_part_report_lines(self):
+        """A Standard shader's controller lines go to the report under the material, once however often the rule
+        reads the parameter; a read without an issue gives none."""
+        from unittest import mock
+        controllers = importlib.import_module(_PKG + ".reader.controllers")
+        params = importlib.import_module(_PKG + ".convert.params")
+        m = self.graph.get(self.by_name["FixtureAnimVRay"])
+        part = reader_materials.Part(m.index, m.class_id, m.superclass, {0: m.block(1)}, {})
+        heard = []
+        value = mat._PartParams(part, self.graph.scene, lambda i, line: heard.append((i, line)), m).param(1, 1)
+        self.close(value, self.want("FixtureAnimVRay", 1, 1))
+        self.assertEqual(heard, [])  # read without an issue: no line
+
+        class Typed(FakeBlock):
+            def param(self, pid):
+                return types.SimpleNamespace(base_type=2)
+
+        std = _standard(0, classids.BLINN_SHADER, {1: pblock.Animated(9)}, name="Std")
+        std.parts[2] = reader_materials.Part(50, classids.BLINN_SHADER, classids.SC_SHADER,
+                                             {0: Typed(0, {1: pblock.Animated(9)})}, {})
+        std.refs = {}  # no Texmaps object: the maps from block 3
+        graph = FakeGraph(std)
+        graph.scene = object()
+        unknown = controllers.Issue(None, 9, None, None, controllers.UNKNOWN_CLASS)
+        with mock.patch.object(controllers, "parameter_value", return_value=(None, [unknown])):
+            conv = mat.MaterialConverter(graph)
+            ir = conv.convert(0)
+            mat._PartParams(std.parts[2], graph.scene, conv._issue_once, std).param(1, 0)  # read again
+        self.close(ir.base_color.value, (150 / 255,) * 3)  # the default diffuse
+        self.assertEqual([x for x in conv.stats.issues if "at frame 0" in x[1]], [
+            (0, "'Std' shader: parameter 1 at frame 0 (controller 9): %s, %s"
+             % (controllers.UNKNOWN_CLASS, params.DEFAULT_USED))])
+        self.assertEqual(params.at_frame_zero(self.graph, heard.append).report, heard.append)
+
+
+class CoronaOpacityColor(unittest.TestCase, Close):
+    """Corona 12 renders an opacity color per channel, as stored in both gamma modes (maxdrop-6n0.6.35:
+    CoronaLegacyMtl and CoronaPhysicalMtl, grey 64 -> 0.251, red -> 1 0 0, 200 100 50 -> 0.784 0.392 0.196): a
+    float alpha keeps the mean, a colored one is an issue."""
+    CASES = ((classids.CORONA_LEGACY_MTL, "p105"), (classids.CORONA_PHYSICAL_MTL, "p121"),
+             (classids.CORONA_SKIN_MTL, "p122"), (classids.CORONA_HAIR_MTL, "p103"))
+    HIDDEN = ((classids.CORONA_LEGACY_MTL, "p105", dict(p146=Ref(1), p166=1, p295=1.0)),
+              (classids.CORONA_LEGACY_MTL, "p105", dict(p127=0.0)),
+              (classids.CORONA_PHYSICAL_MTL, "p121", dict(p123=Ref(1), p124=1, p125=1.0)),
+              (classids.CORONA_PHYSICAL_MTL, "p121", dict(p122=0.0)))
+
+    def test_colored_opacity_color_is_an_issue(self):
+        for cid, pid in self.CASES:
+            with self.subTest(cid=cid):
+                conv, ir = _convert(_corona(0, cid, **{pid: (1.0, 0.0, 0.0)}))
+                self.close(ir.alpha.value, 1.0 / 3.0, "the mean")
+                found = [r for r in ir.issues if "opacity color" in r]
+                self.assertEqual(len(found), 1, ir.issues)
+                self.assertIn("per channel", found[0])
+                self.assertIn(found[0], [r for _i, r in conv.stats.issues])
+
+    def test_grey_opacity_color_is_exact(self):
+        for cid, pid in self.CASES:
+            for v in (64 / 255, 1.0, 0.0):
+                with self.subTest(cid=cid, v=v):
+                    _conv, ir = _convert(_corona(0, cid, **{pid: (v, v + 0.4 / 255 if v < 1 else v, v)}))
+                    self.assertAlmostEqual(ir.alpha.value, v, delta=1e-3, msg="as stored, whatever the gamma")
+                    self.assertEqual([r for r in ir.issues if "opacity color" in r], [])
+
+    def test_hidden_opacity_color_is_no_issue(self):
+        """A map at full amount over the swatch, or a level of 0: the swatch does not show, so no issue."""
+        for cid, pid, params in self.HIDDEN:
+            with self.subTest(cid=cid, params=sorted(params)):
+                _conv, ir = _convert(_corona(0, cid, **{pid: (1.0, 0.0, 0.0)}, **params), _map(1))
+                self.assertEqual([r for r in ir.issues if "opacity color" in r], [], ir.issues)
 
 
 if __name__ == "__main__":

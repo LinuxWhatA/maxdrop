@@ -43,6 +43,7 @@ report = importlib.import_module(_PKG + ".convert.report")
 classids = importlib.import_module(_PKG + ".reader.classids")
 controllers = importlib.import_module(_PKG + ".reader.controllers")
 pblock = importlib.import_module(_PKG + ".reader.pblock")
+geometry = importlib.import_module(_PKG + ".reader.geometry")
 
 SUBSURF, SOLIDIFY, MIRROR = rules.SUBSURF, rules.SOLIDIFY, rules.MIRROR
 X, Y, Z = (True, False, False), (False, True, False), (False, False, True)
@@ -51,7 +52,7 @@ NONE = (False, False, False)
 
 def _subsurf(levels, render):
     return (SUBSURF, {"subdivision_type": "CATMULL_CLARK", "levels": levels, "render_levels": render,
-                      "use_limit_surface": False, "use_creases": True})
+                      "use_limit_surface": False, "boundary_smooth": "PRESERVE_CORNERS", "use_creases": True})
 
 
 def _solidify(inner, outer):
@@ -77,6 +78,7 @@ CONVERTED = {
     "FixtureSymmetryNoSlice": [_mirror(Z, False, False, False, 0.1)],
     "FixtureOrder": [_solidify(0.0, 1.0), _mirror(X, False, True, True, 0.1), _subsurf(1, 1)],
     "FixtureBlocked": [],
+    "FixtureTurboSymHalf": [_subsurf(1, 1), _mirror(X, False, True, True, 0.1)],
 }
 # From tools/fixtures/stack_shell.ms: (inner, outer) of each open box's Shell
 SHELLS = {"FixtureShellOut": (-1.0, 2.0), "FixtureShellIn": (3.0, -1.0), "FixtureShellCrossed": (-2.0, 1.0),
@@ -85,18 +87,34 @@ SHELLS = {"FixtureShellOut": (-1.0, 2.0), "FixtureShellIn": (3.0, -1.0), "Fixtur
 SHELL_RIMS = {"FixtureShellPlane": ([SOLIDIFY], True), "FixtureShellOverride": ([SOLIDIFY], True),
               "FixtureShellTurbo": ([SUBSURF, SOLIDIFY], True), "FixtureShellSmoothed": ([SOLIDIFY, SUBSURF], False),
               "FixtureShellSymHalf": ([MIRROR, SOLIDIFY], True), "FixtureShellSymClosed": ([MIRROR, SOLIDIFY], True),
-              "FixtureShellSymQuarter": ([MIRROR, MIRROR, SOLIDIFY], True)}
+              "FixtureShellSymQuarter": ([MIRROR, MIRROR, SOLIDIFY], True),
+              # a Shell below a Symmetry whose slice plane holds its rim: the Mirror moved below the Solidify; with a
+              # smoother (Smooth Result) above, the rim is not hardened; weld off: not moved (a line)
+              "FixtureShellUnderSym": ([MIRROR, SOLIDIFY], True),
+              "FixtureShellUnderSymTurbo": ([MIRROR, SOLIDIFY, SUBSURF], False),
+              "FixtureShellBetweenSym": ([MIRROR, MIRROR, SOLIDIFY], True),
+              "FixtureShellUnderSymNoWeld": ([SOLIDIFY, MIRROR], True),
+              "FixtureShellUnderSymExtrude": ([MIRROR, SOLIDIFY], True)}  # an open Line under an Extrude
 # (open edges of the base mesh, those of them sharp) where not (4, 4) hardened or (4, 0): the half and quarter boxes
 # below a Symmetry, their cut's open edges on the mirror plane welded shut (not sharp), the top's sharp
-SHELL_RIM_EDGES = {"FixtureShellSymHalf": (8, 4), "FixtureShellSymClosed": (6, 0), "FixtureShellSymQuarter": (6, 2)}
+SHELL_RIM_EDGES = {"FixtureShellSymHalf": (8, 4), "FixtureShellSymClosed": (6, 0), "FixtureShellSymQuarter": (6, 2),
+                   "FixtureShellUnderSym": (8, 4), "FixtureShellUnderSymTurbo": (8, 0),
+                   "FixtureShellBetweenSym": (6, 2), "FixtureShellUnderSymNoWeld": (8, 8),
+                   "FixtureShellUnderSymExtrude": (8, 6)}
 # the report lines stack_shell is made to raise: the plane's four rim corners of 90 degrees, the override group 4
 SHELL_ISSUES = [("FixtureShellPlane", "modifiers: Shell: auto smooth: 4 corners of the rim sharper than 45 degrees "
                  "shade smooth (3ds Max splits the rim there)"),
                 ("FixtureShellOverride", "modifiers: Shell: smoothing group override (group 4) not converted: 3ds "
-                 "Max merges the rim into the faces along it of that group")]
+                 "Max merges the rim into the faces along it of that group"),
+                # its Symmetry's weld is off: 3ds Max's slice drops the rim on the plane and leaves the cut open
+                ("FixtureShellUnderSymNoWeld", "modifiers: Symmetry: the rim of the Shell below it along the mirror "
+                 "plane differs from 3ds Max's: the Mirror is moved below the Solidify only for a rim lying on the "
+                 "plane, with slice and weld on")]
 SHADING = {"FixtureTurboOne": rules.SMOOTH, "FixtureTurboRender": rules.CREASE, "FixtureMeshSmooth": rules.SMOOTH,
-           "FixtureOrder": rules.SMOOTH}
+           "FixtureOrder": rules.SMOOTH, "FixtureTurboSymHalf": rules.SMOOTH}
 SHARP_EDGES_BOX = 12  # a poly box: a smoothing group per side
+# FixtureTurboSymHalf's open half box: the five edges between its four sides
+SHARP_EDGES_HALF_BOX = {"FixtureTurboSymHalf": 5}
 
 
 def _frame(rows):
@@ -174,11 +192,11 @@ class Fixture(unittest.TestCase):
 
     def test_the_report_counts_them_as_converted(self):
         rep = report.gather(self.desc)
-        self.assertEqual(dict(rep.modifiers_converted), {"Symmetry": 4, "TurboSmooth": 3, "Shell": 2,
+        self.assertEqual(dict(rep.modifiers_converted), {"Symmetry": 5, "TurboSmooth": 4, "Shell": 2,
                                                          "MeshSmooth": 1})
         self.assertEqual(dict(rep.modifiers), {"TurboSmooth": 1, "Bend": 1})
         self.assertEqual(dict(rep.modifiers_applied), {})
-        self.assertIn("Modifiers converted to a Blender modifier, nodes by class: Symmetry 4, TurboSmooth 3, "
+        self.assertIn("Modifiers converted to a Blender modifier, nodes by class: Symmetry 5, TurboSmooth 4, "
                       "Shell 2, MeshSmooth 1", rep.text())
 
     def test_option_off_converts_nothing(self):
@@ -187,9 +205,11 @@ class Fixture(unittest.TestCase):
         self.assertEqual(desc.issues, [])
         self.assertEqual({n.name: n.modifiers for n in desc.nodes}["FixtureOrder"],
                          ("TurboSmooth", "Symmetry", "Shell"))
-        self.assertTrue(all(len(md.sharp_edges) == SHARP_EDGES_BOX and not md.creases
-                            for md in desc.meshes.values()))
-        self.assertEqual(sum(report.gather(desc).modifiers.values()), 12)
+        for node in desc.nodes:
+            md = desc.meshes[node.mesh]
+            self.assertEqual(len(md.sharp_edges), SHARP_EDGES_HALF_BOX.get(node.name, SHARP_EDGES_BOX), node.name)
+            self.assertFalse(md.creases, node.name)
+        self.assertEqual(sum(report.gather(desc).modifiers.values()), 14)
 
     def test_stack_shell_one_sided_and_inside_out(self):
         desc = conv.read(STACK_SHELL)
@@ -215,10 +235,12 @@ class Fixture(unittest.TestCase):
             self.assertEqual([m.kind for m in node.converted], kinds, node.name)
             rim = node.mesh[-1] if node.mesh[-1][0] == "rim" else None
             self.assertEqual(rim is not None, hardened, node.name)
-            mirrors = tuple(m for m in node.converted if m.kind == MIRROR)
-            # the rim entry holds the Mirrors below the Shell, True without one
-            self.assertEqual(rim and rim[1], tuple((m.settings, m.mirror) for m in mirrors) or True if hardened
-                             else None, node.name)
+            seam = next((x for x in node.mesh if isinstance(x, tuple) and x and x[0] == "seam"), None)
+            # the rim entry holds the Mirrors below the Shell in 3ds Max's stack, True without one; the seam entry
+            # those below it and those right above it
+            mirrors = tuple((m.settings, m.mirror) for m in node.converted if m.kind == MIRROR)
+            mirrors = tuple(m for m in mirrors if not (seam and m in seam[2]))
+            self.assertEqual(rim and rim[1], mirrors or True if hardened else None, node.name)
             md = desc.meshes[node.mesh]
             boundary = conv.open_edges(md.loop_vertices, md.loop_starts, md.loop_totals)
             sharp = {tuple(e) for e in md.sharp_edges.tolist()}
@@ -226,6 +248,11 @@ class Fixture(unittest.TestCase):
             # every other base mesh: the top's (the plane's) 4 edges
             self.assertEqual(got, SHELL_RIM_EDGES.get(node.name, (4, 4 if hardened else 0)), node.name)
             self.assertEqual([tuple(e) for e in md.sharp_edges.tolist()], sorted(sharp), node.name)  # sorted, no repeats
+        # without a hardened rim the key's seam entry holds the Mirrors right above the Shell
+        turbo = next(n for n in desc.nodes if n.name == "FixtureShellUnderSymTurbo")
+        mirror = turbo.converted[0]
+        self.assertIn(("seam", (), ((mirror.settings, mirror.mirror),)), turbo.mesh)
+        self.assertEqual(desc.meshes[turbo.mesh].lowered, 1)
         shell = next(n for n in desc.nodes if n.name == "FixtureShellOverride").converted[0]
         self.assertEqual(shell.rim, rules.RimRule(False, 45.0, 4))
 
@@ -303,16 +330,17 @@ class Rules(unittest.TestCase):
         self.assertEqual((dict(md.settings)["levels"], dict(md.settings)["render_levels"], len(issues)), (10, 0, 2))
 
     def test_what_is_not_converted_is_an_issue(self):
-        cases = ((classids.MESHSMOOTH, {9: rules.CLASSIC}), (classids.MESHSMOOTH, {9: 5}),
+        cases = ((classids.MESHSMOOTH, {9: rules.CLASSIC}), (classids.MESHSMOOTH, {9: rules.QUAD_OUTPUT}),
+                 (classids.MESHSMOOTH, {9: 5}),
                  (classids.MESHSMOOTH, {2: 0.5}), (classids.MESHSMOOTH, {6: 1}), (classids.TURBOSMOOTH, {5: 1}),
                  (classids.SHELL, {12: 3}), (classids.SHELL, {19: 1}), (classids.SHELL, {2: 1}),
                  (classids.SHELL, {8: 1}), (classids.SHELL, {17: 1}))
         for cid, values in cases:
             _md, issues = _convert(cid, values)
             self.assertEqual(len(issues), 1, repr(values))
-        # MeshSmooth quad output is Catmull-Clark; with auto smooth on (the default) 3ds Max ignores the override;
-        # with it off the override depends on the mesh: convert.scene names it (test_rim_rule)
-        for cid, values in ((classids.MESHSMOOTH, {9: rules.QUAD_OUTPUT}), (classids.SHELL, {4: 1}),
+        # with auto smooth on (the default) 3ds Max ignores the override; with it off the override depends on the
+        # mesh: convert.scene names it (test_rim_rule)
+        for cid, values in ((classids.MESHSMOOTH, {9: rules.NURMS}), (classids.SHELL, {4: 1}),
                             (classids.SHELL, {4: 1, 14: 1}), (classids.SHELL, {14: 0}),
                             (classids.SHELL, {4: 1, 14: 0})):
             _md, issues = _convert(cid, values)
@@ -392,6 +420,9 @@ class Rules(unittest.TestCase):
         self.assertEqual((dict(out[1].settings)["levels"], len(issues)), (7, 1))
         out, issues = rules.budget((smooth, smooth), 24)  # the second gets what the first left: none
         self.assertEqual(([dict(m.settings)["levels"] for m in out], len(issues)), ([8, 0], 2))
+        stack = (smooth, shell, smooth)  # one out per modifier in, in order: build.emitters pairs them by position
+        out, _issues = rules.budget(stack, 24)
+        self.assertEqual([(m.index, m.kind) for m in out], [(m.index, m.kind) for m in stack])
         small, _i = _convert(classids.TURBOSMOOTH, {0: 2})
         self.assertEqual(rules.budget((small,), 24), ((small,), []))
         self.assertEqual(rules.budget((), 10 ** 9), ((), []))
@@ -420,11 +451,12 @@ def _md(kind, shading=None, index=0):
                                      rules.RimRule(True, 45.0, None) if kind == SOLIDIFY else None)
 
 
-def _mirror_md(axis=0, merge=True, threshold=0.1, frame=None):
+def _mirror_md(axis=0, merge=True, threshold=0.1, frame=None, slice_=True, index=3):
     on = tuple(k == axis for k in range(3))
-    settings = (("use_axis", on), ("use_bisect_axis", on), ("use_bisect_flip_axis", (False,) * 3),
+    settings = (("use_axis", on), ("use_bisect_axis", on if slice_ else (False,) * 3),
+                ("use_bisect_flip_axis", (False,) * 3),
                 ("use_mirror_merge", merge), ("merge_threshold", threshold))
-    return rules.ModifierDescription(3, MIRROR, "Symmetry", "Symmetry", True, settings, frame, None)
+    return rules.ModifierDescription(index, MIRROR, "Symmetry", "Symmetry", True, settings, frame, None)
 
 
 # a unit quad (the plane), a cube without its top (counter-clockwise from outside), a closed cube
@@ -451,6 +483,13 @@ CUBE = _faces(_CUBE, _SIDES + [[4, 5, 6, 7]])
 # the cube without its side on the plane x = 0, as if cut there: open (its top too) and closed (with the top)
 HALF_OPEN_BOX = _faces(_CUBE, [f for f in _SIDES if f != [3, 0, 4, 7]])
 HALF_BOX = _faces(_CUBE, [f for f in _SIDES if f != [3, 0, 4, 7]] + [[4, 5, 6, 7]])
+# the open cube without its sides on x = 0 and y = 0: a quarter
+QUARTER_OPEN_BOX = _faces(_CUBE, [f for f in _SIDES if f not in ([3, 0, 4, 7], [0, 1, 5, 4])])
+
+
+def _at_x(x):
+    """A mirror frame (Blender's columns) moved x along X: the plane x = x."""
+    return ((1.0, 0.0, 0.0, x), (0.0, 1.0, 0.0, 0.0), (0.0, 0.0, 1.0, 0.0), (0.0, 0.0, 0.0, 1.0))
 
 
 def _description(mesh):
@@ -557,6 +596,116 @@ class Rim(unittest.TestCase):
         self.assertEqual(len(conv.open_edges(lv, starts, totals)), 6)  # the whole open box's top, split at x = 0
         p, lv, starts, totals = conv._mirrored(_description(HALF_OPEN_BOX), (_mirror_md(merge=False),))
         self.assertEqual(len(conv.open_edges(lv, starts, totals)), 12)  # two halves, each open
+
+    def test_seam_run(self):
+        shell, smooth = _md(SOLIDIFY, index=1), _md(SUBSURF, rules.SMOOTH)
+        low, a, b = _mirror_md(index=4), _mirror_md(axis=1, index=5), _mirror_md(axis=2, index=6)
+        self.assertEqual(conv._seam((shell, a, b, smooth)), (shell, (a, b)))
+        self.assertEqual(conv._seam((low, shell, a, smooth, b)), (shell, (a,)))
+        self.assertEqual(conv._seam((shell, smooth, a)), (shell, ()))
+        self.assertEqual(conv._seam((smooth, shell, a)), (None, ()))  # a smoother below the Shell: not measured
+        self.assertEqual(conv._seam((a, b)), (None, ()))
+        self.assertEqual(conv._seam(()), (None, ()))
+        run = (low, shell, a, b, smooth)
+        self.assertEqual(conv._lowered(run, shell, (a,)), (low, a, shell, b, smooth))
+        self.assertEqual(conv._lowered(run, shell, (a, b)), (low, a, b, shell, smooth))
+        self.assertIs(conv._lowered(run, shell, ()), run)
+
+    def test_lowered_where_the_rim_lies_on_the_plane(self):
+        half, closed = _description(HALF_OPEN_BOX), _description(HALF_BOX)
+        sym = _mirror_md()
+        # the cut's open edges on x = 0, every face at them square to it: 3ds Max's slice drops the rim there
+        self.assertEqual(conv.lowered(half, (), (sym,), 1.0), (1, None))
+        self.assertEqual(conv.lowered(closed, (), (sym,), 1.0), (1, None))
+        self.assertEqual(conv.lowered(half, (), (), 1.0), (0, None))
+        # the plane 1e-5 off the cut: still on it (3ds Max: within 1e-4 units dropped, 1e-3 kept); 1e-3 off: not,
+        # no line (no open edge on the plane); the tolerance scales with the unit (meters per system unit)
+        self.assertEqual(conv.lowered(half, (), (_mirror_md(frame=_at_x(1e-5)),), 1.0), (1, None))
+        self.assertEqual(conv.lowered(half, (), (_mirror_md(frame=_at_x(1e-3)),), 1.0), (0, None))
+        self.assertEqual(conv.lowered(half, (), (_mirror_md(frame=_at_x(1e-3)),), 10.0), (1, None))
+        # in files of large units the test stays within Blender's bisect distance (1 mm)
+        self.assertEqual(conv.lowered(half, (), (_mirror_md(frame=_at_x(2e-3)),), 100.0), (0, None))
+        self.assertEqual(conv.lowered(half, (), (_mirror_md(frame=_at_x(4e-4)),), 100.0), (1, None))
+        self.assertEqual(conv.lowered(half, (), (_mirror_md(frame=_at_x(5.0)),), 1.0), (0, None))
+        # weld off, slice off: on the plane, not converted (a line)
+        self.assertEqual(conv.lowered(half, (), (_mirror_md(merge=False),), 1.0), (0, conv.SEAM_STAYS))
+        self.assertEqual(conv.lowered(half, (), (_mirror_md(slice_=False),), 1.0), (0, conv.SEAM_STAYS))
+        self.assertEqual(conv.lowered(half, (), (_mirror_md(threshold=0.0),), 1.0), (0, conv.SEAM_STAYS))
+        # the cut's bottom lowered: its faces slant across the plane, the rim leaves it (a line)
+        slant = ([(x, y, z - 0.5 if x == 0 and z == 0 else z) for x, y, z in _CUBE],) + HALF_OPEN_BOX[1:]
+        self.assertEqual(conv.lowered(_description(slant), (), (sym,), 1.0), (0, conv.SEAM_STAYS))
+        # a quarter: Symmetry X then Y above the Shell, or X below it and Y above
+        quarter, y = _description(QUARTER_OPEN_BOX), _mirror_md(axis=1)
+        self.assertEqual(conv.lowered(quarter, (), (sym, y), 1.0), (2, None))
+        self.assertEqual(conv.lowered(quarter, (sym,), (y,), 1.0), (1, None))
+        self.assertEqual(conv.lowered(quarter, (), (sym, _mirror_md(axis=1, merge=False)), 1.0), (1, conv.SEAM_STAYS))
+        self.assertEqual(conv.lowered(quarter, (), (sym, _mirror_md(frame=_at_x(5.0))), 1.0), (1, None))
+        calls = []
+        self.assertEqual(conv.lowered(quarter, (), (sym, y), 1.0, check=lambda: calls.append(1)), (2, None))
+        self.assertGreaterEqual(len(calls), 2)
+        # past MAX_MIRRORED_CORNERS with the copies: not tested, a line
+        cap = conv.MAX_MIRRORED_CORNERS
+        conv.MAX_MIRRORED_CORNERS = 16
+        try:
+            self.assertEqual(conv.lowered(quarter, (), (sym, y), 1.0), (1, conv.SEAM_UNTESTED))
+            self.assertEqual(conv.lowered(quarter, (sym,), (y,), 1.0), (0, conv.SEAM_UNTESTED))
+        finally:
+            conv.MAX_MIRRORED_CORNERS = cap
+
+    def test_face_normals(self):
+        # a triangle, a non-planar quad (its area vector), a face of no area
+        p = numpy.array([(0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 1), (2, 0, 0)], dtype=numpy.float64)
+        lv = numpy.array([0, 1, 2, 0, 1, 3, 2, 0, 1, 4])
+        starts, totals = numpy.array([0, 3, 7]), numpy.array([3, 4, 3])
+        n = conv._face_normals(p, lv, starts, totals, numpy.array([True, True, True]))
+        self.assertTrue(numpy.allclose(n[0], (0, 0, 1)))
+        self.assertTrue(numpy.allclose(n[1], numpy.array((-1, -1, 2)) / math.sqrt(6)))
+        self.assertTrue(numpy.allclose(n[2], (0, 0, 0)))
+        only = conv._face_normals(p, lv, starts, totals, numpy.array([False, True, False]))
+        self.assertTrue(numpy.allclose(only, n[1:2]))
+
+    def test_opposite_orders_on_one_base_keep_their_own_decision(self):
+        # instances of one half box, one with Symmetry (weld off) then Shell, the other with Shell then Symmetry:
+        # their meshes are keyed apart, each with its own decision (one key crashed the second node)
+        pos, lv, starts, totals = HALF_OPEN_BOX
+        data = geometry.MeshData(numpy.asarray(pos, dtype=numpy.float32), numpy.asarray(lv, dtype=numpy.int32),
+                                 numpy.asarray(starts, dtype=numpy.int32), numpy.ones(len(starts), dtype=numpy.uint32),
+                                 numpy.zeros(len(starts), dtype=numpy.int32), {})
+        sym, shell = _mirror_md(merge=False), _md(SOLIDIFY, index=1)
+        for first in (0, 1):
+            desc = types.SimpleNamespace(meshes={}, issues=[])
+            orders = ((shell, sym), (sym, shell))
+            got = {}
+            for order in orders[first:] + orders[:first]:
+                rim, (seam, above) = conv._rim(order), conv._seam(order)
+                mirrors = conv._mirrors(order, seam if rim is None else rim)
+                key, _done = conv._mapped_mesh(None, desc, {}, (7, None), data, (), 0, "n", None, 1.0, None, None,
+                                               True, mirrors, None, above=above)
+                md = desc.meshes[key]
+                conv._name_seam(desc, set(), above, key, 0)
+                got[order] = (md.lowered, md.seam_issue, len(conv._rim_mirrors(md, mirrors, above, 1.0)))
+            self.assertEqual(len(desc.meshes), 2)
+            self.assertEqual(got, {(shell, sym): (0, conv.SEAM_STAYS, 1), (sym, shell): (0, None, 1)})
+            self.assertEqual([x for _n, x in desc.issues], ["modifiers: Symmetry: " + conv.SEAM_STAYS])
+
+    def test_rim_mirrors(self):
+        half, sym, y = _description(HALF_OPEN_BOX), _mirror_md(), _mirror_md(axis=1)
+        half.lowered, half.seam_issue = 1, None
+        self.assertEqual(conv._rim_mirrors(half, (y,), (sym,), 1.0), (y, sym))
+        # a Mirror that stays above: counted welding what lies on its plane, where 3ds Max's slice drops the rim
+        half.lowered, half.seam_issue = 0, conv.SEAM_STAYS
+        off = _mirror_md(merge=False)
+        got = conv._rim_mirrors(half, (), (off,), 2.0)
+        self.assertEqual(len(got), 1)
+        settings = dict(got[0].settings)
+        self.assertTrue(settings["use_mirror_merge"])
+        self.assertAlmostEqual(settings["merge_threshold"], 4e-4)
+        self.assertEqual(settings["use_axis"], dict(off.settings)["use_axis"])
+        auto = rules.RimRule(True, 45.0, None)
+        self.assertEqual(conv.rim_issues(half, auto, mirrors=conv._rim_mirrors(half, (), (off,), 1.0)), [])
+        # without the slice 3ds Max keeps the rim on the plane, corners and all: counted on the mesh as it is
+        self.assertEqual(conv._rim_mirrors(half, (), (_mirror_md(slice_=False),), 1.0), ())
+        self.assertEqual(len(conv.rim_issues(half, auto, mirrors=())), 1)
 
     def test_rim_issues(self):
         plane, box, cube = _description(QUAD), _description(OPEN_CUBE), _description(CUBE)

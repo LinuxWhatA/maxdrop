@@ -126,9 +126,9 @@ class Anim(float):
         return "Anim(%r)" % float(self)
 
 
-def list_block(b, *weights):
+def list_block(b, *weights, average=0):
     """A list controller's ParamBlock2 as 3ds Max 2020 writes it: parameter 0 the weights, a float table (an Anim is
-    a controller in the block's next reference slot), parameter 1 a bool."""
+    a controller in the block's next reference slot), parameter 1 Average (an i32, 1 when on)."""
     body, slots = struct.pack("<BI", 0, len(weights)), []
     for w in weights:
         if isinstance(w, Anim):
@@ -136,7 +136,7 @@ def list_block(b, *weights):
             slots.append(b.flt(float(w)))
         else:
             body += struct.pack("<Bf", 0xC0, w)
-    entries = [pb2_entry(0, 0x800, 0x921089, body), pb2_entry(1, 4, 0x820000, struct.pack("<Bi", 0x40, 0))]
+    entries = [pb2_entry(0, 0x800, 0x921089, body), pb2_entry(1, 4, 0x820000, struct.pack("<Bi", 0x40, average))]
     head = leaf(0x0009, struct.pack("<IHIHI", 0x1E, 0, 0x55F03700, len(entries), 0))
     return b.add(node(C_PB2, *([refs34(*slots)] if slots else []), head, *entries))
 
@@ -496,8 +496,9 @@ class TestKeyframe(MatrixCase):
         self.assertEqual(issues, [])
 
     def test_between_keys(self):
-        # records zero after the value: a Bezier with handles of length 0 is a straight line, TCB tangents of 0 go
-        # 3u^2 - 2u^3 of the way; the rotations' zero control quaternions are TestTangents' business
+        # records zero after the value: flat tangents, TCB's and a smooth Bezier key's (flags 0, whose handles are a
+        # third long whatever length is stored) go 3u^2 - 2u^3 of the way; the rotations' zero control quaternions
+        # are TestTangents' business
         for name, (_c, _cid, _size, count) in KEYFRAMED.items():
             first, last = KEY_VALUES[count]
             if count == 4 and not name.startswith("Linear"):
@@ -505,7 +506,7 @@ class TestKeyframe(MatrixCase):
             with self.subTest(name):
                 got, issues = self.world(name, saved=STALE[count], interval=AT_FRAME_30,
                                          keys=keys_of(name, (-1600, first), (6400, last)))  # 0 a fifth of the way
-                f = 0.104 if name.startswith("TCB") else 0.2
+                f = 0.2 if name.startswith("Linear") else 0.104
                 if count == 4:
                     want = ct.quat_matrix(_rotz(42))
                 else:
@@ -671,6 +672,54 @@ NEAR_TCB = ((-7200, 0, _FIRST),
 OPPOSITE_LINEAR = ((-1600, 0, _Q1), (6400, 0, tuple(-v for v in _Q1)))
 
 
+def auto_bits(cid, count, *indices):
+    """0x2533 (auto in tangents) or 0x2534 (auto out tangents): a 0x2700 bit array of count keys, indices set."""
+    data = bytearray((count + 7) // 8)
+    for k in indices:
+        data[k >> 3] |= 1 << (k & 7)
+    return node(cid, leaf(0x2700, struct.pack("<i", count) + bytes(data)))
+
+
+def ort(before=None, after=None, off=None):
+    """0x8499: the out-of-range types before (0x3000) and after (0x3001), 0x3003 1 when switched off."""
+    return node(0x8499, *(leaf(cid, struct.pack("<i", v)) for cid, v in ((0x3000, before), (0x3001, after),
+                                                                           (0x3003, off)) if v is not None))
+
+
+def time_range(start, end):
+    return leaf(0x3003, struct.pack("<ii", start, end))
+
+
+# probes of 3ds Max 2020 (maxdrop-6n0.6.12): Bezier Float keys at frames -20, 10, 40 (, 55) and 3ds Max's value at
+# frame 0. A Linear tangent beside a custom key, whose stored tangent is stale (0.00520833, 0.003125)
+LINEAR_BESIDE_CUSTOM = ((-3200, 0x480, (-25, 0, 0.00520833302, -1, 0.333000004)),
+                        (1600, 0x1680, (-10, 0.0666666701, 0.0666666701, 0.400000006, 0.899999976)),
+                        (6400, 0x480, (-15, 0.00312499981, -10, 0.333299994, -1)))
+# the same beside an auto key (its auto bits set), and four auto keys: lengths of 0.3333 drawn as a third
+LINEAR_BESIDE_AUTO = ((-3200, 0x480, (-25, 0, 0.00520833302, -1, 0.333000004)),
+                      (1600, 0x1680, (-10, -0.0, 0, 0.333299994, 0.333299994)),
+                      (6400, 0x480, (-15, 0.00312499981, -10, 0.333299994, -1)))
+AUTO_KEYS = ((-3200, 0x1680, (-25, 0, 0, -1, 0.333299994)),
+             (1600, 0x1680, (-10, -0.00312500005, 0.00312500005, 0.333299994, 0.333299994)),
+             (6400, 0x1680, (5, -0.00555555569, 0.00555555569, 0.333299994, 0.333299994)),
+             (8800, 0x1680, (30, 0, 0, 0.333299994, -1)))
+SMOOTH_KEYS = ((-3200, 0x0, (-25, 0, 0.00520833302, -1, 0.333000004)),
+               (1600, 0x0, (-10, -0.0010416666, 0.0010416666, 0.333299994, 0.333000004)),
+               (6400, 0x0, (-15, -0.012152778, 0.012152778, 0.333299994, 0.333000004)),
+               (8800, 0x0, (30, -0.0253472216, 0, 0.333299994, -1)))
+# key 2's in tangent auto and its out tangent custom, key 3's in custom and its out auto
+AUTO_IN_CUSTOM_OUT = ((-3200, 0x480, (-25, 0, 0.00312499981, -1, 0.333000004)),
+                      (1600, 0x1680, (-10, -0.0333333351, 0.0333333351, 0.333299994, 0.333000004)),
+                      (6400, 0x1680, (5, 0.0166666675, -0.0166666675, 0.333299994, 0.333299994)),
+                      (8800, 0x480, (30, -0.0128472215, -55, 0.333299994, -1)))
+LINEAR_BESIDE_AUTO_POSITION = (
+    (-3200, 0x480, (-25, 3, 7, 0, 0, 0, 0.00520833302, 0.00687499996, -0.00489583332, -1, -1, -1, 0.333299994,
+                    0.333299994, 0.333299994, 0, 0, 0)),
+    (1600, 0x1680, (-10, 20, -4, 0, 0, 0, 0, 0, 0) + (0.333299994,) * 6 + (0, 0, 0)),
+    (6400, 0x480, (-15, 5, 10, 0.00312499981, 0.00645833323, -0.00552083366, -10, -2, -3, 0.333299994, 0.333299994,
+                   0.333299994, -1, -1, -1, 0, 0, 0)))
+
+
 class TestTangents(MatrixCase):
     """Between two Bezier, TCB or Smooth Rotation keys: the curve of their stored tangents, as 3ds Max samples it."""
 
@@ -706,6 +755,42 @@ class TestTangents(MatrixCase):
             with self.subTest(name, keys=keys[0][2][:2]):
                 got, issues = self.world(name, keys)
                 self.assertNear(got, want)
+                self.assertEqual(issues, [])
+
+    def test_tangent_types_equal_3ds_max(self):
+        # a stored length counts only for a custom tangent; a Linear one facing a custom or auto one is the chord's
+        cases = [
+            ("linear beside custom", "Bezier Float", LINEAR_BESIDE_CUSTOM, b"", (44.1966133, 0, 0)),
+            ("linear beside auto", "Bezier Float", LINEAR_BESIDE_AUTO,
+             auto_bits(0x2533, 3, 1) + auto_bits(0x2534, 3, 1), (-12.7777777, 0, 0)),
+            ("auto", "Bezier Float", AUTO_KEYS, auto_bits(0x2533, 4, 0, 1, 2, 3) + auto_bits(0x2534, 4, 0, 1, 2, 3),
+             (-16.1111107, 0, 0)),
+            ("smooth", "Bezier Float", SMOOTH_KEYS, b"", (-12.7777777, 0, 0)),
+            ("auto in, custom out", "Bezier Float", AUTO_IN_CUSTOM_OUT,
+             auto_bits(0x2533, 4, 1) + auto_bits(0x2534, 4, 2), (-36.4814835, 0, 0)),
+            ("position", "Bezier Position", LINEAR_BESIDE_AUTO_POSITION,
+             auto_bits(0x2533, 3, 1) + auto_bits(0x2534, 3, 1), (-12.7777777, 16.8518524, -1.96296322)),
+        ]
+        for label, name, keys, bits, want in cases:
+            with self.subTest(label):
+                got, issues = TestKeyframe.world(name, keys=records(name, *keys) + bits)
+                self.assertNear(got, ct.translation(want))
+                self.assertEqual(issues, [])
+        # the later key's Linear in tangent facing a custom out tangent: frame 20 of the first case
+        shifted = tuple((t - 3200, flags, floats) for t, flags, floats in LINEAR_BESIDE_CUSTOM)
+        got, issues = TestKeyframe.world("Bezier Float", keys=records("Bezier Float", *shifted))
+        self.assertNear(got, ct.translation((83.2255325, 0, 0)))
+        self.assertEqual(issues, [])
+        # without its bits an auto tangent reads as custom: its stored length, a curve 3ds Max does not draw
+        got, _issues = TestKeyframe.world("Bezier Float", keys=records("Bezier Float", *AUTO_IN_CUSTOM_OUT))
+        self.assertGreater(abs(got[3][0] - -36.4814835), 1e-3)
+
+    def test_damaged_auto_bits_are_none(self):
+        for bits in (node(0x2533, leaf(0x2700, b"\1")), node(0x2533), leaf(0x2533, b"\0" * 9),
+                     node(0x2533, leaf(0x2700, struct.pack("<i", 2 ** 31 - 1) + b"\xff"))):
+            with self.subTest(bits=bits):
+                got, issues = TestKeyframe.world("Bezier Float", keys=records("Bezier Float", *SMOOTH_KEYS) + bits)
+                self.assertNear(got, ct.translation((-12.7777777, 0, 0)))
                 self.assertEqual(issues, [])
 
     def test_linear_rotation_keeps_the_long_way(self):
@@ -974,6 +1059,234 @@ class TestLists(MatrixCase):
         t = b.transforms()
         self.assertEqual(t.world(n), ct.IDENTITY)
         self.assertTrue(t.issues[0].reason.startswith(ct.DAMAGED), t.issues)
+
+
+# Linear Float keys at frames 10, 30, 50 (0, 20, 5) and at -50, -30, -10: 3ds Max 2020's value at frame 0 for each
+# out-of-range type (probe of maxdrop-em3.144: 12.5, 12.5, 10, -10, 7.5 before the keys)
+LATER_KEYS = ((1600, (0.0,)), (4800, (20.0,)), (8000, (5.0,)))
+EARLIER_KEYS = ((-8000, (0.0,)), (-4800, (20.0,)), (-1600, (5.0,)))
+BEFORE = {1: 0.0, 2: 12.5, 3: 12.5, 4: 10.0, 5: -10.0, 7: 7.5}
+AFTER = {1: 5.0, 2: 10.0, 3: 10.0, 4: 12.5, 5: -2.5, 7: 15.0}
+
+
+class TestOutOfRange(MatrixCase):
+    """Out-of-range types and the range they apply outside (0x8499 and 0x3003 beside the keys)."""
+
+    def value(self, keys, *extra, name="Linear Float"):
+        got, issues = TestKeyframe.world(name, keys=keys_of(name, *keys) + b"".join(extra))
+        return got, [i.reason for i in issues]
+
+    def test_every_type_before_and_after_the_keys(self):
+        for code, want in BEFORE.items():
+            with self.subTest("before", code=code):
+                got, issues = self.value(LATER_KEYS, ort(before=code, after=2))
+                self.assertMatrix(got, ct.translation((want, 0, 0)))
+                self.assertEqual(issues, [])
+        for code, want in AFTER.items():
+            with self.subTest("after", code=code):
+                got, issues = self.value(EARLIER_KEYS, ort(before=4, after=code))
+                self.assertMatrix(got, ct.translation((want, 0, 0)))
+                self.assertEqual(issues, [])
+        got, issues = self.value(LATER_KEYS)  # no 0x8499: constant
+        self.assertMatrix(got, ct.translation((0, 0, 0)))
+        self.assertEqual(issues, [])
+
+    def test_unknown_type(self):
+        # MAXScript's #identity is stored as 0 and reads zero everywhere in 3ds Max; 6 was never seen
+        for code in (0, 6, 99, -1):
+            with self.subTest(code=code):
+                got, issues = self.value(LATER_KEYS, ort(before=code, after=code))
+                self.assertMatrix(got, ct.translation((0, 0, 0)))
+                self.assertEqual(issues, [ct.ORT_UNKNOWN])
+                # inside the keys too: the whole curve changes, not only past the range
+                got, issues = self.value(((-1600, (5.0,)), (1600, (5.0,))), ort(before=2, after=code))
+                self.assertMatrix(got, ct.translation((5, 0, 0)))
+                self.assertEqual(issues, [ct.ORT_UNKNOWN])
+
+    def test_whole_periods_and_bezier_in_the_wrap(self):
+        b = Build()  # Bezier Float keys with chord tangents (a straight line), the types inside 0x7127
+        keys = records("Bezier Float", (1600, 0x480, (0, 0, 0.00625, -1, -1)),
+                       (4800, 0x480, (20, -0.00625, -0.0046875, -1, -1)), (8000, 0x480, (5, 0.0046875, 0, -1, -1)))
+        n = b.node(b.prs(b.add(node(C_POSXYZ, refs34(b.flt(keys=keys + ort(2, 2)))))))
+        t = b.transforms()
+        self.assertMatrix(t.world(n), ct.translation((12.5, 0, 0)))
+        self.assertEqual(t.issues, [])
+        # a time a whole period before the first key lands on the last key, after the last on the first
+        got, _issues = self.value(((9600, (0.0,)), (14400, (20.0,)), (19200, (5.0,))), ort(before=2))
+        self.assertMatrix(got, ct.translation((5, 0, 0)))
+        got, _issues = self.value(((-9600, (0.0,)), (-4800, (20.0,)), (0, (5.0,))), ort(after=2))
+        self.assertMatrix(got, ct.translation((5, 0, 0)))  # frame 0 is the last key
+        # half a range after the keys: the middle key's 20 plus the change over the range, 5
+        got, _issues = self.value(((-9600 * 3, (0.0,)), (-9600 * 2, (20.0,)), (-9600, (5.0,))), ort(after=7))
+        self.assertMatrix(got, ct.translation((25, 0, 0)))
+
+    def test_range(self):
+        # inside the range the keys (the nearest key's value outside them), outside it the type over the range
+        cases = [
+            ("constant, range inside the keys", (ort(), time_range(3200, 6400)), 10.0, []),
+            ("cycle, range past the keys", (ort(2, 2), time_range(0, 9600)), 0.0, []),
+            ("cycle, range inside the keys", (ort(2, 2), time_range(3200, 6400)), 12.5, []),  # lands on its end
+            ("loop, range past the keys", (ort(3, 3), time_range(0, 9600)), 2.5, []),
+            ("loop before only", (ort(3, 1), time_range(0, 9600)), 0.0, [ct.ORT_APPROXIMATED]),
+            ("switched off", (ort(2, 2, 1),), 0.0, []),
+            ("switched off, range moved", (ort(2, 2, 1), time_range(3200, 6400)), 10.0, [ct.ORT_APPROXIMATED]),
+            ("range reversed", (ort(2, 2), time_range(6400, 3200)), 12.5, []),
+            ("no range", (ort(2, 2), time_range(-2 ** 31, -2 ** 31)), 12.5, []),
+            ("loop, range moved past the last key", (ort(3, 3), time_range(4800, 9600)), 5.0, [ct.ORT_APPROXIMATED]),
+        ]
+        for label, extra, want, reasons in cases:
+            with self.subTest(label):
+                got, issues = self.value(LATER_KEYS, *extra)
+                self.assertMatrix(got, ct.translation((want, 0, 0)))
+                self.assertEqual(issues, reasons)
+
+    def test_loop_over_a_moved_range_is_a_guess(self):
+        # keys at 0, 3200, 6400 over a range of 1600 to 9600: frame 0, before it, lands at 8000, in the gap
+        keys = ((0, (0.0,)), (3200, (20.0,)), (6400, (5.0,)))
+        got, issues = self.value(keys, ort(3, 3), time_range(1600, 9600))
+        self.assertMatrix(got, ct.translation((5, 0, 0)))  # as Cycle: the last key's value
+        self.assertEqual(issues, [ct.ORT_APPROXIMATED])
+        # the straight line across the gap of a wider range, measured on Bezier Floats only
+        got, issues = self.value(((1600, _rotz(0)), (8000, _rotz(60))), ort(3, 3), time_range(0, 9600),
+                                 name="Linear Rotation")
+        self.assertMatrix(got, ct.quat_matrix(_rotz(30)))
+        self.assertEqual(issues, [ct.ORT_APPROXIMATED])
+
+    def test_rotation_position_and_scale(self):
+        keys = ((1600, _rotz(0)), (4800, _rotz(60)))
+        for code, angle in ((2, 30), (4, 30), (5, -30), (7, -30)):
+            with self.subTest("rotation", code=code):
+                got, issues = self.value(keys, ort(before=code), name="Linear Rotation")
+                self.assertMatrix(got, ct.quat_matrix(_rotz(angle)))
+                self.assertEqual(issues, [])
+        got, issues = self.value(((1600, (0, 4, -2)), (4800, (20, -6, 9))), ort(before=7), name="Linear Position")
+        self.assertMatrix(got, ct.translation((-10, 9, -7.5)))  # the middle, less the change over a cycle
+        self.assertEqual(issues, [])
+        plain = (0.0, 0.0, 0.0, 1.0)
+        got, issues = self.value(((1600, (1, 2, 3) + plain), (4800, (2, 4, 4) + plain)), ort(before=7),
+                                 name="Linear Scale")
+        self.assertMatrix(got, ct.scale_matrix((0.5, 1, 2.5)))
+        self.assertEqual(issues, [])
+        turned = (0.0, 0.0, math.sin(0.2), math.cos(0.2))
+        for code in (5, 7):  # scale axes that differ: the components alone, an issue
+            with self.subTest("scale axes", code=code):
+                _got, issues = self.value(((1600, (1, 2, 3) + plain), (4800, (2, 4, 4) + turned)), ort(before=code),
+                                          name="Linear Scale")
+                self.assertEqual(issues, [ct.ORT_APPROXIMATED])
+
+    def test_damaged(self):
+        for extra in (leaf(0x8499, b"\0" * 30), node(0x8499, leaf(0x3000, b"\2\0")), leaf(0x3003, b"\0" * 4)):
+            with self.subTest(extra=extra):
+                got, issues = self.value(LATER_KEYS, extra)
+                self.assertEqual(got, ct.IDENTITY)
+                self.assertTrue(issues[0].startswith(ct.DAMAGED), issues)
+        for code in (5, 7):  # rotations not finite: never raises
+            got, issues = self.value(((1600, (math.nan, 0, 0, 1)), (4800, _rotz(60))), ort(before=code),
+                                     name="Linear Rotation")
+            self.assertEqual(got, ct.IDENTITY)
+            self.assertEqual(issues, [ct.NON_FINITE])
+
+
+class TestListAverage(MatrixCase):
+    """A list with Average on (parameter 1 of its block), against probes of 3ds Max 2020 (maxdrop-6n0.6.12)."""
+
+    @staticmethod
+    def build(b, cid, entries, weights, average=1):
+        refs = list(entries) + [None] * (4 - len(entries)) + [list_block(b, *weights, average=average)]
+        return b.add(node(cid, refs34(*refs), leaf(0x1010, struct.pack("<i", len(entries)))))
+
+    def test_float_and_position_lists(self):
+        for weights, want in (((0.5, 1.0), 14.666667), ((0.5, -0.5), 0.0), ((0.4,), 30.0), ((0.0, 0.0), 0.0)):
+            with self.subTest(weights=weights):
+                b = Build()
+                lst = self.build(b, C_FLOATLIST, [b.flt(30.0), b.flt(7.0)][:len(weights)], weights)
+                n = b.node(b.prs(b.add(node(C_POSXYZ, refs34(lst)))))
+                t = b.transforms()
+                self.assertMatrix(t.world(n), ct.translation((want, 0, 0)))
+                self.assertEqual(t.issues, [])
+        values = ((10, 20, 30), (-4, 8, 2), (7, -3, 5))
+        for weights, want in (((0.2, 0.3, 0.7), (4.75, 3.583333, 8.416667)), ((0.5, -0.5), (0, 0, 0))):
+            with self.subTest(weights=weights):
+                b = Build()
+                lst = self.build(b, C_POSLIST, [b.xyz(C_POSXYZ, v) for v in values[:len(weights)]], weights)
+                n = b.node(b.prs(lst))
+                self.assertMatrix(b.transforms().world(n), ct.translation(want))
+        b = Build()  # Average off: the weighted sum
+        lst = self.build(b, C_POSLIST, [b.xyz(C_POSXYZ, v) for v in values[:2]], (0.5, 1.0), average=0)
+        n = b.node(b.prs(lst))
+        self.assertMatrix(b.transforms().world(n), ct.translation((1, 18, 17)))
+
+    def test_rotation_list(self):
+        x30, y45, z80 = (math.radians(30), 0, 0), (0, math.radians(45), 0), (0, 0, math.radians(80))
+        cases = [
+            ((x30, z80), (1.0, 0.5), ((0.762534678, 0.63984257, 0.0956156477),
+                                      (-0.63984257, 0.724034905, 0.257633239),
+                                      (0.0956156477, -0.257633239, 0.961500287))),
+            ((x30,), (0.5,), ((1, 0, 0), (0, 0.965925813, 0.258819073), (0, -0.258819073, 0.965925813))),
+            ((x30, y45, z80), (0.5, 0.7, 0.2), ((0.859163105, 0.286063075, -0.424271971),
+                                                (-0.25611937, 0.958210468, 0.127418965),
+                                                (0.442991704, -0.000809386373, 0.896525383))),
+            ((x30, z80), (0.5, 1.0), ct.euler_matrix(z80)),  # a weight of 1: the later entry alone
+        ]
+        for angles, weights, want in cases:
+            with self.subTest(weights=weights):
+                b = Build()
+                lst = self.build(b, C_ROTLIST, [b.euler(a) for a in angles], weights)
+                n = b.node(b.prs(None, lst))
+                t = b.transforms()
+                got = t.world(n)
+                for r in range(3):
+                    for c in range(3):
+                        self.assertAlmostEqual(got[r][c], want[r][c], places=6)
+                self.assertEqual(t.issues, [])
+
+    def test_scale_list(self):
+        for weights, want in (((0.5, 1.0), (4 / 3, 7 / 3, 2 / 3)), ((0.5, -0.5), (1, 1, 1))):
+            with self.subTest(weights=weights):
+                b = Build()
+                lst = self.build(b, C_SCALELIST, [b.bscale((2, 1, 1)), b.bscale((1, 3, 0.5))], weights)
+                n = b.node(b.prs(None, None, lst))
+                t = b.transforms()
+                self.assertMatrix(t.world(n), ct.scale_matrix(want))
+                self.assertEqual(t.issues, [])
+        b = Build()  # along a turned axis no rule fits: an issue
+        lst = self.build(b, C_SCALELIST, [b.bscale((2, 0.5, 1), SW_AXIS), b.bscale((1, 3, 0.5))], (0.6, 0.3))
+        n = b.node(b.prs(None, None, lst))
+        t = b.transforms()
+        t.world(n)
+        self.assertEqual([i.reason for i in t.issues], [ct.LIST_AVERAGE])
+
+
+SW_AXIS = (-0.167731255, -0.044943437, -0.254887044, 0.951251209)  # (eulerAngles 20 0 30) as a scale axis
+
+
+class TestScaleListWeights(MatrixCase):
+    def scale_list(self, entries, weights):
+        b = Build()
+        lst = b.add(node(C_SCALELIST, refs34(*[b.bscale(*e) for e in entries], None, None,
+                                             list_block(b, *weights)), leaf(0x1010, struct.pack("<i", len(entries)))))
+        n = b.node(b.prs(None, None, lst))
+        t = b.transforms()
+        return t.world(n), [i.reason for i in t.issues]
+
+    def test_one_turned_entry(self):
+        got, issues = self.scale_list((((2, 0.5, 1), SW_AXIS),), (0.6,))  # 3ds Max 2020: I + (S - I) * 0.6
+        want = ((1.38377309, 0.374515593, 0.0482090786), (0.374515474, 0.951319873, -0.0835005045),
+                (0.0482091159, -0.0835005045, 0.964906514))
+        for r in range(3):
+            for c in range(3):
+                self.assertAlmostEqual(got[r][c], want[r][c], places=6)
+        self.assertEqual(issues, [])
+
+    def test_weight_after_a_turned_entry(self):
+        _got, issues = self.scale_list((((2, 0.5, 1), SW_AXIS), ((1.5, 0.8, 2.5),)), (1.0, 0.4))
+        self.assertEqual(issues, [ct.SCALE_LIST_WEIGHT])
+        for entries, weights in (((((2, 0.5, 1), SW_AXIS), ((1.5, 0.8, 2.5),)), (0.4, 1.0)),  # the turned one first
+                                 ((((2, 0.5, 1),), ((1.5, 0.8, 2.5),)), (0.6, 0.3)),  # plain scales
+                                 ((((2, 0.5, 1), SW_AXIS), ((1, 1, 1),)), (1.0, 0.4))):  # a unit scale changes nothing
+            with self.subTest(weights=weights):
+                _got, issues = self.scale_list(entries, weights)
+                self.assertEqual(issues, [])
 
 
 class TestUnsupportedAndDamaged(MatrixCase):
@@ -1611,6 +1924,48 @@ class TestConstraint(MatrixCase):
         self.assertMatrix(got, third, places=5)
         self.assertEqual(issues, [(cs[0], ct.UNKNOWN_CLASS)])
 
+    def test_weight_list_without_a_readable_entry(self):
+        """A Float List whose entries give no value (maxdrop-6n0.6.17) is no weight: 50, as one weight controller of
+        an unknown class or without a value; unknown entries are reported once each, as their class."""
+        def world(weights, controllers=None):
+            b = LookAtBuild()
+            targets = [b.target(p) for p in ((0, 0, 20), (100, 0, 0))]
+            cs = [c(b) for c in controllers] if controllers else None
+            n = b.constrained(targets, weights, scale=(1, 2, 1), weight_controllers=cs)
+            t = b.transforms()
+            return t.world(n), [(i.controller, i.reason) for i in t.issues], cs
+
+        def weight_list(*make):
+            def build(b):
+                entries = [m(b) for m in make]
+                weights = list_block(b, *([1.0] * len(entries)))
+                return b.add(node(C_FLOATLIST, refs34(*(entries + [None] * (4 - len(entries))), weights),
+                                  leaf(0x1010, struct.pack("<i", len(entries)))))
+            return build
+
+        want, _issues, _cs = world([50.0, 100.0])
+        unknown = weight_list(lambda b: b.add(node(C_UNKNOWN_FLOAT, leaf(0x2501, struct.pack("<f", 9)))),
+                              lambda b: b.add(node(C_UNKNOWN_FLOAT, leaf(0x2501, struct.pack("<f", 9)))))
+        got, issues, _cs = world([Anim(7.0), 100.0], [unknown])
+        self.assertMatrix(got, want, places=5)
+        self.assertEqual([reason for _c, reason in issues], [ct.UNKNOWN_CLASS, ct.UNKNOWN_CLASS])
+        self.assertEqual(len({c for c, _reason in issues}), 2)
+        got, issues, _cs = world([Anim(7.0), 100.0], [weight_list(lambda b: b.flt())])  # a value-less Bezier Float
+        self.assertMatrix(got, want, places=5)
+        self.assertEqual([reason for _c, reason in issues], [ct.CONSTRAINT_SETTING])
+        got, issues, _cs = world([Anim(7.0), 100.0], [weight_list(lambda b: b.flt(50.0),  # one readable: its sum
+                                                                  lambda b: b.add(node(C_UNKNOWN_FLOAT)))])
+        self.assertMatrix(got, want, places=5)
+        self.assertEqual([reason for _c, reason in issues], [ct.UNKNOWN_CLASS])
+        b = Build()  # under ScaleXYZ the same list still adds nothing: that axis reads 0, as before
+        odd = b.add(node(C_UNKNOWN_FLOAT, leaf(0x2501, struct.pack("<f", 9))))
+        flist = b.add(node(C_FLOATLIST, refs34(odd, None, None, None, list_block(b, 1.0)),
+                           leaf(0x1010, struct.pack("<i", 1))))
+        n = b.node(b.prs(None, None, b.add(node(C_SCALEXYZ, refs34(None, flist, None)))))
+        t = b.transforms()
+        self.assertMatrix(t.world(n), ct.scale_matrix((1, 0, 1)))
+        self.assertEqual([i.reason for i in t.issues], [ct.UNKNOWN_CLASS])
+
     def test_many_unreadable_weights_stay_linear(self):
         """A hostile table of empty animated weight slots (one byte each) is read in linear time."""
         n_weights = 20000
@@ -2007,6 +2362,112 @@ class TestTangentsFixture(unittest.TestCase):
             self.assertGreaterEqual(sum(abs(v) > 0.1 for v in angles), 2, angles)  # about several axes
 
 
+RANGES = os.path.join(ROOT, "tests", "fixtures", "controllers_ranges.max")
+
+
+@unittest.skipUnless(os.path.exists(RANGES), "no controllers_ranges fixture")
+class TestRangesFixture(unittest.TestCase):
+    """controllers_ranges.max holds what tools/fixtures/controllers_ranges.ms says (maxdrop-6n0.6.12): out-of-range
+    types with frame 0 outside the range, ranges moved off the keys, lists with Average on, auto tangents."""
+
+    # node -> its keyframe controllers in walk order, each (class, before, after, switched off, range in frames)
+    TYPED = {
+        "FixtureFloatTypes": [("Bezier Float", 2, 1, False, (10, 50)), ("Bezier Float", 4, 1, False, (10, 50)),
+                              ("Bezier Float", 7, 1, False, (10, 50))],
+        "FixtureFloatTypesMore": [("Bezier Float", 3, 3, False, (10, 50)), ("Bezier Float", 5, 1, False, (1, 40)),
+                                  ("Bezier Float", 2, 1, True, (10, 50))],
+        "FixtureFloatAfter": [("Bezier Float", 1, 2, False, (-50, -10)), ("Bezier Float", 1, 7, False, (-50, -10)),
+                              ("Bezier Float", 1, 5, False, (-40, -1))],
+        "FixtureFloatRanges": [("Bezier Float", 3, 3, False, (0, 60)), ("Bezier Float", 1, 1, False, (20, 40)),
+                               ("Bezier Float", 2, 1, False, (20, 40))],
+        "FixtureORTPosition": [("Bezier Position", 2, 1, False, (10, 50))],
+        "FixtureORTRotation": [("TCB Rotation", 7, 1, False, (10, 50))],
+        "FixtureORTLinearRotation": [("Linear Rotation", 5, 1, False, (1, 30))],
+        "FixtureORTScale": [("Bezier Scale", 4, 1, False, (10, 50))],
+        "FixtureORTLinearPosition": [("Linear Position", 1, 7, False, (-50, -10))],
+        "FixtureORTTCBFloat": [("TCB Float", 1, 4, False, (-50, -10)), ("Linear Float", 2, 1, False, (10, 50))],
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cf = cfb.CompoundFile(RANGES)
+        cls.s = scene.Scene.from_file(cls.cf)
+        cls.nodes = {cls.s.node(i).name: i for i in cls.s.walk()}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.cf.close()
+
+    def controllers(self, name, kinds):
+        """[(class name, index)] below node name's transform controller whose class name is in kinds, in walk
+        order (references in slot order)."""
+        s, out, seen = self.s, [], set()
+
+        def walk(i):
+            entry = s.entry(i)
+            if i is None or i in seen or entry is None or entry.superclass == classids.SC_BASENODE:
+                return
+            seen.add(i)
+            if entry.name in kinds:
+                out.append((entry.name, i))
+            for k in sorted(s.refs(i)):
+                walk(s.refs(i)[k])
+        walk(s.node(self.nodes[name]).tm)
+        return out
+
+    def holder(self, i, chunk_id):
+        """The chunk of controller i (or its 0x7127) that holds chunk_id; None when neither does."""
+        chunk = self.s.chunk(i)
+        return next((h for h in (chunk, chunk.first(0x7127)) if h is not None and h.container and
+                     h.first(chunk_id) is not None), None)
+
+    def test_types_and_ranges(self):
+        for name, want in self.TYPED.items():
+            with self.subTest(name):
+                found = []
+                for cls, i in self.controllers(name, KEYFRAMED):
+                    _c, key_id, size, _count = KEYFRAMED[cls]
+                    holder = self.holder(i, key_id)
+                    if holder is None or holder.first(key_id).payload_size == 0:
+                        continue  # the untouched floats of a Position XYZ or Euler XYZ
+                    view = holder.first(key_id).view()
+                    first, last = (struct.unpack_from("<i", view, k * size)[0] for k in (0, len(view) // size - 1))
+                    self.assertFalse(first <= 0 <= last, "%s: frame 0 inside the keys" % name)
+                    before, after, off = ct._Eval._ort([holder])
+                    start, end = holder.first(0x3003).unpack("<ii")
+                    found.append((cls, before, after, off, (start // 160, end // 160)))
+                self.assertEqual(found, want)
+
+    def test_lists_average_on(self):
+        lists = ("Float List", "Position List", "Rotation List", "Scale List")
+        for name, want in (("FixtureListAverages", ["Position List", "Rotation List", "Scale List"]),
+                           ("FixtureFloatListAverage", ["Float List"])):
+            with self.subTest(name):
+                found = self.controllers(name, lists)
+                self.assertEqual([c for c, _i in found], want)
+                ev = ct._Eval(self.s, self.nodes[name], [])
+                for _c, i in found:
+                    _entries, average = ev._list(i)
+                    self.assertTrue(average)
+
+    def test_auto_tangents(self):
+        found = self.controllers("FixtureLinearTangents", ("Bezier Float",))
+        bits = []
+        for _c, i in found[:3]:
+            holder = self.holder(i, 0x2525)
+            bits.append((sorted(ct._bits(holder, 0x2533, 9)), sorted(ct._bits(holder, 0x2534, 9))))
+        self.assertEqual(bits, [([], []), ([1], [1]), ([1], [2])])  # custom, auto beside Linear, auto and custom
+        _c, i = self.controllers("FixtureSmoothAuto", ("Bezier Float",))[1]
+        holder = self.holder(i, 0x2525)
+        self.assertEqual(sorted(ct._bits(holder, 0x2533, 9)), [0, 1, 2, 3])
+
+    def test_no_issue(self):
+        t = ct.Transforms(self.s)
+        for i in self.s.walk():
+            t.world(i)
+        self.assertEqual(t.issues, [])
+
+
 LOOKAT = os.path.join(ROOT, "tests", "fixtures", "lookat.max")
 
 
@@ -2136,6 +2597,14 @@ class ParameterValue(unittest.TestCase):
         value, issues = ct.parameter_value(s, mixed)
         self.assertIsNone(value)
         self.assertEqual([x.reason for x in issues], [ct.UNKNOWN_CLASS])
+
+    def test_float_list_without_a_value(self):
+        """A Float List whose entries are of a known class but give no value gives none (maxdrop-6n0.6.17): the
+        parameter keeps its default, where the list read 0 before."""
+        b = Build()
+        flist = b.add(node(C_FLOATLIST, refs34(b.flt(), None, None, None, list_block(b, 1.0)),
+                           leaf(0x1010, struct.pack("<i", 1))))
+        self.assertEqual(ct.parameter_value(self.scene_of(b), flist), (None, []))
 
     def test_bezier_color_from_keys(self):
         """Without a saved value whose interval holds frame 0: the keys (80 bytes each), the first one before it, the
