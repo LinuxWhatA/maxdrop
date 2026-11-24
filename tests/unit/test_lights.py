@@ -671,6 +671,20 @@ class DomeTextureRules(unittest.TestCase):
         dt, issues = L.dome_texture(self.ir(png), self.vray({}), colors.GAMMA_OFF)
         self.assertEqual((dt.image, issues), (png, []), "an 8-bit file: decoded once more, as on a material")
 
+    def test_a_float_texture_keeps_its_own_decode_whatever_the_case_not_on_a_corona_bitmap(self):
+        """Measured as a light (maxdrop-em3.166; docs/FORMAT.md, Scene gamma): the line says so. The extension's case
+        does not matter; a CoronaBitmap keeps what the converter made of it."""
+        self.assertNotIn("not measured", L.DOME_FLOAT_OFF)
+        shown = dict(gamma=2.2, colorspace=texmaps.SRGB)
+        upper = texmaps.Image(3, "SKY.EXR", found=self.FOUND, **shown)
+        dt, issues = L.dome_texture(self.ir(upper), self.vray({}), colors.GAMMA_OFF)
+        self.assertEqual((dt.image.gamma, dt.image.colorspace, issues),
+                         (1.0, texmaps.LINEAR, [L.DOME_FLOAT_OFF % "SKY.EXR"]))
+        corona = self.image(**shown)
+        dt, issues = L.dome_texture(self.ir(corona), _Graph({3: _Map(tuple(classids.CORONA_BITMAP), {})}),
+                                    colors.GAMMA_OFF)
+        self.assertEqual((dt.image, issues), (corona, [L.DOME_CORONA % "sky.hdr"]))
+
     def test_a_bitmap_is_turned_a_quarter(self):
         graph = _Graph({3: _Map(tuple(classids.BITMAP_TEX), {})})  # no Placement part: texture mapping
         dt, issues = L.dome_texture(self.ir(self.image()), graph)
@@ -690,6 +704,8 @@ class DomeTextureRules(unittest.TestCase):
         self.assertEqual(L.dome_texture(None, None), (None, [L.DOME_NO_TEXTURE]))
         self.assertEqual(L.dome_texture(self.ir(texmaps.Constant((1.0, 0.0, 0.0)), ["x"]), None),
                          (None, ["x", L.DOME_ROOT % "Constant"]))
+        mix = texmaps.Decode(texmaps.Mix(texmaps.Constant((0.0,) * 3), texmaps.Image(3, "sky.hdr")))
+        self.assertEqual(L.dome_texture(self.ir(mix), None), (None, [L.DOME_ROOT % "Mix"]), "gamma off: the Mix named")
         lost = texmaps.Image(3, "gone.png")
         self.assertEqual(L.dome_texture(self.ir(lost), None), (None, [L.DOME_NOT_FOUND % "gone.png"]))
         env = "VRayBitmap 'sky': environment mapping (type 2), drawn with the UVs"  # the root's: not named

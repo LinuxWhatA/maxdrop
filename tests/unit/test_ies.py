@@ -10,6 +10,7 @@ import os
 import shutil
 import sys
 import tempfile
+import tracemalloc
 import types
 import unittest
 
@@ -25,14 +26,15 @@ ISOTROPIC = 4.0 * math.pi * 100.0  # lumens of 100 cd in every direction
 
 
 def ies_file(vertical=(0, 90, 180), horizontal=(0,), candela=100.0, rated=500, multiplier=1, lamps=1, kind=1,
-             tilt="NONE", candelas=None, header="IESNA:LM-63-2002\n[TEST] self-authored\n[MANUFAC] none\n"):
+             tilt="NONE", candelas=None, header="IESNA:LM-63-2002\n[TEST] self-authored\n[MANUFAC] none\n",
+             ballast=1.0, ballast_lamp=1.0):
     """An LM-63 file as bytes: candela everywhere, or candelas (one run per horizontal angle)."""
     values = candelas if candelas is not None else [candela] * (len(vertical) * len(horizontal))
     text = header + "TILT=%s\n" % tilt
     if tilt == "INCLUDE":
         text += "1\n2\n0 90\n1.0 0.5\n"
-    text += "%d %s %s %d %d %d 2 0.1 0.1 0.1\n1.0 1.0 50\n" % (lamps, rated, multiplier, len(vertical),
-                                                               len(horizontal), kind)
+    text += "%d %s %s %d %d %d 2 0.1 0.1 0.1\n%s %s 50\n" % (lamps, rated, multiplier, len(vertical),
+                                                             len(horizontal), kind, ballast, ballast_lamp)
     text += " ".join(str(v) for v in vertical) + "\n" + " ".join(str(h) for h in horizontal) + "\n"
     text += " ".join(str(c) for c in values) + "\n"
     return text.encode("latin-1")
@@ -95,6 +97,67 @@ class Parse(unittest.TestCase):
         self.assertEqual((p.flux, p.scale), (0.0, 0.0))
 
 
+class VRayRules(unittest.TestCase):
+    """What V-Ray 5.2 renders, measured with self-authored files (docs/FORMAT.md, "VRayIES header, measured")."""
+
+    def test_the_ballast_factor_scales_the_flux(self):
+        p = ies.parse(ies_file(ballast=0.5))
+        self.assertAlmostEqual(p.flux, ISOTROPIC / 2.0, delta=1e-9)
+        self.assertAlmostEqual(p.scale, ISOTROPIC / 2.0 / 500.0, delta=1e-12)
+        self.assertEqual(ies.parse(ies_file(ballast=0)).flux, 0.0)
+
+    def test_the_ballast_lamp_factor_does_not(self):
+        self.assertAlmostEqual(ies.parse(ies_file(ballast_lamp=0.5)).flux, ISOTROPIC, delta=1e-9)
+
+    def test_rated_lumens_are_lamps_times_lumens_per_lamp(self):
+        p = ies.parse(ies_file(lamps=2, rated=500))
+        self.assertAlmostEqual(p.scale, ISOTROPIC / 1000.0, delta=1e-12)
+        self.assertEqual(ies.parse(ies_file(lamps=2, rated=-1)).scale, 1.0)
+
+    def test_candelas_linear_in_angle(self):
+        """100, 0, 0 cd at 0, 90, 180: V-Ray's flux 228.96 lm; linear in angle 2 pi (100 - 200 / pi)."""
+        p = ies.parse(ies_file(candelas=[100, 0, 0]))
+        self.assertAlmostEqual(p.flux, 2.0 * math.pi * (100.0 - 200.0 / math.pi), delta=1e-9)
+
+    def test_a_cosine_in_10_degree_steps(self):
+        vertical = list(range(0, 181, 10))
+        p = ies.parse(ies_file(vertical=vertical, candelas=[100.0 * max(0.0, math.cos(math.radians(a)))
+                                                            for a in vertical]))
+        # linear in angle 313.359 (V-Ray 313.99); the zone mean x (cos a - cos b) gave exactly pi x 100 = 314.159
+        self.assertAlmostEqual(p.flux, 313.359, delta=0.01)
+
+    def test_type_b_isotropic(self):
+        """100 cd over the hemisphere a type B file covers: 2 pi 100, also with V or H from 0 (mirrored)."""
+        iso = 2.0 * math.pi * 100.0
+        for v, h in (((-90, 0, 90), (-90, 0, 90)), ((-90, 0, 90), (0, 90)), ((0, 90), (-90, 0, 90)),
+                     ((0, 45, 90), (0, 30, 90))):
+            p = ies.parse(ies_file(kind=2, vertical=v, horizontal=h, rated=-1))
+            self.assertAlmostEqual(p.flux, iso, delta=1e-9, msg=(v, h))
+        p = ies.parse(ies_file(kind=2, vertical=(-90, 0, 90), horizontal=(-90, 0, 90), rated=628.3))
+        self.assertAlmostEqual(p.scale, iso / 628.3, delta=1e-12)
+
+    def test_type_b_peaks(self):
+        """0, 100, 0 cd at V -90, 0, 90 in every plane: 400 lm (V-Ray 400.95); the same across H: 100 pi."""
+        p = ies.parse(ies_file(kind=2, vertical=(-90, 0, 90), horizontal=(-90, 0, 90), candelas=[0, 100, 0] * 3))
+        self.assertAlmostEqual(p.flux, 400.0, delta=1e-9)
+        p = ies.parse(ies_file(kind=2, vertical=(-90, 0, 90), horizontal=(-90, 0, 90),
+                               candelas=[0, 0, 0, 100, 100, 100, 0, 0, 0]))
+        self.assertAlmostEqual(p.flux, 100.0 * math.pi, delta=1e-9)
+
+    def test_type_a(self):
+        """Read as type B (V-Ray 629.58 lm isotropic, vertical angles from 0 mirrored); horizontal from 0 refused."""
+        for v in ((-90, 0, 90), (0, 90)):
+            p = ies.parse(ies_file(kind=3, vertical=v, horizontal=(-90, 0, 90), rated=628.3, multiplier=2))
+            self.assertAlmostEqual(p.flux, 4.0 * math.pi * 100.0, delta=1e-9, msg=v)
+            self.assertAlmostEqual(p.scale, 4.0 * math.pi * 100.0 / 628.3, delta=1e-12, msg=v)
+        p = ies.parse(ies_file(kind=3, vertical=(-90, 90), horizontal=(-90, 90), ballast=0.5, lamps=2))
+        self.assertAlmostEqual(p.scale, math.pi * 100.0 / 1000.0, delta=1e-12)
+
+    def test_type_b_mirrored_both_ways(self):
+        p = ies.parse(ies_file(kind=2, vertical=(0, 90), horizontal=(0, 90), rated=500, ballast=0.5))
+        self.assertAlmostEqual(p.scale, math.pi * 100.0 / 500.0, delta=1e-12)  # V-Ray 629.57 lm before ballast
+
+
 class Refused(unittest.TestCase):
     def refused(self, data, start):
         with self.assertRaises(ies.IesError) as cm:
@@ -102,9 +165,20 @@ class Refused(unittest.TestCase):
         self.assertTrue(str(cm.exception).startswith(start), str(cm.exception))
 
     def test_type_a_and_b(self):
-        self.refused(ies_file(kind=2), "photometric type B")
-        self.refused(ies_file(kind=3), "photometric type A")
         self.refused(ies_file(kind=4), "its photometric type 4")
+        self.refused(ies_file(kind=2), "its vertical angles run from 0 to 180 degrees: not one of type B's")
+        self.refused(ies_file(kind=2, vertical=(-60, 0, 90)), "its vertical angles run from -60 to 90 degrees")
+        self.refused(ies_file(kind=2, vertical=(-90, 0, 60)), "its vertical angles run from -90 to 60 degrees")
+        self.refused(ies_file(kind=2, vertical=(-90, 90), horizontal=(-180, 0, 180)),
+                     "its horizontal angles run from -180 to 180 degrees: not one of type B's")
+        self.refused(ies_file(kind=2, vertical=(-90, 90), horizontal=(0,)), "its horizontal angles run from 0 to 0")
+        self.refused(ies_file(kind=2, vertical=(-90, 90), horizontal=(-90, 0)),
+                     "its horizontal angles run from -90 to 0")
+        self.refused(ies_file(kind=3, vertical=(-90, 90), horizontal=(0, 90)),
+                     "its horizontal angles run from 0 to 90 degrees: not one of type A's")
+        self.refused(ies_file(kind=2, vertical=(-90, 90, 0), horizontal=(0, 90)),
+                     "its vertical angles are not in order")
+        self.refused(ies_file(kind=2, vertical=(-90, 90), horizontal=(90, 0)), "its horizontal angles are not in order")
 
     def test_no_tilt_line(self):
         self.refused(b"IESNA:LM-63-2002\n1 500 1 3 1 1 2 0 0 0\n", "no TILT line")
@@ -114,6 +188,28 @@ class Refused(unittest.TestCase):
         self.refused(data[:data.rindex(b" ")], "the file ends inside its angles or candelas")
         self.refused(b"TILT=NONE\n1 500", "the file ends before its candela multiplier")
         self.refused(b"TILT=INCLUDE\n1 4000 0 90", "the file ends inside its tilt angles and factors")
+
+    def test_tokens_are_read_lazily(self):
+        # numbers past the table are never split off: the parse costs far less memory than the file
+        data = ies_file() + b"1 " * (1 << 19)
+        tracemalloc.start()
+        try:
+            p = ies.parse(data)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertAlmostEqual(p.flux, ISOTROPIC, delta=1e-9)
+        self.assertLess(peak, len(data) // 4)
+        many = b"TILT=NONE\n1 500 1 1024 1024 1 2 0 0 0\n1 1 0\n" + b"1 " * (1 << 19)
+        tracemalloc.start()
+        try:
+            with self.assertRaises(ies.IesError) as cm:
+                ies.parse(many)  # half a million numbers, a million candelas counted: refused before any list
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(str(cm.exception), "the file ends inside its angles or candelas")
+        self.assertLess(peak, len(many) // 4)
 
     def test_not_numbers(self):
         for bad in (b"nan", b"inf", b"1_0", b"0x10", b"--1"):
@@ -142,10 +238,12 @@ class Refused(unittest.TestCase):
 
     def test_negative_values(self):
         self.refused(ies_file(multiplier=-1), "its candela multiplier -1 is negative")
+        self.refused(ies_file(ballast=-0.5), "its ballast factor -0.5 is negative")
         self.refused(ies_file(candelas=[100, -1, 100]), "a candela value is negative")
 
     def test_flux_out_of_range(self):
         self.refused(ies_file(candela="1e300", multiplier="1e300"), "its flux is out of range")
+        self.refused(ies_file(lamps=10, rated="1e308"), "its rated lumens are out of range")
 
 
 class Read(unittest.TestCase):
@@ -179,6 +277,9 @@ class Read(unittest.TestCase):
         asked = []
 
         class Index:
+            def stopped_for(self, path, resolved=""):
+                return []
+
             def find(self, path, resolved=""):
                 asked.append(path)
                 return types.SimpleNamespace(path=found[path], rule=1) if path in found else None
@@ -195,6 +296,25 @@ class Read(unittest.TestCase):
         finally:
             ies.read = original
         self.assertEqual(reads, [good, bad])
+
+    def test_lookup_says_where_the_search_stopped(self):
+        textures = importlib.import_module(_PKG + ".convert.textures")
+        scene = self.write("scene.max", b"")
+        for n in range(4):
+            self.write("a%d.txt" % n, b"")
+        # in maps/, not beside the scene: the scene's folder is read in the file system's order (hashed on ext4),
+        # so a lamp beside it could be among the 2 entries taken; maps/ is entered only after that listing
+        os.mkdir(os.path.join(self.dir, "maps"))
+        self.write(os.path.join("maps", "lamp.ies"), ies_file())
+        lookup = ies.Lookup(textures.TextureIndex(scene, max_entries=2, is_local_drive=lambda path: False))
+        self.assertEqual(lookup.photometry("lamp.ies"), (None, "not found: texture search of the scene's folder "
+                                                         "stopped after 2 files and folders, in {0}; texture search of "
+                                                         "maps or textures folders stopped after 2 files and folders, "
+                                                         "in {0}".format(os.path.abspath(self.dir))))
+        self.assertEqual(lookup.photometry("a:b.ies"), (None, None))  # a refused name is not searched
+        roomy = ies.Lookup(textures.TextureIndex(scene, is_local_drive=lambda path: False))
+        self.assertAlmostEqual(roomy.photometry("lamp.ies")[0].flux, ISOTROPIC, delta=1e-9)
+        self.assertEqual(roomy.photometry("gone.ies"), (None, None))
 
 
 if __name__ == "__main__":

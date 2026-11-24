@@ -245,6 +245,36 @@ class VRayMtlRules(unittest.TestCase, Close):
         self.assertEqual(ir.base_color.map, mat.MapRef(1, 0.5, False))
         self.assertEqual(ir.specular.map, mat.MapRef(1, 0.5, False))
 
+    def test_fresnel_off_grey_reflection_keeps_diffuse(self):
+        """A grey swatch below 1 without a reflection map is the mirror drawing, not a metal: V-Ray 5.2 renders R +
+        (1 - R) x the diffuse (maxdrop-em3.153, 128 grey over 200 40 40: 0.8925 0.5801 0.5801 facing the camera);
+        within NEUTRAL_REFLECTION of grey the mean is the weight."""
+        for swatch in ((0.5, 0.5, 0.5), (0.99, 0.99, 0.99), (0.25, 0.25, 0.25), (0.509, 0.5, 0.491)):
+            b1 = {1: (1.0, 0.0, 0.0), 2: swatch, 8: 0, 91: 0.2}
+            conv, ir = _convert(_vray(0, b1=b1))
+            self.assertFalse(ir.fresnel, str(swatch))
+            self.close(ir.metallic.value, 0.2, str(swatch))
+            self.close(ir.base_color.value, (1.0, 0.0, 0.0), str(swatch))
+            self.close(ir.specular.value, sum(swatch) / 3.0, str(swatch))
+            self.assertIsNone(ir.specular.map)
+        conv, ir = _convert(_vray(0, b1={2: (0.5, 0.5, 0.5), 5: (1.0, 1.0, 1.0), 8: 0}))  # glass stays glass
+        self.close(ir.metallic.value, 0.0)
+        self.close(ir.transmission.value, 1.0)
+        self.close(ir.base_color.value, (1.0, 1.0, 1.0))
+
+    def test_fresnel_off_full_or_colored_reflection_is_metal(self):
+        """A full reflection (mean 1 or more) and a colored one (channel spread above NEUTRAL_REFLECTION) keep the
+        metal in the reflection color: the white mirror copy would drop the tint."""
+        for swatch in ((1.0, 1.0, 1.0), (0.55, 0.5, 0.45), (0.9, 0.5, 0.1), (0.3, 0.2, 0.25)):
+            b1 = {1: (1.0, 0.0, 0.0), 2: swatch, 8: 0, 91: 0.2}
+            conv, ir = _convert(_vray(0, b1=b1))
+            self.close(ir.metallic.value, 1.0, str(swatch))
+            self.close(ir.base_color.value, swatch, str(swatch))
+        b1 = {1: (1.0, 0.0, 0.0), 2: (0.2, 0.1, 0.05), 8: 0, 91: 0.2}  # colored, below METAL_REFLECTION
+        conv, ir = _convert(_vray(0, b1=b1))
+        self.close(ir.metallic.value, 0.2)
+        self.close(ir.base_color.value, (1.0, 0.0, 0.0))
+
     def test_fresnel_off_reflection_map_at_full_amount_keeps_diffuse(self):
         """A reflection map at full amount hides the swatch in V-Ray: no metal however bright the swatch; the
         specular follows the map, the base color is the diffuse."""
@@ -262,8 +292,12 @@ class VRayMtlRules(unittest.TestCase, Close):
         self.close(ir.metallic.value, 0.2)
         self.close(ir.base_color.value, (1.0, 0.0, 0.0))
         conv, ir = _convert(_vray(0, b1=b1, b4={101: Ref(1), 151: 0, 201: 100.0}), _map(1))  # map switched off
+        self.close(ir.metallic.value, 0.2, "a grey swatch alone: the mirror drawing")
+        self.close(ir.base_color.value, (1.0, 0.0, 0.0))
+        tinted = {**b1, 2: (0.85, 0.8, 0.75)}
+        conv, ir = _convert(_vray(0, b1=tinted, b4={101: Ref(1), 151: 0, 201: 100.0}), _map(1))
         self.close(ir.metallic.value, 1.0)
-        self.close(ir.base_color.value, (0.8,) * 3)
+        self.close(ir.base_color.value, (0.85, 0.8, 0.75))
         self.assertIsNone(ir.base_color.map)
         white = {**b1, 2: (1.0, 1.0, 1.0)}
         conv, ir = _convert(_vray(0, b1=white, b4={101: Ref(1), 201: 75.0}), _map(1))  # 1 x 0.25: the threshold
@@ -279,7 +313,7 @@ class VRayMtlRules(unittest.TestCase, Close):
         self.close(ir.base_color.value, (1.0, 0.0, 0.0))
         conv, ir = _convert(_vray(0, b1={2: (0.2, 0.2, 0.2), 8: 1}))
         self.assertTrue(ir.fresnel)
-        conv, ir = _convert(_vray(0, b1={2: (0.8, 0.8, 0.8), 8: 0}))  # the metal rule: Metallic 1 wins in build
+        conv, ir = _convert(_vray(0, b1={2: (0.9, 0.8, 0.7), 8: 0}))  # the metal rule: Metallic 1 wins in build
         self.assertFalse(ir.fresnel)
         self.close(ir.metallic.value, 1.0)
         self.assertTrue(mat.MaterialIR(0, "x").fresnel, "every other rule: the IOR's Fresnel")
@@ -453,32 +487,46 @@ class Wrappers(unittest.TestCase):
                 self.assertEqual(ir.name, "AB"[want - 1])
                 self.assertEqual(sum(conv.stats.peeled.values()), 1)
 
-    def test_a_sub_material_switched_off_is_an_empty_slot(self):
+    def test_a_sub_material_switched_off_is_still_used(self):
+        """V-Ray 5.2 renders a VRayOverrideMtl's base and a Double Sided's facing material whatever their switches say
+        (maxdrop-em3.136); the scanline renders a Double Sided side switched off black: an issue when it is the
+        facing one, reported once per wrapper object."""
         OV, DS = classids.VRAY_OVERRIDE_MTL, classids.DOUBLE_SIDED_MTL
         override = {0: Ref(1), 2: Ref(2), 4: Ref(3), 6: Ref(4), 8: Ref(5)}
+        off = ("Wrap: facing material switched off: drawn all the same, as V-Ray renders it (the scanline renders it "
+               "black)")
         cases = [
-            (OV, override, 1),  # no switches stored: on
-            (OV, {**override, 1: 1, 3: 1}, 1),
-            (OV, {**override, 1: 0}, 2),  # baseMtl_on off: the GI material
-            (OV, {**override, 1: 0, 3: 0}, 3),  # and giMtl_on: the reflect material
-            (OV, {**override, 1: 0, 3: 0, 5: 0, 7: 0}, 5),
-            (OV, {**override, 1: 0, 3: 0, 5: 0, 7: 0, 9: 0}, None),
-            (DS, {0: Ref(1), 1: Ref(2)}, 1),
-            (DS, {0: Ref(1), 1: Ref(2), 2: 0}, 2),  # map1Enabled off: the back material
-            (DS, {0: Ref(1), 1: Ref(2), 2: 1, 3: 0}, 1),
-            (DS, {0: Ref(1), 1: Ref(2), 2: 0, 3: 0}, None),
+            (OV, override, False),  # no switches stored: on
+            (OV, {**override, 1: 1, 3: 1}, False),
+            (OV, {**override, 1: 0}, False),  # baseMtl_on off
+            (OV, {**override, 1: 0, 3: 0}, False),  # and giMtl_on
+            (OV, {**override, 1: 0, 3: 0, 5: 0, 7: 0, 9: 0}, False),
+            (OV, {0: Ref(1), 1: 0, 2: Ref(None), 4: Ref(3)}, False),
+            (DS, {0: Ref(1), 1: Ref(2)}, False),
+            (DS, {0: Ref(1), 1: Ref(2), 2: 0}, True),  # map1Enabled off
+            (DS, {0: Ref(1), 1: Ref(2), 2: 1, 3: 0}, False),  # map2Enabled off: the back is not drawn anyway
+            (DS, {0: Ref(1), 1: Ref(2), 2: 0, 3: 0}, True),
         ]
-        for class_id, params, want in cases:
+        for class_id, params, issue in cases:
             with self.subTest((class_id, params)):
                 subs = [_vray(i, "V%d" % i) for i in range(1, 6)]
-                conv = mat.MaterialConverter(FakeGraph(_wrapper(0, class_id, params, "Wrap"), *subs))
-                base, reason = conv.peel(0)
-                self.assertEqual(base, want)
-                if want is None:
-                    self.assertEqual(reason, "Wrap: no sub-material")
-                    self.assertTrue(conv.convert(0).unknown)
-                else:
-                    self.assertIsNone(reason)
+                outer = _wrapper(6, classids.VRAY_MTL_WRAPPER, {0: Ref(0)}, "Outer")
+                conv = mat.MaterialConverter(FakeGraph(_wrapper(0, class_id, params, "Wrap"), outer, *subs))
+                self.assertEqual(conv.peel(6), (1, None))
+                self.assertEqual(conv.peel(0), (1, None))  # _sub runs again on the same wrapper
+                self.assertEqual(conv.convert(0).name, "V1")
+                self.assertEqual(conv.stats.issues, [(0, off)] if issue else [])
+
+    def test_a_facing_slot_switched_off_and_unused_is_no_issue(self):
+        """The facing-material line names only a facing material that is drawn: an empty one (the back is drawn) or
+        one that is not a material (the peel fails) gives none."""
+        DS = classids.DOUBLE_SIDED_MTL
+        for params, want in [({0: Ref(None), 1: Ref(2), 2: 0}, (2, None)),
+                             ({0: Ref(7), 1: Ref(2), 2: 0}, (None, "Wrap: sub-material 7 is not a material"))]:
+            with self.subTest(params):
+                conv = mat.MaterialConverter(FakeGraph(_wrapper(0, DS, params, "Wrap"), _vray(2, "V2"), _map(7)))
+                self.assertEqual(conv.peel(0), want)
+                self.assertEqual(conv.stats.issues, [])
 
     def test_nested_wrappers_count_each_once(self):
         objs = (_wrapper(0, classids.VRAY_MTL_WRAPPER, {0: Ref(1)}), _wrapper(1, classids.VRAY_2SIDED_MTL, {0: Ref(2)}),
@@ -556,7 +604,8 @@ class VRayBasic(unittest.TestCase, Close):
             conv = mat.MaterialConverter(graph)
             ir = conv.convert(by_name["FixtureVRay"])
             self.assertIsNone(conv.convert(None))  # the real graph: a node without a material
-        reflection = (0.309469, 0.361307, 0.417885)  # 151 162 173; mean 0.362887 >= 0.25, Fresnel off: metal
+        reflection = (0.309469, 0.361307, 0.417885)  # 151 162 173; mean 0.362887 >= 0.25, colored (spread
+        # 0.108 > NEUTRAL_REFLECTION), Fresnel off: metal
         self.assertEqual((ir.name, ir.source, ir.unknown), ("FixtureVRay", "VRayMtl", False))
         self.close(ir.base_color.value, reflection, "base color = reflection (metal rule)")
         self.close(ir.metallic.value, 1.0, "metallic")
@@ -851,6 +900,88 @@ class Standard(unittest.TestCase, Close):
                 conv, ir = _convert(_standard(0, sid, shader))
                 self.close(ir.base_color.value, (0.8, 0.4, 0.2))
 
+    # Diffuse Level map channels (zero-based, docs/FORMAT.md; fixture standard_maps).
+    LEVEL_CHANNEL = {classids.ANISOTROPIC_SHADER: 3, classids.MULTI_LAYER_SHADER: 2,
+                     classids.OREN_NAYAR_BLINN_SHADER: 8, classids.TRANSLUCENT_SHADER: 8}
+
+    def test_diffuse_map_takes_the_level(self):
+        """3ds Max scales the mapped diffuse by the level too (Default Scanline, maxdrop-em3.150): the diffuse
+        MapRef's scale is the level as the swatch rule makes it (the level itself with the gamma on, its sRGB decode,
+        not clamped, with it off); 1 at level 1 (the MapRef of a material without a level) and on Blinn."""
+        for sid, pid in self.DIFFUSE_LEVEL.items():
+            ids = mat.SHADERS[sid]
+            for sw in (colors.GAMMA_ON, colors.GAMMA_OFF):
+                for level in (0.5, 1.5, 1.0):
+                    with self.subTest(sid=sid, linear=sw.linear, level=level):
+                        m = _standard(0, sid, {ids.diffuse: (0.8, 0.4, 0.2), pid: level},
+                                      maps={1: (Ref(1), 1, 0.7)})
+                        conv = mat.MaterialConverter(FakeGraph(m, _map(1)), swatches=sw)
+                        ir = conv.convert(0)
+                        want = level if sw.linear else colors.srgb_to_linear(level)
+                        self.assertEqual((ir.base_color.map.index, ir.base_color.map.invert), (1, False))
+                        self.close(ir.base_color.map.amount, 0.7)
+                        self.close(ir.base_color.map.scale, want)
+                        if level == 1.0:
+                            self.assertEqual(ir.base_color.map, mat.MapRef(1, 0.7, False))
+                        self.assertIsNone(ir.diffuse_level, "no Diffuse Level map")
+        conv, ir = _convert(_standard(0, classids.BLINN_SHADER, {1: (0.8, 0.4, 0.2), 4: 0.5, 7: 0.5, 8: 0.5},
+                                      maps={1: (Ref(1), 1, 0.7)}), _map(1))
+        self.assertEqual(ir.base_color.map, mat.MapRef(1, 0.7, False))
+
+    def test_diffuse_map_level_with_the_gamma_off(self):
+        """With the gamma off 3ds Max scales the stored value, Blender's map is decoded: the decoded map times the
+        decoded level stays within 0.006 linear of the decoded product for levels up to 100 % (a plain x level is
+        up to 0.29 too bright), so a flat diffuse map equal to the swatch imports about as the swatch does."""
+        worst = 0.0
+        for p in range(1, 101):
+            for level in range(5, 101, 5):
+                p_, l_ = p / 100.0, level / 100.0
+                worst = max(worst, abs(colors.srgb_to_linear(p_) * colors.srgb_to_linear(l_)
+                                       - colors.srgb_to_linear(p_ * l_)))
+        self.assertLess(worst, 0.006)
+        sid = classids.OREN_NAYAR_BLINN_SHADER
+        m = _standard(0, sid, {1: (0.6, 0.4, 0.2), 8: 0.5}, maps={1: (Ref(1), 1, 1.0)})
+        ir = mat.MaterialConverter(FakeGraph(m, _map(1)), swatches=colors.GAMMA_OFF).convert(0)
+        flat = tuple(colors.srgb_to_linear(c) * ir.base_color.map.scale for c in (0.6, 0.4, 0.2))
+        for a, b in zip(flat, ir.base_color.value):
+            self.assertAlmostEqual(a, b, delta=0.006)
+
+    def test_diffuse_level_map(self):
+        """A Diffuse Level map replaces the level by its amount (lerp(level, map, amount), Default Scanline,
+        maxdrop-em3.150): ir.diffuse_level holds the swatch at level 1, the level as the swatch rule makes it and the
+        map; the base color's value and its map's scale stay what they are without it (the fallback)."""
+        for sid, channel in self.LEVEL_CHANNEL.items():
+            ids = mat.SHADERS[sid]
+            pid = self.DIFFUSE_LEVEL[sid]
+            for sw in (colors.GAMMA_ON, colors.GAMMA_OFF):
+                with self.subTest(sid=sid, linear=sw.linear):
+                    m = _standard(0, sid, {ids.diffuse: (0.8, 0.4, 0.2), pid: 0.5},
+                                  maps={1: (Ref(1), 1, 0.7), channel: (Ref(2), 1, 0.6)})
+                    conv = mat.MaterialConverter(FakeGraph(m, _map(1), _map(2)), swatches=sw)
+                    ir = conv.convert(0)
+                    k = 0.5 if sw.linear else colors.srgb_to_linear(0.5)
+                    self.close(ir.base_color.value, sw.color((0.4, 0.2, 0.1)))
+                    self.close(ir.base_color.map.scale, k)
+                    lv = ir.diffuse_level
+                    self.assertIsNotNone(lv)
+                    self.close(lv.color, sw.color((0.8, 0.4, 0.2)), "the swatch at level 1")
+                    self.close(lv.level, k)
+                    self.assertEqual((lv.map.index, lv.map.invert, lv.map.scale), (2, False, 1.0))
+                    self.close(lv.map.amount, 0.6)
+                    self.assertEqual(conv.stats.issues, [])
+        sid = classids.OREN_NAYAR_BLINN_SHADER
+        for maps in ({8: (Ref(2), 0, 1.0)}, {}):  # switched off, empty: no level map, no diffuse map either
+            with self.subTest(maps=maps):
+                conv, ir = _convert(_standard(0, sid, {1: (0.8, 0.4, 0.2), 8: 0.5}, maps=maps), _map(2))
+                self.assertIsNone(ir.diffuse_level)
+                self.assertIsNone(ir.base_color.map)
+        conv, ir = _convert(_standard(0, sid, {1: (0.8, 0.4, 0.2), 8: 0.5}, maps={8: (Ref(2), 1, 1.0)}), _map(2))
+        self.assertIsNone(ir.base_color.map)
+        self.assertEqual(ir.diffuse_level.map, mat.MapRef(2, 1.0, False))  # a level map alone
+        conv, ir = _convert(_standard(0, classids.BLINN_SHADER, {1: (0.8, 0.4, 0.2)}, maps={8: (Ref(2), 1, 1.0)}),
+                            _map(2))
+        self.assertIsNone(ir.diffuse_level, "Blinn has no Diffuse Level channel: 8 is its bump")
+
     def test_shader_defaults(self):
         """A shader block without its values: each shader's own defaults, as 3ds Max 2020 creates them (diffuse
         150 / 255 or 127.5 / 255 grey, glossiness, specular level times the 0.9 specular color)."""
@@ -873,17 +1004,24 @@ class Standard(unittest.TestCase, Close):
                 self.assertEqual(conv.stats.issues, [])
 
     # Each shader's map channels (zero-based, measured in 3ds Max 2020, docs/FORMAT.md): diffuse, specular color,
-    # specular level, glossiness, self-illumination, opacity, bump, reflection, metalness; None: no such channel.
+    # specular level, glossiness, self-illumination, opacity, bump, reflection, metalness, diffuse level; None: no
+    # such channel.
     CHANNELS = {
-        classids.BLINN_SHADER: (1, 2, 3, 4, 5, 6, 8, 9, None),
-        classids.PHONG_SHADER: (1, 2, 3, 4, 5, 6, 8, 9, None),
-        classids.METAL_SHADER: (1, 2, 3, 4, 5, 6, 8, 9, None),
-        classids.ANISOTROPIC_SHADER: (1, 2, 4, 5, 8, 9, 11, 12, None),
-        classids.MULTI_LAYER_SHADER: (1, 4, 5, 6, 14, 15, 17, 18, None),  # the first specular layer
-        classids.OREN_NAYAR_BLINN_SHADER: (1, 2, 4, 3, 5, 6, 10, 11, None),
-        classids.TRANSLUCENT_SHADER: (1, 2, 4, 3, 5, 6, 10, 11, None),
-        classids.STRAUSS_SHADER: (0, None, None, 1, None, 3, 5, 6, 2),
+        classids.BLINN_SHADER: (1, 2, 3, 4, 5, 6, 8, 9, None, None),
+        classids.PHONG_SHADER: (1, 2, 3, 4, 5, 6, 8, 9, None, None),
+        classids.METAL_SHADER: (1, 2, 3, 4, 5, 6, 8, 9, None, None),
+        classids.ANISOTROPIC_SHADER: (1, 2, 4, 5, 8, 9, 11, 12, None, 3),
+        classids.MULTI_LAYER_SHADER: (1, 4, 5, 6, 14, 15, 17, 18, None, 2),  # the first specular layer
+        classids.OREN_NAYAR_BLINN_SHADER: (1, 2, 4, 3, 5, 6, 10, 11, None, 8),
+        classids.TRANSLUCENT_SHADER: (1, 2, 4, 3, 5, 6, 10, 11, None, 8),
+        classids.STRAUSS_SHADER: (0, None, None, 1, None, 3, 5, 6, 2, None),
     }
+
+    def test_slot_table(self):
+        """mat.STD_SLOTS is the table above, field by field."""
+        self.assertEqual(set(mat.STD_SLOTS), set(self.CHANNELS))
+        for sid, channels in self.CHANNELS.items():
+            self.assertEqual(tuple(mat.STD_SLOTS[sid]), channels, sid)
 
     def test_map_slots(self):
         """Every shader reads its own channels: a map in each read channel (object = its field's number + 1, at
@@ -894,9 +1032,9 @@ class Standard(unittest.TestCase, Close):
                 for field, k in enumerate(channels):
                     if k is not None:
                         maps[k] = (Ref(field + 1), 1, 0.5 + field / 100.0)
-                objs = [_map(i) for i in range(1, 10)] + [_map(50 + k) for k in range(21)]
+                objs = [_map(i) for i in range(1, 11)] + [_map(50 + k) for k in range(21)]
                 conv, ir = _convert(_standard(0, sid, {}, maps=maps), *objs)
-                diffuse, spec, level, gloss, emit, opacity, bump, refl, metal = channels
+                diffuse, spec, level, gloss, emit, opacity, bump, refl, metal, diffuse_level = channels
                 self.assertEqual(ir.base_color.map, mat.MapRef(1, 0.50, False))
                 self.assertEqual(ir.roughness.map, mat.MapRef(4, 0.53, True))  # a glossiness map: inverted
                 self.assertEqual(ir.specular.map, None if level is None else mat.MapRef(3, 0.52, False))
@@ -911,6 +1049,8 @@ class Standard(unittest.TestCase, Close):
                     self.close(ir.emission_strength, 1.0, "a self-illumination map drives the emission")
                 self.assertEqual(ir.bump, mat.MapRef(7, 0.56, False))
                 self.assertEqual(ir.metallic.map, None if metal is None else mat.MapRef(9, 0.58, False))
+                self.assertEqual(None if ir.diffuse_level is None else ir.diffuse_level.map,
+                                 None if diffuse_level is None else mat.MapRef(10, 0.59, False))
                 self.assertEqual(conv.stats.issues, [])
 
     def test_specular_color_map_without_a_level_map(self):
@@ -931,11 +1071,26 @@ class Standard(unittest.TestCase, Close):
         self.assertIsNone(ir.bump)
         self.assertIn("map slot 8: object 9 is not a map", ir.issues[0])
 
+    def test_texmaps_channels(self):
+        """_std_map from a Texmaps object's channels (reader.materials.StdMaps): its map, switch and amount, a
+        channel that holds something else than a map named as the table's."""
+        conv = mat.MaterialConverter(FakeGraph(_map(1), _vray(9)))
+        m, ir = _standard(0, classids.BLINN_SHADER, {}), mat.MaterialIR(0, "S")
+        std = reader_materials.StdMaps({1: 1, 2: 1, 8: 9, 9: 1}, 0b100001110, {1: 0.4})
+        self.assertEqual(mat._std_map(conv, m, 1, ir, channels=std), mat.MapRef(1, 0.4, False))
+        self.assertIsNone(mat._std_map(conv, m, 3, ir, channels=std))  # on, no map
+        self.assertEqual(mat._std_map(conv, m, 2, ir, invert=True, channels=std), mat.MapRef(1, 1.0, True))
+        self.assertIsNone(mat._std_map(conv, m, 8, ir, channels=std))
+        self.assertIn("map channel 8: object 9 is not a map", ir.issues[0])
+        self.assertIsNone(mat._std_map(conv, m, 9, ir, channels=std))  # a map, switched off
+
 
 class StandardMaps(unittest.TestCase, Close):
     """tools/fixtures/standard_maps.ms: a Standard material per shader with a Checker in every channel the rule
     reads, named after the input it drives ("FixtureMap" + shader + field) and put into the channel 3ds Max names
-    that way on that shader; amounts 0.51 (diffuse) to 0.59 (metalness)."""
+    that way on that shader; amounts 0.51 (diffuse) to 0.59 (metalness). Three Anisotropic materials whose block 3
+    tables are stale (created as Blinn, docs/FORMAT.md): FixtureMapsUnsetAmounts, FixtureMapsSwitchedAfter,
+    FixtureMapsSwitchedOff."""
 
     LABELS = {"Blinn": "BLINN_SHADER", "Anisotropic": "ANISOTROPIC_SHADER", "MultiLayer": "MULTI_LAYER_SHADER",
               "OrenNayarBlinn": "OREN_NAYAR_BLINN_SHADER", "Translucent": "TRANSLUCENT_SHADER",
@@ -943,6 +1098,12 @@ class StandardMaps(unittest.TestCase, Close):
     FIELDS = {"diffuse": "Diffuse", "specular": "Specular", "level": "Level", "glossiness": "Glossiness",
               "self_illum": "SelfIllum", "opacity": "Opacity", "bump": "Bump", "reflection": "Reflection",
               "metalness": "Metalness"}
+    # The Diffuse Level materials (maxdrop-em3.150): shader, Diffuse Level, diffuse map amount, Diffuse Level map
+    # amount (None: none or switched off), as the script sets them.
+    LEVEL = {"LevelAnisotropic": ("ANISOTROPIC_SHADER", 0.40, 0.61, 0.62),
+             "LevelMultiLayer": ("MULTI_LAYER_SHADER", 1.50, 0.63, 1.0),
+             "LevelOrenNayarBlinn": ("OREN_NAYAR_BLINN_SHADER", 0.65, 0.65, None),  # its level map switched off
+             "LevelTranslucent": ("TRANSLUCENT_SHADER", 0.80, 0.66, None)}
 
     @classmethod
     def setUpClass(cls):
@@ -950,7 +1111,7 @@ class StandardMaps(unittest.TestCase, Close):
         with cf:
             cls.conv = mat.MaterialConverter(cls.graph)
             cls.irs = {n: cls.conv.convert(cls.by_name["FixtureMaps" + n])
-                       for n in list(cls.LABELS) + ["UnsetAmounts"]}
+                       for n in list(cls.LABELS) + ["UnsetAmounts", "SwitchedAfter", "SwitchedOff"] + list(cls.LEVEL)}
 
     def map(self, label, field, amount, invert=False):
         return mat.MapRef(self.by_name["FixtureMap" + label + field], amount, invert)
@@ -1000,14 +1161,70 @@ class StandardMaps(unittest.TestCase, Close):
                         self.assertEqual(m.param(1, 3, tab=k).index, want, field)
         self.assertEqual(set(mat.STD_SLOTS), set(mat.SHADERS) | {classids.STRAUSS_SHADER})
 
+    def table(self, label, pid):
+        """Block 3's table pid (0 mapEnables, 1 maps, 2 mapAmounts) of FixtureMaps + label, a map as its index."""
+        values = self.graph.get(self.by_name["FixtureMaps" + label]).block(3).param(pid).values
+        return [getattr(v, "index", v) for v in values]
+
     def test_amounts_never_set_after_the_shader_switch(self):
-        """FixtureMapsUnsetAmounts (Anisotropic, created as Blinn): the maps land in their inputs, at the amounts
-        the map table keeps from the material as created (self-illumination 0.3, bump 1.0), not 3ds Max's (1.0
-        and 0.3, kept in the Texmaps object), docs/FORMAT.md: maxdrop-em3.148 makes these 1.0 and 0.3."""
+        """FixtureMapsUnsetAmounts (Anisotropic, created as Blinn, maps set after the switch without touching their
+        amounts): the table keeps Blinn's amounts (0.3 at 8, 1.0 at 11), 3ds Max answers its shader's from the
+        Texmaps object: self-illumination (8) 1.0, bump (11) 0.3 (maxdrop-em3.148)."""
+        amounts = self.table("UnsetAmounts", 2)
+        self.close((amounts[8], amounts[11]), (0.3, 1.0), "the table is still stale")
         ir = self.irs["UnsetAmounts"]
-        self.same_map(ir.emission_color.map, self.map("UnsetAmounts", "SelfIllum", 0.3), "self-illumination")
-        self.same_map(ir.bump, self.map("UnsetAmounts", "Bump", 1.0), "bump")
+        self.same_map(ir.emission_color.map, self.map("UnsetAmounts", "SelfIllum", 1.0), "self-illumination")
+        self.same_map(ir.bump, self.map("UnsetAmounts", "Bump", 0.3), "bump")
         self.assertIsNone(ir.base_color.map)
+
+    def test_maps_set_before_the_shader_switch(self):
+        """FixtureMapsSwitchedAfter (Blinn with diffuse and bump maps, then switched to Anisotropic): 3ds Max moves
+        the bump map to Anisotropic's channel 11 at 0.3, the table keeps it and its switch at Blinn's 8, which is
+        Anisotropic's self-illumination."""
+        bump = self.by_name["FixtureMapSwitchedAfterBump"]
+        self.assertEqual((self.table("SwitchedAfter", 1)[8], self.table("SwitchedAfter", 0)[8]), (bump, 1),
+                         "the table is still stale")
+        ir = self.irs["SwitchedAfter"]
+        self.same_map(ir.base_color.map, self.map("SwitchedAfter", "Diffuse", 1.0), "diffuse")
+        self.same_map(ir.bump, self.map("SwitchedAfter", "Bump", 0.3), "bump")
+        self.assertIsNone(ir.emission_color.map)
+        self.close(ir.emission_strength, 0.0)
+
+    def test_a_map_switched_off(self):
+        """FixtureMapsSwitchedOff (Anisotropic, self-illumination and bump maps, the bump switched off): no bump."""
+        ir = self.irs["SwitchedOff"]
+        self.same_map(ir.emission_color.map, self.map("SwitchedOff", "SelfIllum", 1.0), "self-illumination")
+        self.assertIsNone(ir.bump)
+
+    def test_diffuse_level_maps(self):
+        """The Level materials by hand (saved with the gamma off): the diffuse swatch 150 120 90 times the level
+        (clamped, then decoded), the diffuse map scaled by the decoded level, the Diffuse Level map with its amount
+        and the swatch at level 1; none where it is switched off or missing."""
+        for name, (shader, level, diffuse_amount, level_amount) in self.LEVEL.items():
+            with self.subTest(name):
+                ir = self.irs[name]
+                k = colors.srgb_to_linear(level)
+                self.close(ir.base_color.value, _srgb(*(min(255.0, c * level) for c in (150, 120, 90))))
+                self.same_map(ir.base_color.map, self.map(name, "Diffuse", diffuse_amount), "diffuse")
+                self.close(ir.base_color.map.scale, k, "the decoded level")
+                level_map = self.by_name.get("FixtureMap" + name + "DiffuseLevel")
+                if level_map is not None:  # the channel 3ds Max put it into, in the table and the Texmaps object
+                    m = self.graph.get(self.by_name["FixtureMaps" + name])
+                    slot = mat.STD_SLOTS[getattr(classids, shader)].diffuse_level
+                    self.assertEqual(m.param(1, 3, tab=slot).index, level_map, "the slot table's channel")
+                    index, on, amount = reader_materials.standard_maps(self.graph.scene, m).channel(slot)
+                    self.assertEqual((index, on), (level_map, level_amount is not None), "the Texmaps channel")
+                    self.close(amount, 0.64 if level_amount is None else level_amount)
+                if level_amount is None:
+                    self.assertIsNone(ir.diffuse_level)
+                    continue
+                lv = ir.diffuse_level
+                self.same_map(lv.map, self.map(name, "DiffuseLevel", level_amount), "Diffuse Level map")
+                self.assertEqual(lv.map.scale, 1.0)
+                self.close(lv.level, k)
+                self.close(lv.color, _srgb(150, 120, 90), "the swatch at level 1")
+        self.assertIn("FixtureMapLevelOrenNayarBlinnDiffuseLevel", self.by_name, "the switched-off map is saved")
+        self.assertNotIn("FixtureMapLevelTranslucentDiffuseLevel", self.by_name)
 
     def test_no_issues(self):
         self.assertEqual((self.conv.stats.issues, dict(self.conv.stats.unknown)), ([], {}))
@@ -1445,6 +1662,18 @@ class Corona(unittest.TestCase, Close):
         self.close(glass.roughness.value, 0.05)
         self.assertEqual((conv.stats.issues, dict(conv.stats.unknown)), ([], {}))
 
+    def test_physical_ior_mode_and_thin_translucency(self):
+        """Corona 12 renders (maxdrop-em3.115): IOR mode 1 holds specular levels, F0 = 0.08 x level, in the base and
+        clearcoat IORs; translucency renders only in thin mode."""
+        conv, (spec, thin) = self.convert("corona_physical", "FixtureCoronaPhysSpec", "FixtureCoronaPhysTranslThin")
+        self.close(spec.ior, mat.ior_from_reflectance(0.08 * 1.2), "specular 1.2")
+        self.close(spec.coat_ior, mat.ior_from_reflectance(0.08 * 0.8), "specular 0.8")
+        self.close(spec.coat_weight, 0.5)
+        self.assertEqual(spec.issues, [])
+        self.close(thin.ior, 1.5, "IOR mode 0")
+        self.assertTrue(thin.thin_walled)
+        self.assertEqual(thin.issues, ["CoronaPhysicalMtl 'FixtureCoronaPhysTranslThin': translucency not converted"])
+
     def test_legacy(self):
         conv, (pbr, old, metal) = self.convert("corona_legacy", "FixtureCoronaLegacyPbr", "FixtureCoronaLegacyGloss",
                                                "FixtureCoronaLegacyMetal")
@@ -1461,15 +1690,14 @@ class Corona(unittest.TestCase, Close):
         t = sum(refract) / 3 * 0.75
         self.close(old.transmission.value, t, "mean refraction x level")
         self.close(old.base_color.value, tuple(d * (1 - t) + r * t for d, r in zip(_lins(90, 110, 130), refract)))
-        self.close(old.roughness.value, 0.6, "PBR mode off: 1 - glossiness all the same")
+        self.close(old.roughness.value, 0.324, "PBR mode off: glossiness 0.4 renders as PBR glossiness 0.676")
         self.close(old.specular.value, 1.0)
         self.close(old.ior, 1.33, "the refraction IOR")
         self.assertTrue(old.thin_walled)
         self.close(metal.metallic.value, 1.0, "Fresnel IOR 999 and a bright reflection")
         self.close(metal.base_color.value, _lins(250, 200, 120), "the reflection color")
         self.close(metal.roughness.value, 0.1)
-        self.assertEqual([r for _i, r in conv.stats.issues],
-                         ["CoronaLegacyMtl 'FixtureCoronaLegacyGloss': glossiness of PBR mode off read as in PBR mode"])
+        self.assertEqual(conv.stats.issues, [], "PBR mode off without a glossiness map: measured (maxdrop-em3.115)")
 
     def test_layered_mixes_its_layer_or_peels_without_a_base(self):
         cf, graph, by_name = _fixture("corona_layered")
@@ -1573,16 +1801,16 @@ class CoronaMore(unittest.TestCase, Close):
         self.assertEqual(ir.issues, ["CoronaPhysicalMtl 'FixtureCoronaPhysSheen': sheen amount map not converted"])
 
     def test_physical_named_issues(self):
-        self.assertEqual(self.ir("PhysTransl").issues,
-                         ["CoronaPhysicalMtl 'FixtureCoronaPhysTransl': translucency not converted"])
+        self.assertEqual(self.ir("PhysTransl").issues, [], "translucency without thin mode: none in Corona 12")
         absorb = self.ir("PhysAbsorb")
         self.close(absorb.transmission.value, 1.0)
         self.assertEqual(absorb.issues, ["CoronaPhysicalMtl 'FixtureCoronaPhysAbsorb': volumetric absorption and "
                                          "scattering not converted"])
         self.assertEqual(self.ir("PhysEdge").issues,
                          ["CoronaPhysicalMtl 'FixtureCoronaPhysEdge': metal edge color not converted"])
-        self.assertEqual(self.ir("PhysIorMode").issues,
-                         ["CoronaPhysicalMtl 'FixtureCoronaPhysIorMode': IOR mode 1 read as an IOR"])
+        spec = self.ir("PhysIorMode")
+        self.assertEqual(spec.issues, [], "IOR mode 1, a specular level: measured (maxdrop-em3.115)")
+        self.close((spec.ior, spec.coat_ior), (1.5, 1.5), "specular 0.5 is F0 0.04, IOR 1.5 (the stored 0.5s)")
 
     def test_physical_complex_ior(self):
         ir = self.ir("PhysComplex")
@@ -1601,10 +1829,9 @@ class CoronaMore(unittest.TestCase, Close):
 
     def test_legacy_without_pbr(self):
         ir = self.ir("LegacyNoPbr")
-        self.close(ir.roughness.value, 0.4)
+        self.close(ir.roughness.value, 0.165, "glossiness 0.6, PBR mode off: CORONA_LEGACY_GLOSS")
         self.close(ir.transmission.value, 0.5)
         self.assertEqual(ir.issues, [
-            "CoronaLegacyMtl 'FixtureCoronaLegacyNoPbr': glossiness of PBR mode off read as in PBR mode",
             "CoronaLegacyMtl 'FixtureCoronaLegacyNoPbr': translucency not converted",
             "CoronaLegacyMtl 'FixtureCoronaLegacyNoPbr': absorption not converted"])
 
@@ -1630,7 +1857,7 @@ class CoronaMore(unittest.TestCase, Close):
             conv = mat.MaterialConverter(graph, texmaps=tex)
             two = conv.convert(by_name["FixtureCoronaLayers"]).layers[1]
         root = two.graph.root
-        self.assertIsInstance(root, texmaps.Mix, "lerp(1, mask, mask amount)")
+        self.assertIsInstance(root, texmaps.Mix, "lerp(1, mask, mask amount): Corona 12 renders it (em3.115)")
         self.close(root.a.value, 1.0)
         self.close(root.b.value, _lin(64))
         self.close(root.factor, 0.5)
@@ -1768,6 +1995,38 @@ class CoronaSynthetic(unittest.TestCase, Close):
             _conv, ir = _convert(_corona(0, classids.CORONA_LEGACY_MTL, **params))
             self.close(ir.metallic.value, metal, str(params))
 
+    def test_legacy_reflection_map_at_full_amount_keeps_diffuse(self):
+        """A reflection map at full amount hides the swatch (maxdrop-em3.133, as VRayMtl's): no metal however high
+        the Fresnel IOR and bright the swatch; the specular follows the map, the base color is the diffuse."""
+        for amount in (1.0, 1.5):
+            _conv, ir = _convert(_corona(0, classids.CORONA_LEGACY_MTL, p101=(1.0, 0.0, 0.0), p102=(1.0, 1.0, 1.0),
+                                         p122=1.0, p182=999.0, p142=Ref(1), p291=amount), _map(1))
+            self.close(ir.metallic.value, 0.0, str(amount))
+            self.close(ir.base_color.value, (1.0, 0.0, 0.0), str(amount))
+            self.assertIsNone(ir.base_color.map)
+            self.assertEqual(ir.specular.map, mat.MapRef(1, amount, False))
+
+    def test_legacy_swatch_shows_in_proportion_below_full_amount(self):
+        """Below full amount the swatch counts by its share, mean x (1 - amount); the level is in that mean (Corona's
+        documentation: the level multiplies the color and the map alike)."""
+        def metal(color, level, **slot):
+            return _convert(_corona(0, classids.CORONA_LEGACY_MTL, p101=(1.0, 0.0, 0.0), p102=color, p122=level,
+                                    p182=999.0, p142=Ref(1), **slot), _map(1))[1]
+        ir = metal((0.8,) * 3, 1.0, p291=0.75)
+        self.close(ir.metallic.value, 0.0, "0.8 x 0.25 = 0.2 shown")
+        self.close(ir.base_color.value, (1.0, 0.0, 0.0), "0.8 x 0.25 = 0.2 shown")
+        ir = metal((1.0,) * 3, 1.0, p291=0.75)
+        self.close(ir.metallic.value, 1.0, "1 x 0.25: the threshold")
+        self.close(ir.base_color.value, (1.0,) * 3, "1 x 0.25: the threshold")
+        self.assertEqual(ir.base_color.map, mat.MapRef(1, 0.75, False))
+        ir = metal((1.0,) * 3, 0.5, p291=0.5)
+        self.close(ir.metallic.value, 1.0, "level 0.5 x 0.5 = 0.25 shown")
+        ir = metal((1.0,) * 3, 0.5, p291=0.6)
+        self.close(ir.metallic.value, 0.0, "level 0.5 x 0.4 = 0.2 shown")
+        ir = metal((0.8,) * 3, 1.0, p162=0, p291=1.0)
+        self.close(ir.metallic.value, 1.0, "the map switched off: the whole swatch")
+        self.assertIsNone(ir.base_color.map)
+
     def test_legacy_defaults_reflect_nothing(self):
         _conv, ir = _convert(_corona(0, classids.CORONA_LEGACY_MTL))
         self.close(ir.specular.value, 0.0, "levelReflect 0")
@@ -1792,10 +2051,32 @@ class CoronaSynthetic(unittest.TestCase, Close):
         self.assertEqual(conv.peel(0), (2, None))
         self.assertEqual(ir.source, "CoronaLegacyMtl")
 
-    def test_physical_ior_mode_is_an_issue(self):
-        conv, ir = _convert(_corona(0, classids.CORONA_PHYSICAL_MTL, p461=1, p171=2.0))
+    def test_physical_ior_mode_specular(self):
+        """iorMode 1: the base and clearcoat IORs hold a specular level, F0 = 0.08 x level, never above 0.25 (IOR 3);
+        other modes than 0 and 1 render as an IOR (2, measured) and stay named (maxdrop-em3.115)."""
+        _conv, ir = _convert(_corona(0, classids.CORONA_PHYSICAL_MTL, p461=1, p171=2.0, p221=1.0))
+        self.close(ir.ior, mat.ior_from_reflectance(0.16))
+        self.close(ir.coat_ior, mat.ior_from_reflectance(0.08))
+        self.assertEqual(ir.issues, [])
+        _conv, ir = _convert(_corona(0, classids.CORONA_PHYSICAL_MTL, p461=1, p171=4.0, p221=0.0))
+        self.close((ir.ior, ir.coat_ior), (3.0, 1.0), "F0 0.32 renders as 0.25; specular 0 reflects nothing")
+        _conv, ir = _convert(_corona(0, classids.CORONA_PHYSICAL_MTL, p461=1))
+        self.close(ir.ior, 1.5, "no value: the IOR default")
+        _conv, ir = _convert(_corona(0, classids.CORONA_PHYSICAL_MTL, p461=2, p171=2.0))
         self.close(ir.ior, 2.0)
-        self.assertIn("IOR mode 1", ir.issues[0])
+        self.assertIn("IOR mode 2", ir.issues[0])
+
+    def test_physical_translucency_needs_thin_mode(self):
+        for thin, issues in ((0, 0), (1, 1)):
+            _conv, ir = _convert(_corona(0, classids.CORONA_PHYSICAL_MTL, p203=thin, p371=0.4))
+            self.assertEqual(len(ir.issues), issues, "thin %d" % thin)
+
+    def test_legacy_pbr_off_glossiness_map_stays_named(self):
+        _conv, ir = _convert(_corona(0, classids.CORONA_LEGACY_MTL, p102=(1.0,) * 3, p122=1.0, p180=0.6, p402=0,
+                                     p143=Ref(1)), _map(1))
+        self.close(ir.roughness.value, 0.165, "the swatch through the table")
+        self.assertEqual(ir.roughness.map, mat.MapRef(1, 1.0, True))
+        self.assertIn("glossiness map of PBR mode off read as in PBR mode", ir.issues[0])
 
     def test_layered_cycle_and_a_layer_that_is_not_a_material(self):
         a = _corona(0, classids.CORONA_LAYERED_MTL, p1000=Ref(1), p1001=[Ref(2), Ref(3)])
@@ -1948,6 +2229,25 @@ class CoronaSynthetic(unittest.TestCase, Close):
         plan = mat.MeshSlots([10, 11, 12], [[catcher, catcher, catcher], [catcher, other, None]], None)
         self.assertEqual(mat.shadow_catcher_users(plan), [10], "every slot of the user a catcher")
         self.assertEqual(mat.shadow_catcher_users(mat.MeshSlots([10], [], None)), [], "no slot, no catcher")
+
+
+class CoronaLegacyGloss(unittest.TestCase, Close):
+    """CORONA_LEGACY_GLOSS: CoronaLegacyMtl glossiness with PBR mode off as the roughness of the PBR-mode glossiness
+    whose highlight Corona 12 renders alike (maxdrop-em3.115)."""
+
+    def test_measured_points(self):
+        for g, r in ((0.0, 0.618), (0.4, 0.324), (0.6, 0.165), (0.9, 0.051), (1.0, 0.0)):
+            self.close(mat.corona_legacy_roughness(g), r, str(g))
+
+    def test_interpolates_and_clamps(self):
+        self.close(mat.corona_legacy_roughness(0.425), (0.324 + 0.272) / 2)
+        self.close(mat.corona_legacy_roughness(-1.0), 0.618)
+        self.close(mat.corona_legacy_roughness(2.0), 0.0)
+        self.close(mat.corona_legacy_roughness(float("nan")), mat.corona_legacy_roughness(1.0), "the default")
+
+    def test_monotonic(self):
+        rs = [mat.corona_legacy_roughness(i / 200.0) for i in range(201)]
+        self.assertTrue(all(a >= b for a, b in zip(rs, rs[1:])))
 
 
 @unittest.skipIf(numpy is None, "numpy missing")  # assign() and the mesh reader need it
@@ -2262,6 +2562,85 @@ class Assign(unittest.TestCase):
         mixed = [r for i, r in desc.issues if names.get(i) == "FixtureCurveMixed"]
         self.assertEqual(mixed, ["shape: spline 1 mixes material IDs 2, 1: drawn with ID 2's material (its first "
                                  "segment's)"])
+
+
+class FrameZeroParams(unittest.TestCase, Close):
+    """pblock_animated: a parameter a controller holds converts to the controller's value at frame 0 (the oracle's
+    controllers), not to the class default (maxdrop-em3.152)."""
+
+    def setUp(self):
+        self.cf, self.graph, self.by_name = _fixture("pblock_animated")
+        self.addCleanup(self.cf.close)
+        assets = importlib.import_module(_PKG + ".reader.assets")
+        self.tex = texmaps.TexmapConverter(self.graph, assets.AssetTable.from_file(self.cf))
+        self.conv = mat.MaterialConverter(self.graph, texmaps=self.tex)
+        with open(os.path.join(FIXTURE_DIR, "pblock_animated.oracle.json"), encoding="utf-8") as f:
+            oracle = {m["name"]: m for m in json.load(f)["material_graph"]}
+        self.oracle = {(name, b["block_id"], c["id"], c["tab"]): c["value"]
+                       for name, m in oracle.items() for b in m["blocks"] for c in b.get("controllers", ())}
+
+    def want(self, name, block, pid, tab=0):
+        v = self.oracle[(name, block, pid, tab)]
+        return tuple(v) if isinstance(v, list) else float(v)
+
+    def test_vray_mtl(self):
+        """FixtureAnimVRay: diffuse (block 1, 1) and reflection_glossiness (block 1, 3) animated."""
+        ir = self.conv.convert(self.by_name["FixtureAnimVRay"])
+        self.close(ir.base_color.value, self.conv.swatches.color(self.want("FixtureAnimVRay", 1, 1)))
+        self.close(ir.roughness.value, 1.0 - self.want("FixtureAnimVRay", 1, 3))  # brdf_useRoughness off
+        self.assertNotAlmostEqual(ir.roughness.value, 0.0)  # the default glossiness 1.0 would give 0
+
+    def test_vray_blend_mtl(self):
+        """FixtureAnimBlend, block 0: blend (2) element 1 and texmap_blend_multiplier (4) element 0 animated; element 0
+        of blend is stored."""
+        m = self.conv.graph.get(self.by_name["FixtureAnimBlend"])
+        self.close(m.param(2, 0, tab=1), self.want("FixtureAnimBlend", 0, 2, 1))
+        self.close(m.param(2, 0, tab=0), (40 / 255, 50 / 255, 60 / 255))
+        self.close(mat._num_tab(m, 4, 0, 100.0), self.want("FixtureAnimBlend", 0, 4, 0))
+        self.close(mat._num_tab(m, 4, 1, -1.0), 100.0)  # stored
+
+    def test_normal_map_multipliers(self):
+        """FixtureAnimNormal: normal_map_multiplier and bump_map_multiplier animated, read as the normal map rule reads
+        them (its Checker and Noise convert to nothing, so no NormalMap node is drawn here)."""
+        ids = texmaps.NORMAL_MAPS[classids.VRAY_NORMAL_MAP]
+        m = self.tex.graph.get(self.by_name["FixtureAnimNormal"])
+        self.close(texmaps._num(m, ids.strength, 1.0), self.want("FixtureAnimNormal", 0, ids.strength))
+        self.close(texmaps._num(m, ids.bump_strength, 1.0), self.want("FixtureAnimNormal", 0, ids.bump_strength))
+
+    def test_part_params(self):
+        """A part's block (a Standard shader's) resolves through the scene too: VRayMtl's block 1 stands in."""
+        m = self.graph.get(self.by_name["FixtureAnimVRay"])
+        part = reader_materials.Part(m.index, m.class_id, m.superclass, {0: m.block(1)}, {})
+        self.assertIsInstance(mat._PartParams(part).param(1, 1), pblock.Animated)  # no scene: as stored
+        self.close(mat._PartParams(part, self.graph.scene).param(1, 1), self.want("FixtureAnimVRay", 1, 1))
+
+    def test_frame_zero_shapes(self):
+        """A value of another shape than the parameter's type, or a fraction for an integer, stays the Animated."""
+        params = importlib.import_module(_PKG + ".convert.params")
+        s = self.graph.scene
+        blend = self.graph.get(self.by_name["FixtureAnimBlend"]).block(0)
+        color, mult = blend.get(2, 1), blend.get(4, 0)  # a Bezier Color, a Bezier Float (37.0)
+
+        class Typed:
+            def __init__(self, base_type):
+                self.base_type = base_type
+
+        class Block:
+            def __init__(self, base_type):
+                self._type = base_type
+
+            def param(self, pid):
+                return Typed(self._type)
+
+        self.assertEqual(params.frame_zero(s, Block(13), 0, mult), 37)  # a radio button: a whole number
+        self.assertIsInstance(params.frame_zero(s, Block(13), 0, mult), int)
+        gloss = self.graph.get(self.by_name["FixtureAnimVRay"]).block(1).get(3)  # a Bezier Float at 0.41
+        self.assertEqual(params.frame_zero(s, Block(13), 0, gloss), gloss)  # a fraction for an integer
+        self.assertEqual(params.frame_zero(s, Block(2), 0, mult), mult)  # a float for a color
+        self.assertEqual(params.frame_zero(s, Block(0), 0, color), color)  # a color for a float
+        self.assertEqual(params.frame_zero(s, Block(22), 0, mult), mult)  # point4: not read
+        self.assertEqual(params.frame_zero(None, Block(0), 0, mult), mult)  # no scene
+        self.assertEqual(params.frame_zero(s, Block(0), 0, 0.5), 0.5)  # a stored value as it is
 
 
 if __name__ == "__main__":

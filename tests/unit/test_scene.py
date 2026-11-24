@@ -378,9 +378,12 @@ def layer_obj(name, flags=0, render=0x0B00D600, parent=None, raw_name=None):
     return node(L_LAYER, *parts)
 
 
-def layer_node(name, layer, flags=0x800, render=0x0F00D600):
-    return node(L_NODE, refs35((6, layer)), leaf(0x0960, struct.pack("<iI", -1, flags)), leaf(0x0962, utf16(name)),
-                leaf(0x099C, struct.pack("<I", render)))
+def layer_node(name, layer, flags=0x800, render=0x0F00D600, by_layer=None):
+    parts = [refs35((6, layer)), leaf(0x0960, struct.pack("<iI", -1, flags)), leaf(0x0962, utf16(name)),
+             leaf(0x099C, struct.pack("<I", render))]
+    if by_layer is not None:
+        parts.append(leaf(0x0A28, by_layer if isinstance(by_layer, bytes) else struct.pack("<II", 0, by_layer)))
+    return node(L_NODE, *parts)
 
 
 class TestLayers(unittest.TestCase):
@@ -423,9 +426,12 @@ class TestLayers(unittest.TestCase):
                       node(L_NODE, leaf(0x0960, struct.pack("<iI", -1, 0)), leaf(0x0962, utf16("n"))))
         la = s.layer(0)
         self.assertEqual((la.name, la.hidden, la.frozen, la.renderable, la.parent), ("", False, False, True, None))
+        self.assertEqual((la.cast_shadows, la.receive_shadows), (True, True))  # a By Layer node keeps its shadows
         n = s.node(1)
         self.assertEqual((n.renderable, n.hidden, n.layer), (True, False, None))
         self.assertEqual((n.cast_shadows, n.receive_shadows), (True, True))  # a new node's state
+        self.assertEqual(n.render_by_layer, 0)  # no 0x0A28: By Object
+        self.assertEqual(scene.render_flags(n, la), n.render_flags)
 
     def test_shadow_flags(self):
         """0x099C as 3ds Max 2020 saved a Box with one change each (maxdiff): Receive Shadows off clears 0x400,
@@ -435,6 +441,38 @@ class TestLayers(unittest.TestCase):
                              (0x0F005600, (False, True, True))):
             n = self.make(layer_obj("0"), layer_node("n", 0, render=render)).node(1)
             self.assertEqual((n.renderable, n.cast_shadows, n.receive_shadows), want, hex(render))
+
+    def test_layer_shadow_flags(self):
+        """0x1050 as 3ds Max 2020 saved a layer with one change each (maxdiff): Cast Shadows off clears 0x200,
+        Receive Shadows off 0x400, Renderable off 0x8000, as in a node's 0x099C."""
+        for render, want in ((0x0B00D600, (True, True, True)), (0x0B00D400, (True, False, True)),
+                             (0x0B00D200, (True, True, False)), (0x0B005600, (False, True, True))):
+            la = self.make(layer_obj("L", render=render)).layer(0)
+            self.assertEqual((la.renderable, la.cast_shadows, la.receive_shadows), want, hex(render))
+
+    def test_render_by_layer(self):
+        """Rendering Control By Layer: 0x0A28's second u32 0x3040C600 (maxdiff of renderByLayer), its first the
+        display mask. The masked 0x099C bits come from the node's own layer, the others stay the node's."""
+        s = self.make(layer_obj("L", render=0x0B005000), layer_node("bl", 0, render=0x0F00D600, by_layer=0x3040C600),
+                      layer_node("bo", 0, render=0x0F00D600, by_layer=0),
+                      layer_node("display", 0, by_layer=struct.pack("<II", 0xF9F80000, 0x00030000)),
+                      layer_node("cast", 0, render=0x0F00D600, by_layer=0x200))
+        la = s.layer(0)
+        bl, bo, display, cast = (s.node(i) for i in (1, 2, 3, 4))
+        self.assertEqual((bl.render_by_layer, bo.render_by_layer, display.render_by_layer), (0x3040C600, 0, 0x30000))
+        self.assertEqual((bl.renderable, bl.cast_shadows, bl.receive_shadows), (True, True, True))  # its own bits
+        self.assertEqual(scene.render_flags(bl, la), 0x0F005000)
+        self.assertEqual(scene.render_flags(bo, la), 0x0F00D600)
+        self.assertEqual(scene.render_flags(display, la), display.render_flags)
+        self.assertEqual(scene.render_flags(cast, la), 0x0F00D400)  # only the bit the mask names
+        self.assertEqual(scene.render_flags(bl, None), 0x0F00D600)  # no layer record: its own
+        own_off = self.make(layer_obj("L"), layer_node("n", 0, render=0x0F005000, by_layer=0x3040C600))
+        self.assertEqual(scene.render_flags(own_off.node(1), own_off.layer(0)), 0x0F00D600)
+        short = self.make(layer_obj("L", render=0x0B005000),
+                          layer_node("n", 0, by_layer=struct.pack("<I", 0x3040C600)))  # not a layout seen
+        n = short.node(1)
+        self.assertEqual(n.render_by_layer, 0)
+        self.assertEqual(scene.render_flags(n, short.layer(0)), 0x0F00D600)
 
     def test_damaged_records(self):
         s = self.make(node(L_LAYER, leaf(0x1020, b"\1")), node(L_LAYER, leaf(0x1050, b"")), leaf(L_LAYER),
@@ -452,6 +490,50 @@ class TestLayers(unittest.TestCase):
         body = [leaf(0x1010, b"p"), leaf(0x1090, b"\1"), leaf(0x10B0, b"\0\0")]
         s = self.make(layer_obj("top"), node(L_LAYER, *body))
         self.assertIsNone(s.layer(1).parent)
+
+
+class TestFrameRate(unittest.TestCase):
+    """Config 0x20B0/0x0010, the frames per second (four saves of an empty scene at 24, 25, 30 and 60 fps differ
+    only there, maxdrop-em3.144)."""
+
+    class Config:
+        def __init__(self, data):
+            self.data = data
+
+        def exists(self, name):
+            return name == "Config" and self.data is not None
+
+        def open(self, name, max_size=None):
+            return self.data
+
+    def ticks(self, data):
+        return scene.ticks_per_frame(self.Config(data))
+
+    def test_frame_rates(self):
+        for fps, ticks in ((30, 160), (25, 192), (24, 200), (60, 80), (7, 685), (4800, 1)):
+            with self.subTest(fps=fps):
+                self.assertEqual(self.ticks(node(0x20B0, leaf(0x0010, struct.pack("<i", fps)))), ticks)
+
+    def test_default_30_fps(self):
+        rate = struct.pack("<i", 25)
+        for data in (None, b"", b"\xff\xff\xff", leaf(0x20B0, rate), node(0x20B0, leaf(0x0011, rate)),
+                     node(0x20B0, leaf(0x0010, b"\x19\0")), node(0x20B0, node(0x0010, leaf(1, rate))),
+                     node(0x20B0, leaf(0x0010, struct.pack("<i", 0))),
+                     node(0x20B0, leaf(0x0010, struct.pack("<i", -25))),
+                     node(0x20B0, leaf(0x0010, struct.pack("<i", 4801)))):
+            with self.subTest(data=data):
+                self.assertEqual(self.ticks(data), 160)
+
+    def test_scene_default(self):
+        self.assertEqual(make(node_obj("A", -1)).ticks_per_frame, 160)
+
+    @unittest.skipUnless(os.path.exists(HIERARCHY), "no hierarchy fixture")
+    def test_fixture_stores_30_fps(self):
+        # read, not the default: the chunk is there and says 30
+        with cfb.CompoundFile(HIERARCHY) as cf:
+            rate = chunks.index(cf.open("Config")).first(0x20B0).first(0x0010)
+            self.assertEqual(rate.unpack("<i")[0], 30)
+            self.assertEqual(scene.ticks_per_frame(cf), 160)
 
 
 def _scene(cf):
@@ -475,6 +557,7 @@ class TestFixtures(unittest.TestCase):
             with self.subTest(fixture=os.path.basename(path)), cfb.CompoundFile(path) as cf:
                 s = _scene(cf)
                 self.assertIn(s.root_id, scene.ROOT_IDS)
+                self.assertEqual(s.ticks_per_frame, 160)  # every fixture is saved at 30 fps
                 self.assertEqual(s.cut_cycles, ())
                 order = s.walk()
                 expected = oracle["nodes"]
@@ -511,17 +594,32 @@ class TestFixtures(unittest.TestCase):
                     self.assertEqual(s.entry(n.layer).superclass, classids.SC_LAYER)
                     self.assertTrue(s.is_a(n.tm, classids.SC_CTRL_MATRIX3, classids.PRS) or
                                     s.is_a(n.tm, classids.SC_CTRL_MATRIX3, classids.LOOK_AT), e["name"])
-                    flags = (n.hidden, n.frozen, n.renderable, s.layer(n.layer).name)
+                    # MAXScript answers a By Layer node's render flags from its layer (layers_render)
+                    render = scene.render_flags(n, s.layer(n.layer))
+                    flags = (n.hidden, n.frozen, bool(render & scene.RENDERABLE), s.layer(n.layer).name)
                     self.assertEqual(flags, (e["hidden"], e["frozen"], e["renderable"], e["layer"]), e["name"])
-                    self.assertEqual((n.cast_shadows, n.receive_shadows), (e["cast_shadows"], e["receive_shadows"]),
-                                     e["name"])
+                    self.assertEqual((bool(render & scene.CAST_SHADOWS), bool(render & scene.RECEIVE_SHADOWS)),
+                                     (e["cast_shadows"], e["receive_shadows"]), e["name"])
+                    self.assertEqual(bool(n.render_by_layer & scene.RENDERABLE), e["render_by_layer"], e["name"])
                 # the file keeps hidden and frozen on the layer they were set on; MAXScript, and so the oracle,
                 # answers them for the layers below too (layers_nested)
                 layers = [(la.name, _inherited(s, la, "hidden"), _inherited(s, la, "frozen"), la.renderable,
-                           None if la.parent is None else s.layer(la.parent).name) for la in s.layers()]
-                self.assertEqual(layers, [(e["name"], e["hidden"], e["frozen"], e["renderable"], e["parent"])
-                                          for e in oracle["layers"]])
+                           la.cast_shadows, la.receive_shadows, None if la.parent is None else s.layer(la.parent).name)
+                          for la in s.layers()]
+                self.assertEqual(layers, [(e["name"], e["hidden"], e["frozen"], e["renderable"], e["cast_shadows"],
+                                           e["receive_shadows"], e["parent"]) for e in oracle["layers"]])
                 del nodes
+
+    def test_layers_render_own_bits(self):
+        """layers_render's FixtureByLayerOwnOff keeps its own three bits off in 0x099C (0x0F005000); By Layer, it
+        renders with its layer's, all on, as the oracle says."""
+        with cfb.CompoundFile(os.path.join(ROOT, "tests", "fixtures", "layers_render.max")) as cf:
+            s = _scene(cf)
+            n = next(n for n in s.nodes() if n.name == "FixtureByLayerOwnOff")
+            self.assertEqual((n.render_flags, n.renderable, n.cast_shadows, n.receive_shadows),
+                             (0x0F005000, False, False, False))
+            self.assertEqual(n.render_by_layer, 0x3040C600)
+            self.assertEqual(scene.render_flags(n, s.layer(n.layer)), 0x0F00D600)
 
     def test_layers_more_records(self):
         """The bytes docs/FORMAT.md quotes from layers_more: a hidden or frozen layer sets its own bits, not its

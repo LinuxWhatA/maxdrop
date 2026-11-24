@@ -2,13 +2,17 @@
 --
 -- SPDX-License-Identifier: GPL-3.0-or-later
 
--- Seven Editable Poly boxes, one Standard material each: Blinn, Anisotropic, Multi-Layer, Oren-Nayar-Blinn,
+-- Thirteen Editable Poly boxes, one Standard material each: Blinn, Anisotropic, Multi-Layer, Oren-Nayar-Blinn,
 -- Translucent and Strauss with a named Checker map in every map channel MaxDrop reads (found by the name
 -- 3ds Max gives the channel, getSubTexmapSlotName: the map tables follow each shader's own channel order), each
 -- at an amount of its own; and one Anisotropic material, created as Blinn, whose bump and self-illumination maps
 -- are set after the shader switch without touching their amounts (what the file stores at an occupied channel
--- whose amount was never set). Map names: "FixtureMap" + shader + channel field (Diffuse, Specular, Level,
--- Glossiness, SelfIllum, Opacity, Bump, Reflection, Metalness).
+-- whose amount was never set); one created as Blinn with diffuse and bump maps, then switched to Anisotropic (the
+-- map table keeps Blinn's layout, the Texmaps object 3ds Max's); one Anisotropic with its bump map switched off;
+-- four ("Level" + shader: Anisotropic, Multi-Layer, Oren-Nayar-Blinn, Translucent) with a diffuse map at a Diffuse
+-- Level away from 100 and a Diffuse Level map at an amount, at 100, switched off, or none.
+-- Nothing reads a material before the save. Map names: "FixtureMap" + shader + channel field (Diffuse, Specular, Level,
+-- Glossiness, SelfIllum, Opacity, Bump, Reflection, Metalness, DiffuseLevel).
 -- Authored for MaxDrop's tests (see CONTRIBUTING.md, "Test files"): it resets the scene, so run it in a 3ds Max
 -- session with nothing to keep, then sanitize and check the saved file before it goes into tests/fixtures/.
 (
@@ -81,6 +85,38 @@
 	local unset = fixtureStandard "FixtureMapsUnsetAmounts" 0
 	fixtureMaps unset "UnsetAmounts" #(#("SelfIllum", "Self-Illumination", undefined), #("Bump", "Bump", undefined))
 	fixtureBox "FixtureMapsUnsetAmountsBox" 240 unset
+
+	-- created as Blinn with diffuse and bump maps (amounts untouched), then switched to Anisotropic: 3ds Max moves
+	-- the bump map to Anisotropic's bump channel, the map table keeps it at Blinn's
+	local switched = fixtureStandard "FixtureMapsSwitchedAfter" 1
+	fixtureMaps switched "SwitchedAfter" #(#("Diffuse", "Diffuse Color", undefined), #("Bump", "Bump", undefined))
+	switched.shaderType = 0
+	fixtureBox "FixtureMapsSwitchedAfterBox" 280 switched
+
+	-- Anisotropic with self-illumination and bump maps, the bump map switched off
+	local offMat = fixtureStandard "FixtureMapsSwitchedOff" 0
+	fixtureMaps offMat "SwitchedOff" #(#("SelfIllum", "Self-Illumination", undefined), #("Bump", "Bump", undefined))
+	offMat.mapEnables[channelOf offMat "Bump"] = false
+	fixtureBox "FixtureMapsSwitchedOffBox" 320 offMat
+
+	-- a diffuse map at a Diffuse Level away from 100, with a Diffuse Level map (on, at an amount; on at 100; off)
+	-- or without one; label "Level" + shader
+	fn fixtureLevel name shader level channels =
+	(
+		local s = fixtureStandard ("FixtureMaps" + name) shader
+		s.diffuseLevel = level
+		fixtureMaps s name channels
+	)
+	fixtureBox "FixtureMapsLevelAnisotropicBox" 360 (fixtureLevel "LevelAnisotropic" 0 40.0 \
+		#(#("Diffuse", "Diffuse Color", 61.0), #("DiffuseLevel", "Diffuse Level", 62.0)))
+	fixtureBox "FixtureMapsLevelMultiLayerBox" 400 (fixtureLevel "LevelMultiLayer" 3 150.0 \
+		#(#("Diffuse", "Diffuse Color", 63.0), #("DiffuseLevel", "Diffuse Level", 100.0)))
+	local levelOff = fixtureLevel "LevelOrenNayarBlinn" 4 65.0 \
+		#(#("Diffuse", "Diffuse Color", 65.0), #("DiffuseLevel", "Diffuse Level", 64.0))
+	levelOff.mapEnables[channelOf levelOff "Diffuse Level"] = false
+	fixtureBox "FixtureMapsLevelOrenNayarBlinnBox" 440 levelOff
+	fixtureBox "FixtureMapsLevelTranslucentBox" 480 (fixtureLevel "LevelTranslucent" 7 80.0 \
+		#(#("Diffuse", "Diffuse Color", 66.0)))
 
 	makeDir @"C:\maxdrop_fixtures" all:true
 	saveMaxFile @"C:\maxdrop_fixtures\standard_maps.max" quiet:true

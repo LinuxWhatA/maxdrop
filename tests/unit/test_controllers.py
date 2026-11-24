@@ -65,10 +65,11 @@ _CLASSES = [
     (0x2001, 0, 0x9003, "Linear Float"), (0x2002, 0, 0x900B, "Linear Position"),
     (0x2003, 0, 0x900C, "Linear Rotation"), (0x2004, 0, 0x900D, "Linear Scale"), (0x442312, 0, 0x900B, "TCB Position"),
     (0x2009, 0, 0x900C, "Smooth Rotation"), (0x4B4B1000, 0, 0x9003, "Float List"), (0x7778, 0, 0x9003, "Some Float"),
+    (0x2011, 0, 0x9005, "Bezier Color"),
 ]
 (C_NODE, C_ROOT, C_PRS, C_POSXYZ, C_EULER, C_BSCALE, C_BFLOAT, C_PB2, C_POSLIST, C_ROTLIST, C_SCALELIST,
  C_LOOKAT, C_SCALEXYZ, C_TCBROT, C_BPOS, C_TCBSCALE, C_TCBFLOAT, C_LOOKAT_CONSTRAINT, C_UNKNOWN_M3,
- C_LINFLOAT, C_LINPOS, C_LINROT, C_LINSCALE, C_TCBPOS, C_SMOOTHROT, C_FLOATLIST, C_UNKNOWN_FLOAT) = \
+ C_LINFLOAT, C_LINPOS, C_LINROT, C_LINSCALE, C_TCBPOS, C_SMOOTHROT, C_FLOATLIST, C_UNKNOWN_FLOAT, C_BCOLOR) = \
     range(len(_CLASSES))
 CLASSES = classdir.ClassDirectory.parse(b"".join(class_entry(*c) for c in _CLASSES))
 # the keyframe classes as the controllers fixture shows them: (class index, key chunk, bytes per key, value floats)
@@ -187,8 +188,10 @@ class Build:
                       leaf(0x096C, struct.pack("<7f", *scl, 0, 0, 0, 1))]
         return self.add(node(C_NODE, *parts))
 
-    def transforms(self):
-        return ct.Transforms(scene.Scene(node(0x2025, *self.objects), CLASSES))
+    def transforms(self, ticks_per_frame=160):
+        s = scene.Scene(node(0x2025, *self.objects), CLASSES)
+        s.ticks_per_frame = ticks_per_frame
+        return ct.Transforms(s)
 
 
 def rows12(m):
@@ -320,10 +323,10 @@ class TestValues(MatrixCase):
         pos, issues = self.float_node(keys=float_keys((-100, 2.0), (300, 6.0)))
         self.assertAlmostEqual(pos[0], 2.625)  # flat tangents, handles a third long: 3u^2 - 2u^3 of the way
         self.assertEqual(issues, [])
-        free = leaf(0x2525, b"".join(struct.pack("<iIf4f", t, 0x101690, v, 0, 0, 1 / 3, 1 / 3)
+        free = leaf(0x2525, b"".join(struct.pack("<iIf4f", t, 0x101690, v, 0, 0, -1, -1)
                                      for t, v in ((-100, 2.0), (300, 6.0))))
         pos, issues = self.float_node(keys=free)
-        self.assertAlmostEqual(pos[0], 3.0)  # a free handle: linear, an issue
+        self.assertAlmostEqual(pos[0], 3.0)  # a free handle of a negative length: linear, an issue
         self.assertEqual([i.reason for i in issues], [ct.KEYS_INTERPOLATED])
         self.assertEqual(self.float_node(keys=float_keys())[0], (0.0, 0.0, 0.0))
 
@@ -448,8 +451,9 @@ class TestKeyframe(MatrixCase):
         return ct.scale_matrix(value[:3], value[3:])
 
     @staticmethod
-    def world(name, **kw):
-        """(world matrix, issues) of a node whose controller of keyframe class name is made with kw."""
+    def world(name, ticks_per_frame=160, **kw):
+        """(world matrix, issues) of a node whose controller of keyframe class name is made with kw, in a scene of
+        ticks_per_frame."""
         b = Build()
         obj = keyframed(b, name, **kw)
         count = KEYFRAMED[name][3]
@@ -458,7 +462,7 @@ class TestKeyframe(MatrixCase):
         else:
             prs = b.prs(*[obj if k == {3: 0, 4: 1, 7: 2}[count] else None for k in range(3)])
         n = b.node(prs)
-        t = b.transforms()
+        t = b.transforms(ticks_per_frame)
         return t.world(n), t.issues
 
     def test_every_class_reads_its_keys(self):
@@ -596,14 +600,83 @@ TCB_ROTATION = ((-3200, 0, _SR1 + (-0.6, 0.6, 1.4, 0, 0.4) + (-0.384283, 0.21561
                  (-0.38782, 0.0192559, 0.498383, 0.775138) + (-0.517174, 0.186085, 0.533234, 0.64309)),
                 (6400, 0, (0.34758, -0.46743, -0.400732, 0.707185) + (0, 0, 0, 0, 0) +
                  (0.47586, -0.41374, -0.776129, 2.31995) + (0.34758, -0.46743, -0.400732, 0.707185) * 2))
+# key records of the maxdrop-em3.144 probes (3ds Max 2020; key times moved so that the sample taken lies at 0) and
+# 3ds Max's rows there
+_Q1 = (0.2176535, -0.1221225, 0.508438, 0.8241383)  # eulerAngles 15 -25 60, as the probes store it
+_POS_A, _POS_B = (-10, 30, 5), (5, 25, 12)
+# free handles: lengths in frames of the scene's frame rate (0x100000 on both keys), steep tangents
+FREE_STEEP = ((-1600, 0x101480, (-25, 10, 0.1, -1, 0.6)), (6400, 0x100680, (-15, -0.05, -10, 0.15, -1)))
+FREE_25FPS = ((-1920, 0x101480, (-25, 10, 0.12, -1, 0.6)), (7680, 0x100680, (-15, -0.06, -10, 0.15, -1)))
+FREE_POSITION = ((-1600, 0x101480, _POS_A + (15, -5, 7, 0.01, -0.005, 0.003333333, -1, -1, -1, 0.5, 0.2, 0.4, 0, 0, 0)),
+                 (6400, 0x100680, _POS_B + (-0.003333333, 0.006666667, -0.008333334, -15, 5, -7, 0.1, 0.3, 0.6, -1, -1,
+                                            -1, 0, 0, 0)))
+# constant velocity (0x8000) out of the earlier key: handles of a third whatever the lengths or a free handle say
+_CV_OUT = _POS_A + (15, -5, 7, 0.03, -0.02, 0.01333333)
+_CV_IN = _POS_B + (-0.003333333, 0.02666667, -0.01666667, -15, 5, -7)
+_CV_CACHE = (113.7363, 0.8749997, 91.86395)  # 3ds Max's last length lookup: not read
+CONSTANT_VELOCITY = ((-1600, 0x9480, _CV_OUT + (-1,) * 6 + _CV_CACHE), (6400, 0x8680, _CV_IN + (-1,) * 6 + (0,) * 3))
+CONSTANT_VELOCITY_LENGTHS = ((-1600, 0x9480, _CV_OUT + (-1, -1, -1, 0.3333, 0.3333, 0.3333) + _CV_CACHE),
+                             (6400, 0x680, _CV_IN + (0.6, 0.1, 0.3, -1, -1, -1, 0, 0, 0)))
+CONSTANT_VELOCITY_FREE = ((-1600, 0x109480, _CV_OUT + (-1, -1, -1, 8, 3, 5) + _CV_CACHE),
+                          (6400, 0x680, _CV_IN + (0.3333, 0.3333, 0.3333, -1, -1, -1, 0, 0, 0)))
+_CV_WANT = ct.translation((8.649943, 19.27765, 12.3126))
+# scale axes that differ: the axis turns by slerp at the plain fraction of the time
+_AXIS_A, _AXIS_B = (-0.1677313, -0.04494344, -0.254887, 0.9512512), (0.3094445, 0.02984081, 0.1391709, 0.9402048)
+_AXIS_C = (0.3213206, 0.1919111, -0.02149021, 0.9270713)
+_AXES_ROWS = ((1.739538, 0.4233863, 0.02604014), (0.4233864, 0.7781497, -0.1179727),
+              (0.02604019, -0.1179726, 1.382313))
+AXES_BEZIER = ((-1600, 0x480, (2, 0.5, 1) + _AXIS_A + (-0.5, 0.5, 2) + NO_TURN + (-6.25e-05, 6.25e-05, 0.00025) +
+                NO_TURN + (-1, -1, -1) + NO_TURN + (-1, -1, -1) + NO_TURN),
+               (6400, 0x480, (1.5, 1, 3) + _AXIS_B + (6.25e-05, -6.25e-05, -0.00025) + NO_TURN + (0.5, -0.5, -2) +
+                NO_TURN + (-1, -1, -1) + NO_TURN + (-1, -1, -1) + NO_TURN))
+AXES_TCB = ((-3200, 0, (2, 0.5, 1) + _AXIS_A + (-0.6, 0, 0, 0, 0) + (0, 0, 0) + NO_TURN +
+             (-0.6080004, 0.9919998, 5.12) + NO_TURN),
+            (1600, 0, (1.5, 1, 3) + _AXIS_B + (0, 0.6, 0, 0.6, 0) + (-0.7399999, 0.2600001, -0.4) + NO_TURN +
+             (-0.5600001, 0.44, 1.4) + NO_TURN),
+            (6400, 0, (0.7, 1.2, 2) + _AXIS_C + (0, 0, 0, 0, 0) + (-0.9199998, 0.08000018, -2.2) + NO_TURN + (0, 0, 0) +
+             NO_TURN))
+AXES_LINEAR = ((-1600, 0, (2, 0.5, 1) + _AXIS_A), (6400, 0, (1.5, 1, 3) + _AXIS_B))
+# TCB Rotation turns of a revolution or more: squad over a half-turn at either end, the plain turn between
+TURN_TCB = ((-1600, 0, _Q1 + (0, 0, 0, 0, 0) + (0.3842829, -0.2156161, 0.8976839, 1.204234) + _Q1 * 2),
+            (6400, 0, tuple(-v for v in _Q1) + (0, 0, 0, 0, 0) + (-0.7071068, -0.7071068, 0, 6.2831855) +
+             tuple(-v for v in _Q1) * 2))
+_SPIN_KEY1 = _Q1 + (-0.6, 0, 0, 0, 0.4) + (0.3842829, -0.2156161, 0.8976839, 1.204234) + \
+    (0.177091, -0.05708491, 0.5239475, 0.8311793, 0.2568741, -0.1864072, 0.4897937, 0.8120161)
+_SPIN_KEY2 = (0.3418306, -0.331264, 0.4347805, 0.7644488, 0, -0.4, 0.2, 0.8, 0.2, 0, -1, 0, 0.5235988, 0.3042242,
+              -0.312087, 0.564356, 0.7011075, 0.2673074, -0.2867367, 0.657185, 0.6437677)
+_SPIN_KEY3 = (-0.4493841, 0.4115395, 0.3177683, -0.7264383, 0.4, 0.6, 1.4, 0.6, 0, -0.2672612, -0.5345225,
+              -0.8017837, 7.853981, -0.3374873, 0.3064483, 0.7745848, -0.438418, -0.3780216, 0.2699545, 0.8783795,
+              -0.1125782)
+_SPIN_KEY4 = (-0.1738264, 0.2780375, 0.4393593, -0.8363271, 0, 0, 0, 0, 0, -1, 0, 0, 0.6981317, -0.1738264,
+              0.2780375, 0.4393593, -0.8363271, -0.1738264, 0.2780375, 0.4393593, -0.8363271)
+# 450 degrees between keys at frames -5 and 25, frame 0 a sixth of the way: the first half-turn
+SPIN_START = ((-4000, 0, _SPIN_KEY1), (-800, 0, _SPIN_KEY2), (4000, 0, _SPIN_KEY3), (8800, 0, _SPIN_KEY4))
+_FIRST = _Q1 + (0, 0, 0, 0, 0) + (0.3842829, -0.2156161, 0.8976839, 1.204234) + _Q1 * 2
+_SPUN = (-0.2556345, 0.2522139, -0.2008212, -0.911433, 0, 0, 0, 0, 0, -0.2672612, -0.5345225, -0.8017837, 6.981317)
+# 400 degrees into a key with a control, frame 0 two thirds of the way: the last half-turn
+SPIN_END = ((-3200, 0, _FIRST), (1600, 0, _SPUN + (-0.2405288, 0.2500319, 0.1379594, -0.9276838) * 2),
+            (6400, 0, (-0.3217966, 0.6741401, -0.04609904, -0.6632172, 0, 0, 0, 0, 0, 0, -1, 0, 1.047198) +
+             (-0.3217966, 0.6741401, -0.04609904, -0.6632172) * 2))
+# 760 degrees after a turn of 400, frame 0 half way: the plain turn
+_SPUN2 = (-0.3264801, 0.1495713, 0.1230183, -0.9251517)
+SPIN_MIDDLE = ((-7200, 0, _FIRST), (-2400, 0, _SPUN + (-0.1754667, 0.4744749, -0.1856225, -0.842395) * 2),
+               (2400, 0, _SPUN2 + (0, 0, 0, 0, 0, 0, 0, -1, 13.2645) + _SPUN2 * 2))
+# 359 degrees after a turn of 60, frame 0 half way: neither squad nor the spin fits 3ds Max
+NEAR_TCB = ((-7200, 0, _FIRST),
+            (-2400, 0, (0.4427125, -0.5178303, 0.3314935, 0.6526634, 0, 0, 0, 0, 0, 0, -1, 0, 1.047198) +
+             (0.4830321, -0.5986848, 0.2688695, 0.5796254) * 2),
+            (2400, 0, (-0.4390483, 0.5170906, -0.3393202, -0.6517021, 0, 0, 0, 0, 0, -0.2672612, -0.5345225,
+                       -0.8017837, 6.265732) + (-0.4390483, 0.5170906, -0.3393202, -0.6517021) * 2))
+# a whole turn between Linear Rotation keys: about the earlier key's local Z, whichever axis it was made about
+OPPOSITE_LINEAR = ((-1600, 0, _Q1), (6400, 0, tuple(-v for v in _Q1)))
 
 
 class TestTangents(MatrixCase):
     """Between two Bezier, TCB or Smooth Rotation keys: the curve of their stored tangents, as 3ds Max samples it."""
 
     @staticmethod
-    def world(name, keys):
-        return TestKeyframe.world(name, saved=STALE[KEYFRAMED[name][3]], interval=AT_FRAME_30,
+    def world(name, keys, ticks_per_frame=160):
+        return TestKeyframe.world(name, ticks_per_frame, saved=STALE[KEYFRAMED[name][3]], interval=AT_FRAME_30,
                                   keys=records(name, *keys))
 
     def assertNear(self, got, rows):
@@ -659,21 +732,76 @@ class TestTangents(MatrixCase):
             self.assertNear(got, ct.translation((8.33333, 0, 0)))
             self.assertEqual(issues, [])
 
+    def test_free_handles_spins_and_axes_equal_3ds_max(self):
+        cases = [
+            ("Bezier Float", FREE_STEEP, 160, ct.translation((-19.08361, 0, 0))),
+            ("Bezier Float", FREE_25FPS, 192, ct.translation((-17.35247, 0, 0))),
+            ("Bezier Position", FREE_POSITION, 160, ct.translation((-6.720174, 28.98971, 6.343373))),
+            ("Bezier Position", CONSTANT_VELOCITY, 160, _CV_WANT),
+            ("Bezier Position", CONSTANT_VELOCITY_LENGTHS, 160, _CV_WANT),
+            ("Bezier Position", CONSTANT_VELOCITY_FREE, 160, _CV_WANT),
+            # constant velocity on the later key alone, or on a Bezier Scale: the plain curve (probes)
+            ("Bezier Position", (BEZIER_POSITION[0], (6400, 0x8680, BEZIER_POSITION[1][2])), 160,
+             ct.translation((26.2614, -2.11258, 4.032))),
+            ("Bezier Scale", ((-1600, 0x9480, BEZIER_SCALE[0][2]), (6400, 0x8680, BEZIER_SCALE[1][2])), 160,
+             ct.scale_matrix((1.07181, 0.919857, 1.05302))),
+            ("Bezier Scale", AXES_BEZIER, 160, _AXES_ROWS),
+            ("TCB Scale", AXES_TCB, 160, ((1.588367, -0.01132296, -0.007636474), (-0.01132295, 1.157975, 0.5991784),
+                                          (-0.007636414, 0.5991784, 2.829143))),
+            ("Linear Scale", AXES_LINEAR, 160, _AXES_ROWS),
+            ("TCB Rotation", TURN_TCB, 160, ((0.002162099, -0.4402154, -0.8978895), (0.3230723, 0.8500489, -0.4159822),
+                                             (0.9463718, -0.2891839, 0.1440593))),
+            ("TCB Rotation", SPIN_START, 160, ((0.6442479, -0.4869778, -0.5897434), (-0.2280298, 0.6137177, -0.755879),
+                                               (0.7300323, 0.6214526, 0.2843409))),
+            ("TCB Rotation", SPIN_END, 160, ((-0.8056253, -0.5518919, 0.2153679), (0.5903108, -0.7171367, 0.3704703),
+                                             (-0.05001131, 0.4255942, 0.9035311))),
+            ("TCB Rotation", SPIN_MIDDLE, 160, ((0.913654, -0.1942455, -0.3570784),
+                                                (-0.04691131, 0.8221828, -0.5672872),
+                                                (0.4037767, 0.5350553, 0.7420783))),
+            ("Linear Rotation", OPPOSITE_LINEAR, 160, ((0.9876206, 0.1555768, 0.02003492),
+                                                       (-0.126691, 0.866442, -0.4829366),
+                                                       (-0.09249283, 0.4744199, 0.8754261))),
+        ]
+        for name, keys, ticks, want in cases:
+            with self.subTest(name, keys=keys[0][2][:2], ticks=ticks):
+                got, issues = self.world(name, keys, ticks)
+                self.assertNear(got, want)
+                self.assertEqual(issues, [])
+
+    def test_free_handle_length_is_in_frames(self):
+        # the 25 fps probe read at 30 fps: handles 160 / 192 as long, and 3ds Max's value is missed
+        got, issues = self.world("Bezier Float", FREE_25FPS, 160)
+        self.assertGreater(abs(got[3][0] - -17.35247), 0.5)
+        self.assertEqual(issues, [])
+
+    def test_spin_pieces(self):
+        # a turn of 2 pi from the identity about Z, keys without controls: the plain turn in every piece
+        a = NO_TURN + (0, 0, 0, 0, 0) + (0, 0, 1, 0) + NO_TURN * 2
+        b = tuple(-v for v in NO_TURN) + (0, 0, 0, 0, 0) + (0, 0, 1, 2 * math.pi) + tuple(-v for v in NO_TURN) * 2
+        for frame in (5, 20, 35):  # the first half-turn, the middle, the last half-turn of 40 frames
+            with self.subTest(frame=frame):
+                got, issues = self.world("TCB Rotation", ((-160 * frame, 0, a), (160 * (40 - frame), 0, b)))
+                self.assertMatrix(got, ct.quat_matrix(_rotz(9 * frame)), places=5)
+                self.assertEqual(issues, [])
+
     def test_unknown_curves_stay_linear_with_an_issue(self):
-        free = tuple((t, flags | 0x100000, floats) for t, flags, floats in BEZIER_CUSTOM)
-        cv = tuple((t, flags | 0x8000, floats) for t, flags, floats in BEZIER_POSITION)
-        turned = (TCB_SCALE[0], (1600, 0, (1.5, 0.8, 1.2) + _rotz(30) + TCB_SCALE[1][2][7:]))
-        spin = (TCB_ROTATION[0], (1600, 0, TCB_ROTATION[1][2][:12] + (2 * math.pi,) + TCB_ROTATION[1][2][13:]))
-        # a whole revolution: opposite quaternions, the earlier rotation kept (the shorter arc)
+        # a free handle of a negative length (3ds Max converts a third into frames when the handle is freed)
+        free = ((-1600, 0x101480, (-20, 50, 0.1, -1, -1)), (6400, 0x100680, (30, -0.05, -50, -1, -1)))
+        # scale axes whose stored quaternions point apart (the same turn, the other sign)
+        turned = (TCB_SCALE[0], (1600, 0, (1.5, 0.8, 1.2) + (0, 0, 0.5, -0.8660254) + TCB_SCALE[1][2][7:]))
+        linear_scale = ((-1600, 0, (2, 0.5, 1) + _AXIS_A), (6400, 0, (1.5, 1, 3) + tuple(-v for v in _AXIS_B)))
+        no_axis = (TURN_TCB[0], (6400, 0, TURN_TCB[1][2][:9] + (0, 0, 0, 7.0) + TURN_TCB[1][2][13:]))
+        # 359 degrees from the identity between Linear Rotation keys: 3ds Max's branch is not known
+        near = ((-1600, 0, NO_TURN), (6400, 0, (0, 0, math.sin(math.radians(179.5)), math.cos(math.radians(179.5)))))
+        # a whole revolution between Smooth Rotation keys: opposite quaternions, the earlier rotation kept
         q, opposite = _rotz(30), tuple(-v for v in _rotz(30))
-        linear = ((-1600, 0, q), (6400, 0, opposite))
         smooth = ((-1600, 0x480, q * 3 + NO_TURN * 2), (6400, 0x480, opposite * 3 + NO_TURN * 2))
-        cases = [("Bezier Float", free, ct.translation((-10, 0, 0))),
-                 ("Bezier Position", cv, ct.translation((4.8, -0.4, 4.0))),
-                 ("TCB Scale", turned, None), ("TCB Rotation", spin, None),
-                 ("Linear Rotation", linear, ct.quat_matrix(q)), ("Smooth Rotation", smooth, ct.quat_matrix(q))]
+        cases = [("Bezier Float", free, ct.translation((-10, 0, 0))), ("TCB Scale", turned, None),
+                 ("Linear Scale", linear_scale, None), ("TCB Rotation", NEAR_TCB, None),
+                 ("TCB Rotation", no_axis, None), ("Linear Rotation", near, None),
+                 ("Smooth Rotation", smooth, ct.quat_matrix(q))]
         for name, keys, want in cases:
-            with self.subTest(name):
+            with self.subTest(name, keys=keys[1][2][:4]):
                 got, issues = self.world(name, keys)
                 if want is not None:
                     self.assertMatrix(got, want, places=5)
@@ -688,7 +816,14 @@ class TestTangents(MatrixCase):
                  ("TCB Float", ((-1600, 0, (-20, -0.6, 0.6, 1.4, 0, 0.4, 0, nan)), TCB_TWO[1])),
                  ("TCB Rotation", ((-3200, 0, TCB_ROTATION[0][2][:8] + (inf,) + TCB_ROTATION[0][2][9:]),
                                    TCB_ROTATION[1])),
-                 ("Smooth Rotation", ((-1600, 0x480, _SR1 + (nan, 0, 0, 1) * 2 + NO_TURN + NO_TURN), SMOOTH[1]))]
+                 ("Smooth Rotation", ((-1600, 0x480, _SR1 + (nan, 0, 0, 1) * 2 + NO_TURN + NO_TURN), SMOOTH[1])),
+                 ("TCB Rotation", (TCB_ROTATION[0], (1600, 0, TCB_ROTATION[1][2][:12] + (nan,) +
+                                                     TCB_ROTATION[1][2][13:]))),
+                 ("TCB Rotation", (TURN_TCB[0], (6400, 0, TURN_TCB[1][2][:9] + (0, inf, 0, 7.0) +
+                                                 TURN_TCB[1][2][13:]))),
+                 ("Bezier Float", ((-1600, 0x101480, (-25, 10, 0.1, -1, inf)), FREE_STEEP[1])),
+                 ("Bezier Position", ((-1600, 0x9480, _POS_A + (15, -5, 7, nan, -0.02, 0.01333333) + (-1,) * 6 +
+                                       _CV_CACHE), CONSTANT_VELOCITY[1]))]
         for name, keys in cases:
             with self.subTest(name, keys=keys[0][2]):
                 got, issues = self.world(name, keys)
@@ -1410,28 +1545,83 @@ class TestConstraint(MatrixCase):
         self.assertNotAlmostEqual(world[2][2], MAX_CONSTRAINT[(0, False, 2, False, 2, 0)][2][2], places=3)
 
         def fallback(controller):
-            """The world of [Anim(50), 100] whose weight controller is made by controller(b), the issues and the
-            controller's index."""
+            """The world of [Anim(7), 100] whose weight controller is made by controller(b), the issues, the
+            controller's index and the constraint's (7 only marks the slot: a weight read gives no 50)."""
             b = LookAtBuild()
             targets = [b.target((0, 0, 20)), b.target((100, 0, 0))]
             c = controller(b)
-            n = b.constrained(targets, [Anim(50.0), 100.0], scale=(1, 2, 1), weight_controllers=[c])
+            lc = len(b.objects) + 1  # constrained adds the block, then the constraint
+            n = b.constrained(targets, [Anim(7.0), 100.0], scale=(1, 2, 1), weight_controllers=[c])
             t = b.transforms()
-            return t.world(n), [(i.controller, i.reason) for i in t.issues], c
+            return t.world(n), [(i.controller, i.reason) for i in t.issues], c, lc
 
-        b = LookAtBuild()  # the weight a controller cannot give is 1
+        b = LookAtBuild()  # a weight of 1 (the old fallback) aims elsewhere: the cases below tell the two apart
         n = b.constrained([b.target((0, 0, 20)), b.target((100, 0, 0))], [1.0, 100.0], scale=(1, 2, 1))
         one = b.transforms().world(n)
         self.assertFalse(all(abs(one[r][c] - want[r][c]) < 1e-3 for r in range(3) for c in range(3)))
+        # a weight the reader cannot read is 50 (appendTarget's default on the 0-100 scale): want's weights
         for name, controller in (("Bezier Float without a value or keys", lambda b: b.flt()),
                                  ("empty slot", lambda b: None)):
             with self.subTest(name):
-                world, issues, _c = fallback(controller)
-                self.assertMatrix(world, one)
-                self.assertEqual(issues, [])
-        world, issues, c = fallback(lambda b: b.add(node(C_UNKNOWN_M3)))
-        self.assertMatrix(world, one)
+                world, issues, _c, lc = fallback(controller)
+                self.assertMatrix(world, want, places=5)
+                self.assertEqual(issues, [(lc, ct.CONSTRAINT_SETTING)])
+        world, issues, c, _lc = fallback(lambda b: b.add(node(C_UNKNOWN_M3)))  # reported once, as its class
+        self.assertMatrix(world, want, places=5)
         self.assertEqual(issues, [(c, ct.UNKNOWN_CLASS)])
+
+    def test_unreadable_stored_weight(self):
+        """A stored weight that is not finite, and a weight table shorter than the targets: 50, reported."""
+        two = m3((0.91788, -0.393377, 0.0524503), (0.393919, 0.919145, 0), (-0.0482094, 0.0206612, 0.998624))
+        want = ct.multiply(ct.scale_matrix((1, 2, 1)), two[:3] + ((-50, 50, 0, 1),))  # weights 50 and 100
+        for name, weights, positions in (("not finite", [float("nan"), 100.0], ((0, 0, 20), (100, 0, 0))),
+                                         ("missing", [100.0], ((100, 0, 0), (0, 0, 20)))):
+            with self.subTest(name):
+                b = LookAtBuild()
+                targets = [b.target(p) for p in positions]
+                n = b.constrained(targets, weights, scale=(1, 2, 1))
+                t = b.transforms()
+                self.assertMatrix(t.world(n), want, places=5)
+                self.assertEqual([i.reason for i in t.issues], [ct.CONSTRAINT_SETTING])
+
+    def test_unreadable_animated_weight_more(self):
+        """An empty Float List gives no value (50, reported); one unknown controller in two weights' slots is 50 in
+        both and reported once, also when the memo answers the second."""
+        def world(weights, controllers=None):
+            b = LookAtBuild()
+            targets = [b.target(p) for p in ((0, 0, 20), (100, 0, 0), (0, 80, 0))[:len(weights)]]
+            cs = [c(b) for c in controllers] if controllers else None
+            if cs and len(cs) == 2 and cs[1] == "same":
+                cs[1] = cs[0]
+            n = b.constrained(targets, weights, scale=(1, 2, 1), weight_controllers=cs)
+            t = b.transforms()
+            return t.world(n), [(i.controller, i.reason) for i in t.issues], cs
+
+        def empty_list(b):
+            return b.add(node(C_FLOATLIST, refs34(None, None, None, None, list_block(b)),
+                              leaf(0x1010, struct.pack("<i", 0))))
+
+        want, _issues, _cs = world([50.0, 100.0])
+        got, issues, _cs = world([Anim(7.0), 100.0], [empty_list])
+        self.assertMatrix(got, want, places=5)
+        self.assertEqual([reason for _c, reason in issues], [ct.CONSTRAINT_SETTING])
+        third, _issues, _cs = world([50.0, 50.0, 100.0])  # beside a stored 100, so 50 and 1 aim apart
+        got, issues, cs = world([Anim(7.0), Anim(7.0), 100.0],
+                                [lambda b: b.add(node(C_UNKNOWN_M3)), lambda b: "same"])
+        self.assertMatrix(got, third, places=5)
+        self.assertEqual(issues, [(cs[0], ct.UNKNOWN_CLASS)])
+
+    def test_many_unreadable_weights_stay_linear(self):
+        """A hostile table of empty animated weight slots (one byte each) is read in linear time."""
+        n_weights = 20000
+        b = LookAtBuild()
+        targets = [b.target((0, 0, 20))] + [None] * (n_weights - 1)
+        n = b.constrained(targets, [Anim(7.0)] * n_weights, weight_controllers=[None] * n_weights)
+        t = b.transforms()
+        start = time.perf_counter()
+        t.world(n)
+        self.assertLess(time.perf_counter() - start, 5.0)
+        self.assertEqual(len(t.issues), n_weights)
 
     def test_settings_and_up_node(self):
         for (axis, flip, source, source_flip, up_axis, control), expected in MAX_CONSTRAINT.items():
@@ -1728,13 +1918,25 @@ class TestTangentsFixture(unittest.TestCase):
                 out.append((entry.name, holder, [(r[1], r[2:]) for r in recs[k - 1:k + 1]]))
         return out
 
+    # maxdrop-em3.144: free handles, constant velocity, scale axes that differ, TCB spins, a whole Linear turn
+    SPUN = {"FixtureFreeHandles": ["Bezier Float"] * 3, "FixtureFreePosition": ["Bezier Position"],
+            "FixtureConstantVelocity": ["Bezier Position"], "FixtureScaleAxesBezier": ["Bezier Scale"],
+            "FixtureScaleAxesTCB": ["TCB Scale"], "FixtureScaleAxesLinear": ["Linear Scale"],
+            "FixtureTCBSpinStart": ["TCB Rotation"], "FixtureTCBSpinEnd": ["TCB Rotation"],
+            "FixtureTCBSpinMiddle": ["TCB Rotation"], "FixtureTCBTurn": ["TCB Rotation"],
+            "FixtureLinearRotationTurn": ["Linear Rotation"]}
+
     def test_frame_0_between_two_keys(self):
-        for name, want in self.KEYED.items():
+        for name, want in {**self.KEYED, **self.SPUN}.items():
             with self.subTest(name):
                 found = self.keyed(name)  # fails where no two keys straddle frame 0
                 self.assertEqual(sorted(c for c, _h, _r in found), want)
                 for _c, holder, _r in found:
-                    self.assertEqual(holder.first(0x2500).unpack("<ii"), AT_FRAME_30)
+                    start, end = holder.first(0x2500).unpack("<ii")
+                    if name in self.KEYED:
+                        self.assertEqual((start, end), AT_FRAME_30)
+                    else:  # FixtureTCBSpinMiddle's last key is at frame 15: its interval is (2400, 2400)
+                        self.assertFalse(start <= 0 <= end, name)
 
     def test_tangents_are_not_linear(self):
         for name in self.KEYED:
@@ -1751,6 +1953,217 @@ class TestTangentsFixture(unittest.TestCase):
         self.assertGreater(b[12], math.pi)  # 200 degrees from the earlier key
         (_c, _h, ((_fa, a), (_fb, b))), = self.keyed("FixtureLinearRotationWide")
         self.assertLess(sum(x * y for x, y in zip(a[:4], b[:4])), 0.0)  # stored the long way round
+
+    def test_free_handles_and_constant_velocity(self):
+        for name in ("FixtureFreeHandles", "FixtureFreePosition"):
+            for cls, _h, ((flags_a, a), (flags_b, b)) in self.keyed(name):
+                with self.subTest(name, values=(a[0], b[0])):
+                    n = {"Bezier Float": 1, "Bezier Position": 3}[cls]
+                    self.assertTrue((flags_a | flags_b) & 0x100000)  # a free handle in the segment
+                    if flags_a & 0x100000:
+                        self.assertGreater(min(a[4 * n:5 * n]), 0.0)  # the out length, in frames
+                    if flags_b & 0x100000:
+                        self.assertGreater(min(b[3 * n:4 * n]), 0.0)
+        longest = max(a[4] for _c, _h, ((_fa, a), _b) in self.keyed("FixtureFreeHandles"))
+        self.assertGreater(longest, 50.0)  # a handle longer than its 50-frame segment
+        (_c, _h, ((flags_a, a), (flags_b, b))), = self.keyed("FixtureConstantVelocity")
+        self.assertTrue(flags_a & 0x8000)
+        self.assertFalse(flags_a & 0x100000)
+        self.assertEqual([round(v, 4) for v in b[9:12]], [0.6, 0.1, 0.3])  # in lengths that do not count
+
+    def test_scale_axes_differ(self):
+        for name in ("FixtureScaleAxesBezier", "FixtureScaleAxesTCB", "FixtureScaleAxesLinear"):
+            (_c, _h, ((_fa, a), (_fb, b))), = self.keyed(name)
+            dot = sum(x * y for x, y in zip(a[3:7], b[3:7]))
+            self.assertTrue(0.0 < dot < 0.99, (name, dot))
+
+    def test_spins_and_whole_turns(self):
+        # the eased fraction of frame 0 against the half-turn h at either end of a turn past a revolution
+        for name, piece in (("FixtureTCBSpinStart", "first"), ("FixtureTCBSpinEnd", "last"),
+                            ("FixtureTCBSpinMiddle", "middle"), ("FixtureTCBTurn", "last")):
+            with self.subTest(name):
+                (_c, holder, ((_fa, a), (_fb, b))), = self.keyed(name)
+                view = holder.first(0x2522).view()
+                times = [struct.unpack_from("<i", view, k * 92)[0] for k in range(len(view) // 92)]
+                t0 = max(t for t in times if t < 0)
+                t1 = min(t for t in times if t > 0)
+                self.assertGreaterEqual(b[12], 2 * math.pi)
+                u, h = ct.ease(-t0 / (t1 - t0), a[8], b[7]), math.pi / b[12]
+                self.assertEqual("first" if u < h else "last" if u > 1 - h else "middle", piece)
+        (_c, _h, ((_fa, a), (_fb, b))), = self.keyed("FixtureLinearRotationTurn")
+        self.assertLess(1.0 + sum(x * y for x, y in zip(a[:4], b[:4])), 5e-7)  # opposite quaternions
+
+    def test_lists_of_turned_entries(self):
+        s = self.s
+        scale_list = s.refs(s.node(self.nodes["FixtureScaleListAxes"]).tm)[2]
+        axes = [s.chunk(s.refs(scale_list)[k]).first(0x2505).unpack("<7f")[3:] for k in (0, 1)]
+        self.assertTrue(all(abs(q[3]) < 0.99 for q in axes))  # both turned
+        self.assertLess(abs(sum(x * y for x, y in zip(*axes))), 0.99)  # and not alike: the order matters
+        rot_list = s.refs(s.node(self.nodes["FixtureRotListMulti"]).tm)[1]
+        for k in (0, 1):
+            euler = s.refs(rot_list)[k]
+            angles = [s.chunk(f).first(0x7127).first(0x2501).unpack("<f")[0]
+                      for f in (s.refs(euler)[j] for j in range(3))]
+            self.assertGreaterEqual(sum(abs(v) > 0.1 for v in angles), 2, angles)  # about several axes
+
+
+LOOKAT = os.path.join(ROOT, "tests", "fixtures", "lookat.max")
+
+
+@unittest.skipUnless(os.path.exists(LOOKAT), "no lookat fixture")
+class TestLookAtWeightFixture(unittest.TestCase):
+    """lookat's two LookAt Constraints with an animated weight keep the slots 3ds Max 2020 gave them
+    (GetControllerByID): the weight's controller is the block's reference slot 0, the targets and the up node after
+    it. TestFixtures checks their matrices (FixtureWeightUp's, one target, only the slots: one weight cancels out);
+    this checks a regenerated fixture still holds the controller there, and its keys."""
+
+    # node: (weights as stored, the slots after the controller's by node name, up node or None, key values at 0, 50)
+    WEIGHTED = {"FixtureWeightAnimated": ([50.0, "animated"], ["FixtureAim", "FixtureCam.Target"], None, [20.0, 90.0]),
+                "FixtureWeightUp": (["animated"], ["FixtureAim"], "FixtureRig", [60.0, 10.0])}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cf = cfb.CompoundFile(LOOKAT)
+        cls.s = scene.Scene.from_file(cls.cf)
+        cls.nodes = {cls.s.node(i).name: i for i in cls.s.walk()}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.cf.close()
+
+    def test_weight_controller_takes_slot_0(self):
+        s = self.s
+        for name, (weights, targets, up, values) in self.WEIGHTED.items():
+            with self.subTest(name):
+                c = s.refs(s.node(self.nodes[name]).tm)[1]
+                self.assertEqual(s.entry(c).class_id, classids.LOOKAT_CONSTRAINT)
+                block = s.refs(c)[0]
+                refs = s.refs(block)
+                ctrl = refs[0]
+                self.assertEqual(s.entry(ctrl).class_id, classids.BEZIER_FLOAT)
+                named = targets + ([up] if up else [])
+                self.assertEqual({k: s.node(v).name for k, v in refs.items() if k}, dict(enumerate(named, 1)))
+                pb = pblock.ParamBlock2.from_chunk(s.chunk(block), refs, s.refs(c), len(s),
+                                                   (s.entry(c).superclass, s.entry(c).class_id))
+                self.assertFalse(pb.issues)
+                want = [pblock.Animated(ctrl) if w == "animated" else w for w in weights]
+                self.assertEqual(pb.value(0), want)
+                self.assertEqual(pb.value(1), [pblock.Reference(self.nodes[t]) for t in targets])
+                if up:
+                    self.assertEqual(pb.get(9), pblock.Reference(self.nodes[up]))
+                holder = s.chunk(ctrl).first(0x7127)
+                keys = holder.first(0x2525).view()  # Bezier Float key records, 28 bytes: time, flags, value
+                records = [struct.unpack_from("<iIf", keys, k * 28) for k in range(len(keys) // 28)]
+                self.assertEqual([r[0] for r in records], [0, 50 * 160])  # frames 0 and 50, in ticks
+                for got, want in zip([r[2] for r in records], values):
+                    self.assertAlmostEqual(got, want, places=4)
+
+
+class ParameterValue(unittest.TestCase):
+    """parameter_value: a material or map parameter's controller at frame 0 (maxdrop-em3.152). pblock_animated holds
+    Bezier Float and Bezier Color controllers in a VRayBlendMtl, a VRayMtl and a VRayNormalMap; the oracle gives
+    each one's frame-0 value."""
+
+    PATH = os.path.join(ROOT, "tests", "fixtures", "pblock_animated.max")
+
+    def test_fixture_controllers(self):
+        materials = importlib.import_module(_PKG + ".reader.materials")
+        with open(os.path.join(ROOT, "tests", "fixtures", "pblock_animated.oracle.json"), encoding="utf-8") as f:
+            oracle = {m["name"]: m for m in json.load(f)["material_graph"]}
+        with cfb.CompoundFile(self.PATH) as cf:
+            s = scene.Scene.from_file(cf)
+            g = materials.MaterialGraph(s)
+            seen = 0
+            for i in g.walk(s.node(n).material for n in s.walk()):
+                m = g.get(i)
+                for b in oracle[m.name]["blocks"]:
+                    for c in b.get("controllers", ()):
+                        with self.subTest(material=m.name, param=c["id"], tab=c["tab"]):
+                            a = m.block(b["block_id"]).get(c["id"], c["tab"])
+                            self.assertIsInstance(a, pblock.Animated)
+                            value, issues = ct.parameter_value(s, a.index)
+                            self.assertEqual(issues, [])
+                            want = c["value"]
+                            if isinstance(want, list):
+                                self.assertIsInstance(value, tuple)
+                                self.assertEqual(len(value), len(want))
+                                for x, y in zip(value, want):
+                                    self.assertAlmostEqual(x, y, delta=1e-5)
+                            else:
+                                self.assertIsInstance(value, float)
+                                self.assertAlmostEqual(value, want, delta=1e-5)
+                            seen += 1
+            self.assertEqual(seen, 6)
+
+    def test_bezier_color_keys(self):
+        """A Bezier Color's keys (0x2526): 80 bytes each, time, flags, then the color: key 0 (frame 0) holds the saved
+        value, key 1 the color at frame 50."""
+        with cfb.CompoundFile(self.PATH) as cf:
+            s = scene.Scene.from_file(cf)
+            colors = [i for i in range(len(s)) if s.entry(i) is not None
+                      and (s.entry(i).superclass, s.entry(i).class_id) == (classids.SC_CTRL_POINT3,
+                                                                           classids.BEZIER_COLOR)]
+            keyed = 0
+            for i in colors:
+                holder = s.chunk(i).first(0x7127)
+                keys = holder.first(0x2526)
+                if keys is None:
+                    continue
+                self.assertEqual(keys.payload_size, 2 * 80)
+                view = keys.view()
+                saved = holder.first(0x2501).unpack("<3f")
+                self.assertEqual(struct.unpack_from("<i", view, 0)[0], 0)
+                self.assertEqual(struct.unpack_from("<i", view, 80)[0], 50 * 160)
+                self.assertEqual(struct.unpack_from("<3f", view, 8), saved)
+                keyed += 1
+            self.assertEqual(keyed, 2)  # the blend color and the diffuse
+
+    @staticmethod
+    def scene_of(b):
+        return scene.Scene(node(0x2025, *b.objects), CLASSES)
+
+    def test_float_list(self):
+        """A Float List sums its entries times their weights; one entry of another class (an expression, a script)
+        leaves no value: the parameter keeps its default rather than the sum of the rest."""
+        b = Build()
+        flist = b.add(node(C_FLOATLIST, refs34(b.flt(30.0), b.flt(7.0), None, None, list_block(b, 0.5, 1.0)),
+                           leaf(0x1010, struct.pack("<i", 2))))
+        odd = b.add(node(C_UNKNOWN_FLOAT, leaf(0x2501, struct.pack("<f", 9))))
+        mixed = b.add(node(C_FLOATLIST, refs34(b.flt(2.0), odd, None, None, list_block(b, 1.0, 1.0)),
+                           leaf(0x1010, struct.pack("<i", 2))))
+        s = self.scene_of(b)
+        self.assertEqual(ct.parameter_value(s, flist), (22.0, []))
+        value, issues = ct.parameter_value(s, mixed)
+        self.assertIsNone(value)
+        self.assertEqual([x.reason for x in issues], [ct.UNKNOWN_CLASS])
+
+    def test_bezier_color_from_keys(self):
+        """Without a saved value whose interval holds frame 0: the keys (80 bytes each), the first one before it, the
+        last one after it, linear between two with an issue (the curve not measured)."""
+        before, after = (0.2, 0.4, 0.6), (0.6, 0.8, 1.0)
+        for times, want, reasons in (((10, 20), before, []), ((-20, -10), after, []),
+                                     ((-10, 10), (0.4, 0.6, 0.8), [ct.KEYS_INTERPOLATED])):
+            with self.subTest(times=times):
+                b = Build()
+                keys = keys_of("Bezier Position", (times[0], before), (times[1], after))
+                i = b.add(node(C_BCOLOR, node(0x7127, leaf(0x2501, struct.pack("<3f", 9, 9, 9)),
+                                              leaf(0x2500, struct.pack("<ii", 5, 5)), keys)))
+                value, issues = ct.parameter_value(self.scene_of(b), i)
+                for x, y in zip(value, want):
+                    self.assertAlmostEqual(x, y, places=6)
+                self.assertEqual([x.reason for x in issues], reasons)
+
+    def test_not_a_value(self):
+        with cfb.CompoundFile(self.PATH) as cf:
+            s = scene.Scene.from_file(cf)
+            value, issues = ct.parameter_value(s, len(s))
+            self.assertIsNone(value)
+            self.assertEqual(len(issues), 1)
+            self.assertTrue(issues[0].reason.startswith(ct.DAMAGED), issues)
+            node = s.walk()[0]
+            value, issues = ct.parameter_value(s, node)  # a node, not a controller
+            self.assertIsNone(value)
+            self.assertEqual([x.reason for x in issues], [ct.UNKNOWN_CLASS])
 
 
 if __name__ == "__main__":

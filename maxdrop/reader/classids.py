@@ -120,6 +120,7 @@ SYMMETRY = ClassId(0x2D7E702B, 0x0BE41A6E)
 
 # Materials, maps and their parts.
 STANDARD_MTL = ClassId(0x00000002, 0)
+STD_TEXMAPS = ClassId(0x00001200, 0)  # a Standard material's map channels (superclass 0x1080)
 MULTI_SUB_MTL = ClassId(0x00000200, 0)
 SHELL_MTL = ClassId(0x00000255, 0)
 PHYSICAL_MTL = ClassId(0x3D6B1CEC, 0xDEADC001)
@@ -189,6 +190,7 @@ BEZIER_FLOAT = ClassId(0x00002007, 0)
 BEZIER_POSITION = ClassId(0x00002008, 0)
 BEZIER_ROTATION = ClassId(0x00002009, 0)  # "Smooth Rotation" in the class directory (MAXScript: Bezier_Rotation)
 BEZIER_SCALE = ClassId(0x00002010, 0)
+BEZIER_COLOR = ClassId(0x00002011, 0)  # a Point3 controller: an animated color parameter (pblock_animated)
 EULER_XYZ = ClassId(0x00002012, 0)
 TCB_FLOAT = ClassId(0x00442311, 0)
 TCB_POSITION = ClassId(0x00442312, 0)
@@ -266,6 +268,7 @@ CLASSES = {
     (SC_OSMODIFIER, SHELL): "Shell",
     (SC_OSMODIFIER, SYMMETRY): "Symmetry",
     (SC_MATERIAL, STANDARD_MTL): "Standard",
+    (SC_TEXMAP_CONTAINER, STD_TEXMAPS): "Texmaps",
     (SC_MATERIAL, MULTI_SUB_MTL): "Multi/Sub-Object",
     (SC_MATERIAL, SHELL_MTL): "Shell Material",
     (SC_MATERIAL, PHYSICAL_MTL): "Physical Material",
@@ -333,6 +336,7 @@ CLASSES = {
     (SC_CTRL_POSITION, BEZIER_POSITION): "Bezier Position",
     (SC_CTRL_ROTATION, BEZIER_ROTATION): "Smooth Rotation",
     (SC_CTRL_SCALE, BEZIER_SCALE): "Bezier Scale",
+    (SC_CTRL_POINT3, BEZIER_COLOR): "Bezier Color",
     (SC_CTRL_ROTATION, EULER_XYZ): "Euler XYZ",
     (SC_CTRL_FLOAT, TCB_FLOAT): "TCB Float",
     (SC_CTRL_POSITION, TCB_POSITION): "TCB Position",

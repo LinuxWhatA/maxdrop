@@ -79,9 +79,10 @@ frame or, locked to the dome, in the dome node's; another root is not used (the 
 another projection is drawn as spherical (an issue), a CoronaBitmap too (V-Ray 5.2 renders it on a dome as one flat
 color, measured: an issue). Its gamma is drawn as a material's image's is (its color space, a Gamma node on a
 Linear Rec.709 image: build.world), but a float file (EXR, HDR) in a scene saved with the gamma off keeps its own
-decode (linear for automatic; an issue): the display decode V-Ray shows on a material (maxdrop-em3.123) would take a
-sky's values far above 1 to orders of magnitude more light, and a float image as a light is not measured
-(maxdrop-em3.166). The first
+decode (linear for automatic; an issue), as the dome's multiplier is: V-Ray 5.2 shows the light display-referred,
+which no decode of each texel matches; the display decode V-Ray shows on a material (maxdrop-em3.123) matches a
+uniform sky but makes a sun orders of magnitude too bright, its own decode is the nearest (measured,
+maxdrop-em3.166; docs/FORMAT.md, Scene gamma). The first
 dome that is on is the World; another one, or one that
 is off, is an issue (convert.scene).
 
@@ -112,10 +113,11 @@ watts at 683 lm/W: 4 pi I / 683 for a point or spot light of on-axis intensity I
   dimming and color are not imported (issues).
 - VRayIES: its power in lm (V-Ray's flux with the intensity overridden, in either unit; without the override V-Ray
   scales the IES file's candelas by power over its rated lumens: with the file found (read_params' ies_files, a
-  convert.ies.Lookup) the lumens are power x the file's flux / its rated lumens (convert.ies; the power itself for
-  rated lumens of -1), a file of more lamps rated above 0 lm an issue; a file not found or not read, the power, an
-  issue) -> SPOT of WEB_CONE, power lm / 683, its color or temperature, the IES file named in an issue; a power of 0
-  (dark in V-Ray too) is 0 W, an issue. With its light shape used and overridden, the spot's radius is half the largest
+  convert.ies.Lookup) the lumens are power x the file's flux / its rated lumens (convert.ies, as V-Ray reads the
+  header: flux times the candela multiplier and the ballast factor, rated lumens times the number of lamps; the
+  power itself for rated lumens of 0 or below); a file not found or not read, the power, an issue) -> SPOT of
+  WEB_CONE, power lm / 683, its color or temperature, the IES file named in an issue; a power of 0 (dark in V-Ray
+  too) is 0 W, an issue. With its light shape used and overridden, the spot's radius is half the largest
   size the shape uses (IES_SHAPES: a sphere's diameter exactly, any other shape an issue); without the override
   V-Ray takes the file's shape, which is not read: radius 0.
 - Skylight: not built (the reason; its World is later work). environment_sky finds a VRaySky as the environment map
@@ -287,7 +289,9 @@ DOME_PLACEMENT = "its texture %s's offset, tiling or angle is not imported"
 DOME_OUTPUT = "its texture %s's Output (invert, RGB level or offset) is not imported"
 DOME_GAMMA = "its texture %s's gamma %g is not applied"
 DOME_FLOAT_OFF = ("its texture %s is a float image in a scene saved with the gamma off: kept linear (its own decode), "
-                  "not decoded once more for the display as on a material (not measured as a light)")
+                  "as the dome's multiplier is; V-Ray 5.2 shows the light it gives display-referred, so below 1 it is "
+                  "brighter and above 1 darker than V-Ray's (measured; decoded as on a material a sun would be "
+                  "orders of magnitude too bright)")
 DOME_CROP = "its texture %s's crop or placement is not imported"
 DOME_SHADOW = "cast shadows off is not imported: the World casts shadows"
 SKY = "the environment map is a VRaySky: not imported yet (environment -> World is later work)"
@@ -309,8 +313,6 @@ IES_RATED = ("its power is taken as its flux: V-Ray scales the IES file's candel
              "folder or a texture search folder it would be)")
 IES_UNREAD = ("its power is taken as its flux: V-Ray scales the IES file's candelas by the power over the file's "
               "rated lumens, and %s cannot be read (%s)")
-IES_LAMPS = ("its IES file %s has %d lamps: V-Ray's power is taken as scaling it by its lumens per lamp "
-             "(not measured)")
 IES_DARK = "its IES file %s gives no light: 0 W"
 IES_SHAPE = "its %s light shape is a sphere %g m across"
 NO_FILE = "(no file)"
@@ -842,8 +844,8 @@ def dome_texture(graph_ir, material_graph, swatches=None):
         return None, [DOME_NO_TEXTURE]
     issues = list(graph_ir.issues)
     img = graph_ir.root
-    if not isinstance(img, texmaps.Image):
-        return None, issues + [DOME_ROOT % type(img).__name__]
+    if not isinstance(img, texmaps.Image):  # a gamma-off Mix or Composite is named, not its Decode
+        return None, issues + [DOME_ROOT % type(img.input if isinstance(img, texmaps.Decode) else img).__name__]
     m = material_graph.get(img.index) if material_graph is not None else None
     if m is not None:  # the converter names the root's environment mapping: wrong for a material, expected here
         own = tuple("%s %r: environment mapping" % (cls, m.name) for cls in ("Bitmap", "VRayBitmap"))
@@ -1027,7 +1029,8 @@ def _describe_sun(key, name, v, meters, swatches, issues):
 def _describe_ies(key, name, v, meters, swatches, issues):
     # Measured (docs/FORMAT.md, "Power, measured"): the stored power is lumens in both units of the override (V-Ray's
     # panel converts cd with the file) and V-Ray renders that flux; without the override it scales the file's
-    # candelas by power / the file's rated lumens, the flux only when those are the file's own. Power 0 is dark.
+    # candelas by power / the file's rated lumens, the flux only when those are the file's own. Power 0 is dark. A
+    # file V-Ray cannot find renders the power as an isotropic flux, as a file not found here does (measured).
     lm = _nonnegative("power", v["power"], issues)
     file = v["file"] or NO_FILE
     if v["power"] == 0:
@@ -1036,8 +1039,6 @@ def _describe_ies(key, name, v, meters, swatches, issues):
         photometry = v.get("photometry")
         if photometry is not None:
             lm *= photometry.scale  # past the float range: describe() makes it 0 W, OUT_OF_RANGE
-            if photometry.lamps != 1 and photometry.rated > 0:
-                issues.append(IES_LAMPS % (file, photometry.lamps))
             if lm == 0:
                 issues.append(IES_DARK % file)
         elif v.get("photometry_issue"):

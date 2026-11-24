@@ -97,8 +97,9 @@ a CoronaMix Multiply as a Mix mask), red x green gives 1/9 (not 0) and yellow x 
 Texture graphs (convert/texmaps.py) become nodes, a node of the IR shared by several inputs once per material: Image
 -> Image Texture (its image datablock reused per file and color space: one file used in two color spaces is two
 datablocks; see Images below), with its placement as a Mapping node and a UV Map node for a map channel other than
-1; Invert, Mix, Multiply, Blend (Gamma nodes around a Mix node of its operation), ColorCorrect (its rewiring as
-Invert, the mean or Separate / Combine Color, then Hue/Saturation/Value, Bright/Contrast, gain, Gamma), Composite
+1; Invert, Decode (a Gamma node of 2.2, a constant through the sRGB curve), Mix, Multiply, Blend (Gamma nodes around a
+Mix node of its operation or Vector Math nodes), ColorCorrect (its rewiring as Invert, the mean or Separate / Combine
+Color, then Hue/Saturation/Value, Bright/Contrast, gain, Gamma), Composite
 (per layer its blend at factor 1, then a Mix by opacity x mask), Facing (Layer Weight Facing, Fresnel, or the
 Geometry node's Normal . Incoming), Remap (Float Curve, its points straight between them, not clipped; the Mix it
 drives does not clamp its factor), Smoothstep (Map Range SMOOTHSTEP, or a step: 1 - LESS_THAN), Adjust (a map's
@@ -121,6 +122,8 @@ rectangle (TEXTURE, out of it, for a placed image). Without a crop Blender's one
 repeat alike; otherwise the same per-axis nodes over the whole image (extension()). Where an axis repeats, what
 clips (a clipped axis, a placed image's rectangle) is a mask on the image's Color and Alpha under EXTEND, not the
 CLIP extension, which fades the border half-texel toward black at every tile and mirror line (clip_axes()).
+That black is kept under a normal map too: 3ds Max renders the area outside a clipped Bitmap under Normal Bump or
+VRayNormalMap exactly as a black normal image, skewed, not flat (V-Ray 5.2 and scanline, maxdrop-em3.137).
 Map channel 0 (the vertex color as UVW) has no UV layer: such a map is drawn on channel 1 and reported.
 A texture file that holds no image (empty, or not starting as its format does: image_has_data) is reported and
 left out as one that does not load. A material whose build raises is removed again and reported: its slot stays
@@ -144,6 +147,7 @@ import bpy
 from mathutils import Euler, Matrix, Vector
 
 from .. import compat
+from ..convert import colors
 from ..convert import scene as convert_scene
 from ..convert import texmaps as tx
 
@@ -159,13 +163,13 @@ MAX_LAYER_DEPTH = 8  # layers within layers drawn (convert/materials.py already 
 X_STEP, Y_STEP = 300, 280
 COLOR, FLOAT = "color", "float"
 # Blend op -> the Mix node's blend type drawn at factor 1 (A the bottom; hard light swaps them, linear burn is an
-# add minus 1, floored at 0)
+# add minus 1, floored at 0). Dodge, burn and exclusion are Vector Math forms (arith): Blender's DODGE, BURN and
+# EXCLUSION clamp where Corona does not, and DODGE leaves black under white at 0 (maxdrop-em3.161).
 BLEND_OPS = {tx.BLEND_ADD: 'ADD', tx.BLEND_SUBTRACT: 'SUBTRACT', tx.BLEND_DIVIDE: 'DIVIDE', tx.BLEND_MIN: 'DARKEN',
              tx.BLEND_MAX: 'LIGHTEN', tx.BLEND_DIFFERENCE: 'DIFFERENCE', tx.BLEND_SCREEN: 'SCREEN',
-             tx.BLEND_OVERLAY: 'OVERLAY', tx.BLEND_HARD_LIGHT: 'OVERLAY', tx.BLEND_DODGE: 'DODGE',
-             tx.BLEND_BURN: 'BURN', tx.BLEND_LINEAR_BURN: 'ADD', tx.BLEND_LINEAR_LIGHT: 'LINEAR_LIGHT',
-             tx.BLEND_EXCLUSION: 'EXCLUSION'}
-NON_NEGATIVE_BLENDS = (tx.BLEND_SUBTRACT, tx.BLEND_DIFFERENCE, tx.BLEND_LINEAR_BURN)  # never below 0: no ABSOLUTE
+             tx.BLEND_OVERLAY: 'OVERLAY', tx.BLEND_HARD_LIGHT: 'OVERLAY', tx.BLEND_LINEAR_BURN: 'ADD',
+             tx.BLEND_LINEAR_LIGHT: 'LINEAR_LIGHT'}
+NON_NEGATIVE_BLENDS = (tx.BLEND_SUBTRACT, tx.BLEND_DIFFERENCE, tx.BLEND_LINEAR_BURN, tx.BLEND_BURN)  # no ABSOLUTE
 # Composite blend mode -> the Mix node's blend type drawn at factor 1 (texmaps: AVERAGE, SPOTLIGHT, SPOTLIGHT_BLEND
 # and HARD_LIGHT have forms of their own, LINEAR_DODGE is ADD clamped before the opacity, as measured)
 BLEND_TYPES = {tx.ADDITION: 'ADD', tx.SUBTRACT: 'SUBTRACT', tx.DARKEN: 'DARKEN', tx.MULTIPLY_BLEND: 'MULTIPLY',
@@ -805,6 +809,8 @@ class _Tree:
             return self.image(n, space, depth)
         if isinstance(n, tx.Invert):
             return self.invert(self.graph(n.input, space, depth + 1), space, depth)
+        if isinstance(n, tx.Decode):
+            return self.decode(n, space, depth)
         if isinstance(n, tx.Mix):
             return self.mix(n, space, depth)
         if isinstance(n, tx.Multiply):
@@ -856,11 +862,14 @@ class _Tree:
         return _out(b, "Normal")
 
     def normal_map(self, n, depth):
-        """A Normal Map node, None when its image is missing."""
+        """A Normal Map node, None when its image is missing. A normal input without an image, a constant color, is
+        drawn through an RGB node: V-Ray tilts the normal by it as by an image of that color ((0.5, 0.5, 1) is flat;
+        maxdrop-em3.76, em3.128). One whose image is missing and left a constant (a Mix's other side) stays None."""
         flips = n.flip_red or n.flip_green or n.swap
         color = self.graph(n.input, COLOR, depth + (3 if flips else 1))
-        if not isinstance(color, bpy.types.NodeSocket):
+        if color is MISSING or (not isinstance(color, bpy.types.NodeSocket) and tx.first_image(n.input) is not None):
             return None
+        color = self.socket(color, COLOR, depth + (3 if flips else 1))
         nm = self.node("ShaderNodeNormalMap", depth)
         nm.space = 'TANGENT'
         channel = self.channel(n.channel, tx.first_image(n))
@@ -1084,6 +1093,14 @@ class _Tree:
         self.links.new(v, n.inputs[1])
         return n.outputs[0]
 
+    def decode(self, n, space, depth):
+        """A gamma-off scene's display-referred color as linear: its input in color, a constant through the sRGB
+        curve, a socket through a Gamma node of 2.2 (texmaps.Decode); MISSING stays."""
+        v = self.graph(n.input, COLOR, depth + 1)
+        if v is MISSING or isinstance(v, bpy.types.NodeSocket):
+            return v if v is MISSING else self.gamma(v, tx.SRGB_GAMMA, depth)
+        return _as(tuple(colors.srgb_to_linear(c) for c in _as(v, COLOR)), space)
+
     def mix_node(self, space, depth, blend='MIX'):
         """A Mix node of the space's data type: (node, A, B, Result)."""
         n = self.node("ShaderNodeMix", depth)
@@ -1127,10 +1144,12 @@ class _Tree:
         return result
 
     def arith(self, n, depth):
-        """A Blend (a color socket): both sides through a Gamma node of 1 / gamma, a Mix node of the operation at
-        factor 1, not clamped (subtract and linear burn floored at 0 by a Vector Math MAXIMUM, linear burn minus 1
-        first), then a Vector Math ABSOLUTE (but for NON_NEGATIVE_BLENDS) and a Gamma node of gamma. A missing side gives the other one when that is
-        a map, else MISSING, as for Multiply."""
+        """A Blend (a color socket): with a gamma both sides' magnitudes (a Vector Math ABSOLUTE on a map side, a
+        constant's own) through a Gamma node of 1 / gamma; the operation (a Mix node at factor 1, not clamped, A the
+        bottom: subtract and linear burn floored at 0 by a Vector Math MAXIMUM, linear burn minus 1 first; dodge,
+        burn and exclusion as Vector Math nodes, Corona's unclamped formulas: _dodge_burn, multiply_add); then a Vector
+        Math ABSOLUTE (but for NON_NEGATIVE_BLENDS) and a Gamma node of gamma. A missing side gives the other one when
+        that is a map, else MISSING, as for Multiply."""
         va, vb = self.graph(n.a, COLOR, depth + 2), self.graph(n.b, COLOR, depth + 2)
         if va is MISSING or vb is MISSING:
             other = vb if va is MISSING else va
@@ -1139,16 +1158,27 @@ class _Tree:
             return tx.blend_value(n.op, _as(va, COLOR), _as(vb, COLOR), n.gamma)
         sides = []
         for v in (va, vb):
-            if n.gamma != 1.0:
+            if n.gamma != 1.0:  # Corona takes a negative layer's magnitude (renderMap, maxdrop-em3.161)
+                if isinstance(v, bpy.types.NodeSocket):
+                    v = self.vector_math('ABSOLUTE', v, None, depth + 2)
+                else:
+                    v = tuple(abs(c) for c in _as(v, COLOR))
                 v = self.gamma(self.socket(v, COLOR, depth + 2), 1.0 / n.gamma, depth + 1)
             sides.append(v)
-        node, a, b, out = self.mix_node(COLOR, depth, BLEND_OPS[n.op])
-        _in(node, "Factor_Float").default_value = 1.0
-        node.clamp_result = False
-        if n.op == tx.BLEND_HARD_LIGHT:  # overlay with the layers' roles swapped
-            sides.reverse()
-        self.feed(a, sides[0])
-        self.feed(b, sides[1])
+        if n.op == tx.BLEND_DODGE:
+            out = self._dodge_burn(sides[0], self.multiply_add(sides[1], -1.0, 1.0, depth), True, depth)
+        elif n.op == tx.BLEND_BURN:
+            out = self._dodge_burn(self.multiply_add(sides[0], -1.0, 1.0, depth), sides[1], False, depth)
+        elif n.op == tx.BLEND_EXCLUSION:  # a + b (1 - 2a)
+            out = self.multiply_add(sides[1], self.multiply_add(sides[0], -2.0, 1.0, depth), sides[0], depth)
+        else:
+            node, a, b, out = self.mix_node(COLOR, depth, BLEND_OPS[n.op])
+            _in(node, "Factor_Float").default_value = 1.0
+            node.clamp_result = False
+            if n.op == tx.BLEND_HARD_LIGHT:  # overlay with the layers' roles swapped
+                sides.reverse()
+            self.feed(a, sides[0])
+            self.feed(b, sides[1])
         if n.op == tx.BLEND_LINEAR_BURN:
             out = self.vector_math('ADD', out, (-1.0, -1.0, -1.0), depth)
         if n.op in (tx.BLEND_SUBTRACT, tx.BLEND_LINEAR_BURN):
@@ -1158,6 +1188,38 @@ class _Tree:
         if n.op not in NON_NEGATIVE_BLENDS:  # Corona raises the magnitude of a negative result
             out = self.vector_math('ABSOLUTE', out, None, depth)
         return self.gamma(out, n.gamma, depth)
+
+    def _dodge_burn(self, x, d, dodge, depth):
+        """K = max(0, nz - x / d), nz = ceil(min(|d|, 1)) (1 where d is not 0): Vector Math's DIVIDE gives 0 where d
+        is 0, so K is max(0, 1 - x / d), and 0 at d = 0. Burn of a, b is K(1 - a, b) (0 at b = 0, Corona's); dodge
+        is 1 - K(a, 1 - b): min(1, a / (1 - b)), 1 at b = 1 (black under white too, where Blender's DODGE leaves
+        0)."""
+        if isinstance(d, bpy.types.NodeSocket):
+            nz = self.vector_math('ABSOLUTE', d, None, depth)
+            nz = self.vector_math('CEIL', self.vector_math('MINIMUM', nz, (1.0, 1.0, 1.0), depth), None, depth)
+        else:
+            nz = tuple(1.0 if c != 0.0 else 0.0 for c in _as(d, COLOR))
+        q = self.node("ShaderNodeVectorMath", depth)
+        q.operation = 'DIVIDE'
+        self.feed(_in(q, "Vector"), x)
+        self.feed(_in(q, "Vector_001"), d)
+        k = self.node("ShaderNodeVectorMath", depth)
+        k.operation = 'SUBTRACT'
+        self.feed(_in(k, "Vector"), nz)
+        self.links.new(_out(q, "Vector"), _in(k, "Vector_001"))
+        k = self.vector_math('MAXIMUM', _out(k, "Vector"), (0.0, 0.0, 0.0), depth)
+        return self.multiply_add(k, -1.0, 1.0, depth) if dodge else k
+
+    def multiply_add(self, v, scale, add, depth):
+        """v x scale + add per channel (a Vector Math MULTIPLY_ADD); each a socket or a constant (a float: on every
+        channel). Folded when none is a socket."""
+        if not any(isinstance(x, bpy.types.NodeSocket) for x in (v, scale, add)):
+            return tuple(x * y + z for x, y, z in zip(_as(v, COLOR), _as(scale, COLOR), _as(add, COLOR)))
+        vm = self.node("ShaderNodeVectorMath", depth)
+        vm.operation = 'MULTIPLY_ADD'
+        for name, value in (("Vector", v), ("Vector_001", scale), ("Vector_002", add)):
+            self.feed(_in(vm, name), value)
+        return _out(vm, "Vector")
 
     def vector_math(self, operation, socket, value, depth):
         """A Vector Math node of operation over socket and the constant value (None: a one-input operation)."""

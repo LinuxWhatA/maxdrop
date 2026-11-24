@@ -68,6 +68,7 @@ UV_LAYERS = {
     "layers_flags": [],
     "layers_more": [],
     "layers_nested": [],
+    "layers_render": [],
     "lookat": [],  # boxes without Generate Mapping Coords
     "modifier_pivot": ["UVMap"],  # FixtureBent's UVW Map writes channel 1 (applied, the Bend above it is not)
     "multi_uv": ["UVMap", "UVChannel_2", "UVChannel_3"],
@@ -117,7 +118,10 @@ SHARP_EDGES_TALL_BOX = 24  # modifier_pivot's four height segments: 4 x 4 vertic
 SHARP_EDGES_OPEN_BOX = 12
 # stack_shell's other meshes: the plane's open edges; a TurboSmooth below the Shell clears the box's groups but its open
 # edges stay sharp; above the Shell it smooths the rim too (no sharp edge)
-SHARP_EDGES_SHELL = {"FixtureShellPlane": 4, "FixtureShellTurbo": 4, "FixtureShellSmoothed": 0}
+SHARP_EDGES_SHELL = {"FixtureShellPlane": 4, "FixtureShellTurbo": 4, "FixtureShellSmoothed": 0,
+                     # the half and quarter boxes below a Symmetry (2 x 2 segments): the edges between their sides
+                     # and the top's open edges, not those of the cut, which the Mirror welds shut
+                     "FixtureShellSymHalf": 6 + 4, "FixtureShellSymClosed": 10, "FixtureShellSymQuarter": 3 + 2}
 # extrude: the vertical edges at corner knots (one per level) and both rims of every capped outline
 SHARP_EDGES_EXTRUDE = {"FixtureExtRect": 4 * 2 + 8, "FixtureExtL": 6 + 12, "FixtureExtHole": 4 + 8 + 56,
                        "FixtureExtIsland": 12 + 24, "FixtureExtOpen": 0, "FixtureExtMirror": 8 + 64,
@@ -175,6 +179,9 @@ ISSUES = {"uvwmap": ["uvw map: a UVW Map above Bend is not evaluated",
           # FixtureNoReceiveShadow (FixtureNoCastShadow is an object flag, no issue)
           "layers_flags": ["shadows: Receive Shadows is off: Blender has no such switch per object, it receives "
                            "shadows"],
+          # FixtureByLayerNoReceive, By Layer on a layer with Receive Shadows off
+          "layers_render": ["shadows: Receive Shadows is off: Blender has no such switch per object, it receives "
+                            "shadows"],
           # the plane's rim corners (auto smooth), the open box's override group (auto smooth off)
           "stack_shell": ["modifiers: Shell: auto smooth: 4 corners of the rim sharper than 45 degrees shade smooth "
                           "(3ds Max splits the rim there)",
@@ -689,6 +696,34 @@ class DamagedInput(unittest.TestCase):
         layer_issues = [r for _n, r in desc.issues if r != conv.NO_RECEIVE]
         self.assertEqual(len(layer_issues), 2)
         self.assertTrue(all(r.startswith("layer: ") for r in layer_issues))
+
+    def test_a_by_layer_node_without_a_readable_layer_renders_by_its_own_flags(self):
+        """layers_render with FixtureNoRenderLayer's record refused and FixtureByLayerOwnOff's layer slot on an
+        object that is not a layer (a slot past the objects is refused with the node, test_scene's test_damaged):
+        no collection hides them from the render (build/collections.py), so their own flags must."""
+        sc = self.scene("layers_render")
+        by_name = {sc.layer(i).name: i for i in sc.layer_indices}
+        real = sc.layer
+
+        def layer(i):
+            if i == by_name["FixtureNoRenderLayer"]:
+                raise reader_scene.ChunkError("layer %d: refused" % i)
+            return real(i)
+
+        sc.layer = layer
+        own_off = next(i for i in sc.node_indices if sc.node(i).name == "FixtureByLayerOwnOff")
+        sc.node(own_off).refs[reader_scene.SLOT_LAYER] = own_off
+        desc = conv.describe(sc, 1.0)
+        got = {n.name: (n.layer, n.renderable, n.cast_shadows, n.receive_shadows) for n in desc.nodes
+               if n.layer is None}
+        self.assertEqual(got, {"FixtureByLayerNoRender": (None, True, True, True),
+                               "FixtureByObjectOnNoRender": (None, True, True, True),
+                               "FixtureByLayerOwnOff": (None, False, False, False)})
+        lost = {by_name["FixtureNoRenderLayer"], by_name["FixtureOnLayer"]}
+        self.assertFalse(lost & {la.index for la in desc.layers})
+        by_index = {n.index: n.name for n in desc.nodes}
+        self.assertEqual(sorted(by_index[i] for i, r in desc.issues if r.startswith("layer: ")),
+                         ["FixtureByLayerNoRender", "FixtureByLayerOwnOff", "FixtureByObjectOnNoRender"])
 
     def test_unknown_controllers_are_counted_by_class(self):
         sc = self.scene("hierarchy")
@@ -1359,6 +1394,22 @@ class Fixtures(unittest.TestCase):
         self.assertEqual(by_name["FixtureVisibleChild"].parent, by_name["FixtureHiddenParent"].index)
         self.assertEqual(names[by_name["FixtureNested"].layer], "FixtureChildLayer")
 
+    def test_layers_render_organisation(self):
+        """Rendering Control By Layer: a By Layer node renders, casts and receives as its own layer says (its own
+        flags off on FixtureByLayerOwnOff, a parent layer with all three off above FixtureByLayerChild); a By Object
+        node on the same layer keeps its own."""
+        desc = dict((n, d) for n, d, _o in self.cases)["layers_render"]
+        by_name = {n.name: n for n in desc.nodes}
+        got = {k: (n.renderable, n.cast_shadows, n.receive_shadows) for k, n in by_name.items()}
+        self.assertEqual(got, {"FixtureByLayerNoCast": (True, False, True),
+                               "FixtureByObjectOnNoCast": (True, True, True),
+                               "FixtureByLayerNoReceive": (True, True, False),
+                               "FixtureByLayerNoRender": (False, True, True),
+                               "FixtureByObjectOnNoRender": (True, True, True),
+                               "FixtureByLayerOwnOff": (True, True, True),
+                               "FixtureByLayerChild": (True, True, True)})
+        self.assertEqual(desc.issues, [(by_name["FixtureByLayerNoReceive"].index, conv.NO_RECEIVE)])
+
     def test_curves_equal_the_oracle(self):
         """Every shape node's curve: splines, points and cyclic flags as 3ds Max converts the shape, each segment's
         Bezier midpoint where 3ds Max interpolates it (straight segments included), resolution and bevel."""
@@ -1437,6 +1488,190 @@ class Fixtures(unittest.TestCase):
         md = next(iter(desc.meshes.values()))
         self.assertEqual(sorted(md.material_indices.tolist()), [0, 1, 2, 3, 4, 5])
         self.assertEqual(md.material_indices.dtype, numpy.int32)
+
+
+@unittest.skipIf(numpy is None, "numpy missing")
+class MeshRange(unittest.TestCase):
+    """Stored mesh positions past single precision (offset and meters applied), inf or NaN: the mesh is refused,
+    its nodes placeholders with an issue, as a curve or a primitive; UVs that are not numbers become 0."""
+
+    @staticmethod
+    def data(corner=(1.0, 0.0, 0.0), uv=None):
+        """A MeshData of one triangle, its second vertex at corner (float32, as reader.geometry stores it)."""
+        positions = numpy.asarray([(0.0, 0.0, 0.0), corner, (0.0, 1.0, 0.0)], dtype=numpy.float32)
+        uvw = numpy.zeros((3, 3), dtype=numpy.float32) if uv is None else numpy.asarray(uv, dtype=numpy.float32)
+        maps = {1: geometry.MapChannel(1, uvw, numpy.arange(3, dtype=numpy.int32))}
+        return geometry.MeshData(positions, numpy.arange(3, dtype=numpy.int32), numpy.zeros(1, dtype=numpy.int32),
+                                 numpy.ones(1, dtype=numpy.uint32), numpy.zeros(1, dtype=numpy.uint16), maps)
+
+    def test_positions_that_do_not_fit_are_refused(self):
+        big = ((1e39, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1))
+        for corner, offset, meters in (((float("nan"), 0.0, 0.0), None, 1.0), ((float("inf"), 0.0, 0.0), None, 1.0),
+                                       ((1e36, 0.0, 0.0), None, 1000.0), ((1.0, 0.0, 0.0), big, 1.0)):
+            with self.subTest(corner=corner, meters=meters, offset=offset is not None):
+                with self.assertRaises(conv.MeshError) as caught:
+                    conv.mesh_description((0, offset), "m", self.data(corner), offset, meters)
+                self.assertIn("single precision", str(caught.exception))
+        md = conv.mesh_description((0, None), "m", self.data((1e30, 0.0, 0.0)), None, 1.0)
+        self.assertEqual(md.positions[1, 0], numpy.float32(1e30))
+        self.assertTrue(numpy.isfinite(md.positions).all())
+
+    def test_uvs_that_are_not_numbers_become_zero(self):
+        uv = [(0.25, float("nan"), 7.0), (float("inf"), 0.5, float("nan")), (1.0, 1.0, 0.0)]
+        data = self.data(uv=uv)
+        md = conv.mesh_description((0, None), "m", data, None, 1.0)
+        self.assertEqual(md.uv_layers[0][1].tolist(), [[0.25, 0.0], [0.0, 0.5], [1.0, 1.0]])
+        self.assertEqual(md.zeroed_uvs, 2)  # the w coordinate is dropped, not counted
+        self.assertTrue(numpy.isnan(data.maps[1].uvw[0, 1]))  # the reader's array is not written
+        self.assertEqual(conv.mesh_description((0, None), "m", self.data(), None, 1.0).zeroed_uvs, 0)
+
+    def scene(self, name):
+        cf = cfb.CompoundFile(os.path.join(ROOT, "tests", "fixtures", name + ".max"))
+        self.addCleanup(cf.close)
+        return reader_scene.Scene.from_file(cf)
+
+    def described(self, name, meters, corner, uv=None):
+        """The fixture described with every stored mesh replaced by self.data(corner, uv)."""
+        sc = self.scene(name)
+        with mock.patch.object(conv.geometry, "read_mesh", lambda scene, i, check=None: self.data(corner, uv)):
+            return conv.describe(sc, meters)
+
+    def test_a_refused_mesh_is_a_placeholder_named_once_per_key(self):
+        """instances: four nodes share one base object, a copy has its own; every node an EMPTY placeholder, one
+        issue per mesh key (the shared one and the copy's), no mesh, no modifier or UV issue."""
+        for corner, meters in (((float("nan"), 0.0, 0.0), 1.0), ((1e36, 0.0, 0.0), 1000.0)):
+            with self.subTest(corner=corner, meters=meters):
+                desc = self.described("instances", meters, corner)
+                self.assertEqual([n.kind for n in desc.nodes], [conv.EMPTY] * 5)
+                self.assertEqual(sum(desc.placeholders.values()), 5)
+                self.assertEqual(desc.meshes, {})
+                self.assertEqual(len(desc.issues), 2)
+                self.assertTrue(all(r.startswith("geometry: not built: ") and "single precision" in r
+                                    for _n, r in desc.issues), desc.issues)
+        desc = self.described("instances", 1.0, (1e30, 0.0, 0.0))
+        self.assertEqual([n.kind for n in desc.nodes], [conv.MESH] * 5)
+        self.assertEqual(desc.issues, [])
+
+    def test_zeroed_uvs_are_named_once_per_key(self):
+        desc = self.described("instances", 1.0, (1.0, 0.0, 0.0), uv=[(float("nan"), 0, 0), (0, 0, 0), (0, 0, 0)])
+        self.assertEqual([n.kind for n in desc.nodes], [conv.MESH] * 5)
+        self.assertEqual([r for _n, r in desc.issues], ["geometry: 1 UV coordinates that are not numbers set to 0"]
+                         * 2)
+        desc = self.described("vray_mesh_light", 0.001, (1.0, 0.0, 0.0), uv=[(float("nan"), 0, 0), (0, 0, 0),
+                                                                             (0, 0, 0)])
+        zeroed = [i for i, r in desc.issues if r == "geometry: 1 UV coordinates that are not numbers set to 0"]
+        self.assertEqual(len(zeroed), len(desc.meshes))  # the mesh and the three emitters, once each
+        self.assertEqual(sorted(zeroed), sorted(md.users[0] for md in desc.meshes.values()))
+
+    def test_a_mesh_light_whose_mesh_does_not_fit_is_not_built(self):
+        """vray_mesh_light at meters 1000 with every mesh at 1e36: the mesh light's mesh objects are refused
+        (_mesh_of), the emitters not built, an issue on each; describe does not raise."""
+        desc = self.described("vray_mesh_light", 1000.0, (1e36, 0.0, 0.0))
+        self.assertEqual(desc.meshes, {})
+        self.assertEqual(desc.emitters, {})
+        self.assertNotIn(conv.MESH, [n.kind for n in desc.nodes])
+        unbuilt = [r for _n, r in desc.issues if r.startswith("light: not built: its mesh cannot be read: ")]
+        self.assertEqual(len(unbuilt), 3)
+        self.assertTrue(all("single precision" in r for r in unbuilt), unbuilt)
+
+    def test_a_mesh_light_refused_after_its_offset_is_not_built(self):
+        """A refusal raised once the light node's offset is applied (in _emitter) costs the emitter, not the
+        import: no mesh or emitter written, a light issue on each of its nodes."""
+        sc = self.scene("vray_mesh_light")
+        real = conv.mesh_description
+
+        def refuse(key, *args, **kwargs):
+            if key[0] == conv.EMITTER:
+                raise conv.MeshError("its points do not fit single precision")
+            return real(key, *args, **kwargs)
+
+        with mock.patch.object(conv, "mesh_description", refuse):
+            desc = conv.describe(sc, 0.001)
+        self.assertEqual(desc.emitters, {})
+        self.assertFalse(any(k[0] == conv.EMITTER for k in desc.meshes if isinstance(k, tuple)))
+        emitters = [n for n in desc.nodes if n.name.startswith("FixtureEmitter") and n.name != "FixtureEmitterSource"]
+        self.assertEqual([n.kind for n in emitters], [conv.EMPTY] * 4)
+        refused = [r for _n, r in desc.issues if r == "light: not built: its points do not fit single precision"]
+        self.assertEqual(len(refused), 3)
+
+    def test_a_refused_mesh_converts_no_modifier(self):
+        """stack_convert with FixtureTurboOne's mesh refused: that node a placeholder without converted modifiers or
+        their issues, its TurboSmooth taken back from the modifiers whose issues were named (told); the others
+        as before."""
+        sc = self.scene("stack_convert")
+        fresh = conv.describe(sc, 0.001)
+        turbo = next(n for n in fresh.nodes if n.name == "FixtureTurboOne")
+        refused_base = turbo.mesh[0]
+        real = conv.geometry.read_mesh
+
+        def read(scene, i, check=None):
+            return self.data((float("nan"), 0.0, 0.0)) if i == refused_base else real(scene, i, check)
+
+        with mock.patch.object(conv.geometry, "read_mesh", read), \
+                mock.patch.object(conv, "_converted", wraps=conv._converted) as converted:
+            desc = conv.describe(self.scene("stack_convert"), 0.001)
+        told = converted.call_args_list[0].args[4]
+        node = next(n for n in desc.nodes if n.name == "FixtureTurboOne")
+        self.assertEqual((node.kind, node.converted, node.applied), (conv.EMPTY, (), ()))
+        self.assertNotIn(turbo.converted[0].index, told)
+        self.assertTrue(all(m.index in told for n in fresh.nodes if n.name != "FixtureTurboOne"
+                            for m in n.converted))
+        self.assertEqual([r for i, r in desc.issues if i == node.index],
+                         ["geometry: not built: its points do not fit single precision (Blender's meshes hold no "
+                          "larger value)"])
+        others = [(n.name, n.kind, n.converted) for n in desc.nodes if n.name != "FixtureTurboOne"]
+        self.assertEqual(others, [(n.name, n.kind, n.converted) for n in fresh.nodes if n.name != "FixtureTurboOne"])
+
+    def test_a_refused_extrusion_falls_back_to_its_curve(self):
+        """extrude with every extruded mesh refused: each extruded node a curve (as when its Extrude cannot be
+        read), one issue per mesh key before its maps."""
+        path = os.path.join(ROOT, "tests", "fixtures", "extrude.max")
+        fresh = conv.read(path)
+        extruded = {n.index: n.mesh[:3] for n in fresh.nodes if n.kind == conv.MESH and "Extrude" in n.applied}
+        self.assertTrue(extruded)
+        with mock.patch.object(conv, "_positions", side_effect=conv.MeshError("its points do not fit")):
+            desc = conv.read(path)
+        self.assertEqual({n.kind for n in desc.nodes if n.index in extruded}, {conv.CURVE})
+        refused = [i for i, r in desc.issues if r == "extrude: not made: its points do not fit"]
+        self.assertEqual(len(refused), len(set(extruded.values())))
+        self.assertTrue(set(refused) <= set(extruded))
+
+    def test_an_offset_past_single_precision_refuses_that_node_only(self):
+        """instances with FixtureInstance02's object offset scaled by 1e42 (its mesh key apart): that node a
+        placeholder with one issue, the others meshes as before."""
+        sc = self.scene("instances")
+        target = next(i for i in sc.node_indices if sc.node(i).name == "FixtureInstance02")
+        big = ((1e42, 0, 0, 0), (0, 1e42, 0, 0), (0, 0, 1e42, 0), (0, 0, 0, 1))
+        real = conv._offset
+        with mock.patch.object(conv, "_offset", lambda t, i: big if i == target else real(t, i)):
+            desc = conv.describe(sc, 0.001)
+        self.assertEqual([(n.name, n.kind) for n in desc.nodes],
+                         [(n, conv.EMPTY if n == "FixtureInstance02" else conv.MESH) for n in
+                          ("FixtureSource", "FixtureInstance01", "FixtureInstance02", "FixtureInstance03",
+                           "FixtureCopy")])
+        self.assertEqual([(i, r.split(":")[0]) for i, r in desc.issues], [(target, "geometry")])
+        self.assertEqual(len(desc.meshes), 2)
+
+    def test_a_refused_emitter_is_described_once_per_offset(self):
+        """A refusal raised once the light node's offset is applied is remembered per light and offset: a second
+        node of the light (FixtureEmitter walked twice) is not described again, its issue named on both."""
+        sc = self.scene("vray_mesh_light")
+        light = next(i for i in sc.node_indices if sc.node(i).name == "FixtureEmitter")
+        order = sc.walk()
+        sc.walk = lambda: list(order) + [light]
+        real, calls = conv.mesh_description, []
+
+        def refuse(key, *args, **kwargs):
+            if key[0] == conv.EMITTER:
+                calls.append(key)
+                raise conv.MeshError("its points do not fit single precision")
+            return real(key, *args, **kwargs)
+
+        with mock.patch.object(conv, "mesh_description", refuse):
+            desc = conv.describe(sc, 0.001)
+        self.assertEqual(len(calls), len(set(calls)))  # each light and offset described once
+        self.assertEqual([r for i, r in desc.issues if i == light],
+                         ["light: not built: its points do not fit single precision"] * 2)
 
 
 if __name__ == "__main__":

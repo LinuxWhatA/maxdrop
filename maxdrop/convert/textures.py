@@ -7,7 +7,9 @@ to a place the file should not reach.
 
     index = TextureIndex(max_path, prefs.texture_dirs(), scene_subfolders=image_search)   # once per import
     found = index.find(entry.path, entry.resolved)    # Found(path, rule) or None (reader/assets.AssetEntry)
+    lights = index.share()                            # the same walk, counts of its own
     index.report.found[SCENE], index.report.missing, index.report.truncated   # worded by convert.report
+    index.report.stopped()                            # where the walk stopped, in words
 
 A scene stores a path for each file, written on another computer. Only its file name is looked up, compared
 without regard to case, in this order:
@@ -37,6 +39,7 @@ placeholders, deduplicated files) are ordinary files and folders. Unreadable fol
 import: this takes the stored strings.
 """
 import collections
+import copy
 import itertools
 import os
 import stat
@@ -210,6 +213,12 @@ class TextureReport:
         """The file names not found, sorted, each once."""
         return [self._missing[k] for k in sorted(self._missing)]
 
+    def stopped(self):
+        """Where the walk stopped, a line each: "texture search of <rule> stopped after <n> files and folders, in
+        <folder>"."""
+        return ["texture search of %s stopped after %d files and folders, in %s" % (RULE_NAMES[r], n, folder)
+                for r, folder, n in self.truncated]
+
 
 class TextureIndex:
     """The texture lookup of one import: each rule's folders walked once, on first need."""
@@ -224,6 +233,24 @@ class TextureIndex:
         self._tiers = {}
         self._cache = {}
         self.report = TextureReport()
+
+    def share(self):
+        """A lookup over this one's walk: the same folders and bounds, each rule's folders walked once for both
+        (and every other share), a stopped walk in the report of each; its own cache and its own found and missing
+        counts (the materials' report counts their textures, not an IES file or the dome's image)."""
+        # shallow on purpose: _tiers and report.truncated stay the same objects, so a rule one share walked is not
+        # walked again by another, and every share's report has the stops of every rule any of them walked
+        other = copy.copy(self)
+        other._cache = {}
+        other.report = TextureReport()
+        other.report.truncated = self.report.truncated
+        return other
+
+    def stopped_for(self, path, resolved=""):
+        """report.stopped() when the name of a stored path is looked up in the folders (a refused name is not),
+        [] otherwise: where a search for it stopped short, it may be past that."""
+        name = pathnames.base_name(path or "") or pathnames.base_name(resolved or "")
+        return self.report.stopped() if name_refused(name) is None else []
 
     def _roots(self, rule, budget):
         """The folders rule walks, in order, as (folder, whether its subfolders too); (folder, None) when the budget

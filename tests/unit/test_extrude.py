@@ -531,6 +531,62 @@ def _points(shape):
     return sum(len(pl.points) for pl in extrude.polylines(shape))
 
 
+def _segment(p0, c1, c2, p3):
+    """An open spline of one curve segment between two Bezier-corner knots: c1 the out vector, c2 the in vector."""
+    k = shapes.Knot
+    return shapes.Spline((k(shapes.BEZIER_CORNER, shapes.CURVE, p0, p0, c1),
+                          k(shapes.BEZIER_CORNER, shapes.CURVE, p3, c2, p3)), False)
+
+
+def _off(e, chord=10.0):
+    return chord * 10 ** -e
+
+
+_T = 10 / 3.0
+
+# One curve segment probed in 3ds Max 2020 (open SplineShape of two Bezier-corner knots, steps 6, optimize, under an
+# Extrude; 3,359 segments): name, p0, c1, c2, p3, points. One probe step on either side of each boundary of its
+# straight test (at t 0.4 and 0.6 the curve turns p0 -> point -> p3 by at most 2 degrees; maxdrop-em3.142).
+STRAIGHT_PROBES = [
+    # c1 off the chord by 10^-e chords at a third of it (near p0: at 0.001 of it; at p3), c2 on it at two thirds; the
+    # pairs are the probe's own (its grid: 0.25 in e for other chords, 0.01 out of the plane and on the diagonal)
+    ("third 1.72", (0, 0, 0), (_T, _off(1.72), 0), (2 * _T, 0, 0), (10, 0, 0), 2),
+    ("third 1.70", (0, 0, 0), (_T, _off(1.70), 0), (2 * _T, 0, 0), (10, 0, 0), 8),
+    ("near p0 1.82", (0, 0, 0), (0.01, _off(1.82), 0), (2 * _T, 0, 0), (10, 0, 0), 2),
+    ("near p0 1.80", (0, 0, 0), (0.01, _off(1.80), 0), (2 * _T, 0, 0), (10, 0, 0), 8),
+    ("at p3 1.78", (0, 0, 0), (10, _off(1.78), 0), (2 * _T, 0, 0), (10, 0, 0), 2),
+    ("at p3 1.76", (0, 0, 0), (10, _off(1.76), 0), (2 * _T, 0, 0), (10, 0, 0), 8),
+    ("in z 1.72", (0, 0, 0), (_T, 0, _off(1.72)), (2 * _T, 0, 0), (10, 0, 0), 2),
+    ("in z 1.71", (0, 0, 0), (_T, 0, _off(1.71)), (2 * _T, 0, 0), (10, 0, 0), 8),
+    ("chord 1000 1.75", (0, 0, 0), (1000 / 3.0, _off(1.75, 1000), 0), (2000 / 3.0, 0, 0), (1000, 0, 0), 2),
+    ("chord 1000 1.5", (0, 0, 0), (1000 / 3.0, _off(1.5, 1000), 0), (2000 / 3.0, 0, 0), (1000, 0, 0), 8),
+    ("chord 0.1 1.75", (0, 0, 0), (0.1 / 3, _off(1.75, 0.1), 0), (0.2 / 3, 0, 0), (0.1, 0, 0), 2),
+    ("chord 0.1 1.5", (0, 0, 0), (0.1 / 3, _off(1.5, 0.1), 0), (0.2 / 3, 0, 0), (0.1, 0, 0), 8),
+    ("diagonal 1.54", (5, -3, 1), (8 - 0.8 * _off(1.54), 1 + 0.6 * _off(1.54), 1), (11, 5, 1), (14, 9, 1), 2),
+    ("diagonal 1.53", (5, -3, 1), (8 - 0.8 * _off(1.53), 1 + 0.6 * _off(1.53), 1), (11, 5, 1), (14, 9, 1), 8),
+    # both vectors off: on one side, on opposite sides (an S, its middle on the chord)
+    ("same side 1.94", (0, 0, 0), (_T, _off(1.94), 0), (2 * _T, _off(1.94), 0), (10, 0, 0), 2),
+    ("same side 1.92", (0, 0, 0), (_T, _off(1.92), 0), (2 * _T, _off(1.92), 0), (10, 0, 0), 8),
+    ("S 1.24", (0, 0, 0), (_T, _off(1.24), 0), (2 * _T, -_off(1.24), 0), (10, 0, 0), 2),
+    ("S 1.23", (0, 0, 0), (_T, _off(1.23), 0), (2 * _T, -_off(1.23), 0), (10, 0, 0), 8),
+    # on the chord's line: straight until the curve folds back past an end at t 0.4 or 0.6
+    ("past p3 1.72", (0, 0, 0), (17.2, 0, 0), (2 * _T, 0, 0), (10, 0, 0), 2),
+    ("past p3 1.74", (0, 0, 0), (17.4, 0, 0), (2 * _T, 0, 0), (10, 0, 0), 8),
+    ("both past 4.49", (0, 0, 0), (44.9, 0, 0), (-34.9, 0, 0), (10, 0, 0), 2),
+    ("both past 4.51", (0, 0, 0), (45.1, 0, 0), (-35.1, 0, 0), (10, 0, 0), 8),
+    ("behind p0 -0.59", (0, 0, 0), (-5.9, 0, 0), (2 * _T, 0, 0), (10, 0, 0), 2),
+    ("behind p0 -0.60", (0, 0, 0), (-6.0, 0, 0), (2 * _T, 0, 0), (10, 0, 0), 8),
+    ("in vector 0 1.2", (0, 0, 0), (12, 0, 0), (10, 0, 0), (10, 0, 0), 2),
+    ("in vector 0 1.25", (0, 0, 0), (12.5, 0, 0), (10, 0, 0), (10, 0, 0), 8),
+    ("in vector on p0 2.1", (0, 0, 0), (21, 0, 0), (0, 0, 0), (10, 0, 0), 2),
+    ("in vector on p0 2.2", (0, 0, 0), (22, 0, 0), (0, 0, 0), (10, 0, 0), 8),
+    ("in vector behind 0.7", (0, 0, 0), (7, 0, 0), (-10, 0, 0), (10, 0, 0), 8),
+    ("in vector behind 0.8", (0, 0, 0), (8, 0, 0), (-10, 0, 0), (10, 0, 0), 2),
+    ("in vector behind 2.8", (0, 0, 0), (28, 0, 0), (-10, 0, 0), (10, 0, 0), 2),
+    ("in vector behind 2.9", (0, 0, 0), (29, 0, 0), (-10, 0, 0), (10, 0, 0), 8),
+]
+
+
 class Interpolation(unittest.TestCase):
     """Point counts 3ds Max 2020's Extrude makes (half its vertex count on one segment)."""
 
@@ -569,6 +625,45 @@ class Interpolation(unittest.TestCase):
         self.assertEqual(len(pl.points), 3)
         two = extrude.polylines(_shape([shapes.Spline(_knots([(0, 0, 0), (5, 0, 0)]), True)]))[0]
         self.assertFalse(two.closed)  # a closed spline of two points has no inside
+
+    def test_straight_equals_3ds_max(self):
+        for name, p0, c1, c2, p3, points in STRAIGHT_PROBES:
+            self.assertEqual(_points(_shape([_segment(p0, c1, c2, p3)])), points, name)
+            self.assertEqual(_points(_shape([_segment(p0, c1, c2, p3)], optimize=False)), 8, name)
+
+    def test_a_vector_just_off_the_chord(self):
+        """maxdrop-em3.111's probe: a 20 x 20 square of corner knots with a Bezier knot at (10, -4) whose in vector
+        lies d off the chord from the corner at the origin; 3ds Max makes 11 points for d = 1e-3 .. 1e-6 (only the
+        segment out of the Bezier knot gets its 6 steps). The vectors of the origin and the Bezier knot are the ones
+        3ds Max stored; the other corners' lie on their straight sides."""
+        k = shapes.Knot
+        for d in (1e-3, 1e-4, 1e-5, 1e-6):
+            knots = (k(shapes.CORNER, shapes.CURVE, (0, 0, 0), (0, 20 / 3.0, 0), ((10 - d) / 2, -2, 0)),
+                     k(shapes.BEZIER, shapes.CURVE, (10, -4, 0), (10 - d, -4, 0), (14, -4, 0)),
+                     k(shapes.CORNER, shapes.CURVE, (20, 0, 0), (17, -2, 0), (20, 20 / 3.0, 0)),
+                     k(shapes.CORNER, shapes.CURVE, (20, 20, 0), (20, 40 / 3.0, 0), (40 / 3.0, 20, 0)),
+                     k(shapes.CORNER, shapes.CURVE, (0, 20, 0), (20 / 3.0, 20, 0), (0, 40 / 3.0, 0)))
+            self.assertEqual(_points(_shape([shapes.Spline(knots, True)])), 11, d)
+
+    def test_adaptive_takes_the_same_straight_test(self):
+        """3ds Max 2020, Adaptive: a segment straight for Optimize gets no steps, also one whose vectors run past
+        the chord's end or lie a little off it (a curved one gets steps, counted by a rule MaxDrop only
+        approximates: maxdrop-6n0.6.11; only the straight half is asserted)."""
+        for name, p0, c1, c2, p3, points in STRAIGHT_PROBES:
+            if points == 2:
+                self.assertEqual(_points(_shape([_segment(p0, c1, c2, p3)], adaptive=True)), 2, name)
+
+    def test_a_doubled_knot_with_its_vectors_on_it(self):
+        """A zero-length curve segment whose vectors lie on its point is straight under Adaptive too (no steps from
+        rounding), so the doubled knot stays one point and the spline touches itself, as under Optimize."""
+        k = shapes.Knot
+        p = (0.1, 0.7, 0.3)
+        knots = (k(shapes.BEZIER_CORNER, shapes.CURVE, (-5, -5, 0.3), (-5, -5, 0.3), (-5, -5, 0.3)),
+                 k(shapes.BEZIER_CORNER, shapes.CURVE, p, p, p), k(shapes.BEZIER_CORNER, shapes.CURVE, p, p, p),
+                 k(shapes.BEZIER_CORNER, shapes.CURVE, (5, 5, 0.3), (5, 5, 0.3), (5, 5, 0.3)))
+        for adaptive in (False, True):
+            pl = extrude.polylines(_shape([shapes.Spline(knots, True)], adaptive=adaptive))[0]
+            self.assertEqual((len(pl.points), pl.doubled), (3, True), adaptive)
 
 
 def _ccw_area(pts, tris):
@@ -1314,6 +1409,227 @@ class GridCaps(unittest.TestCase):
             _data, issues = self.make("HoleRect")
         self.assertEqual(len(issues), 1, issues)
         self.assertIn("left open", issues[0])
+
+
+def _bezier_spline(knots):
+    """A closed spline of Bezier-corner knots, each (point, in vector, out vector) in XY."""
+    return shapes.Spline(tuple(shapes.Knot(shapes.BEZIER_CORNER, shapes.CURVE, (_f32(p[0]), _f32(p[1]), 0.0),
+                                           (_f32(i[0]), _f32(i[1]), 0.0), (_f32(o[0]), _f32(o[1]), 0.0))
+                               for p, i, o in knots), True)
+
+
+def _bowtie(x=0.0):
+    return _poly([(x, 0, 0), (x + 10, 10, 0), (x + 10, 0, 0), (x, 10, 0)])
+
+
+_SLIT = [(0, 0, 0), (20, 0, 0), (20, 10, 0), (4, 10, 0), (10, 6, 0), (14, 10, 0), (0, 10, 0)]
+
+# Closed splines that cross, touch or run over themselves, probed in 3ds Max 2020 (snapshotAsMesh under an Extrude:
+# amount 2, 1 segment, both caps, steps 6): name -> (splines, (vertices, faces) with morph caps, the same with grid
+# caps or None where only morph was probed, the splines left uncapped as crossing).
+CROSS_PROBES = {
+    # crossing edges
+    "Bowtie": (lambda: [_bowtie()], (8, 8), (8, 8), 1),
+    "BowtieCW": (lambda: [_poly([(0, 10, 0), (10, 0, 0), (10, 10, 0), (0, 0, 0)])], (8, 8), (8, 8), 1),
+    "Pentagram": (lambda: [_poly([(0, 10, 0), (5.878, -8.09, 0), (-9.511, 3.09, 0), (9.511, 3.09, 0),
+                                  (-5.878, -8.09, 0)])], (10, 10), (10, 10), 1),
+    # two edges run over each other along the top; an edge back over the one before; the base past a knot and back
+    "Slit": (lambda: [_poly(_SLIT)], (14, 14), (14, 14), 1),
+    "SpikeBack": (lambda: [_poly([(0, 0, 0), (20, 0, 0), (20, 10, 0), (10, 10, 0), (10, 15, 0), (10, 10, 0),
+                                  (0, 10, 0)])], (14, 14), (14, 14), 1),
+    "BaseBack": (lambda: [_poly([(0, 0, 0), (20, 0, 0), (15, 0, 0), (15, 10, 0), (0, 10, 0)])], (10, 10), (10, 10),
+                 1),
+    # touching: a knot on another knot, on another edge, 1e-6 across it
+    "PinchExact": (lambda: [_poly([(0, 0, 0), (10, 0, 0), (10, 10, 0), (20, 10, 0), (20, 20, 0), (10, 20, 0),
+                                   (10, 10, 0), (0, 10, 0)])], (16, 16), (16, 16), 1),
+    "TouchEdge": (lambda: [_poly([(0, 0, 0), (20, 0, 0), (20, 10, 0), (10, 0, 0), (0, 10, 0)])], (10, 10), (10, 10),
+                  1),
+    "TouchAcross": (lambda: [_poly([(0, 0, 0), (20, 0, 0), (20, 10, 0), (10, -1e-6, 0), (0, 10, 0)])], (10, 10), None,
+                    1),
+    # in XY only: the crossing edges at other heights
+    "Bowtie3D": (lambda: [_poly([(0, 0, 0), (10, 10, 0), (10, 0, 5), (0, 10, 5)])], (8, 8), None, 1),
+    "TouchEdge3D": (lambda: [_poly([(0, 0, 0), (20, 0, 0), (20, 10, 0), (10, 0, 3), (0, 10, 0)])], (10, 10), None, 1),
+    # a Bezier rectangle whose third knot moved without its vectors: its curves cross
+    "BezierMoved": (lambda: [_bezier_spline([((0, 0), (0, 3.333), (6.667, 0)), ((20, 0), (13.333, 0), (20, 3.333)),
+                                             ((-5, 15), (20, 6.667), (13.333, 10)),
+                                             ((0, 10), (6.667, 10), (0, 6.667))])], (32, 32), (32, 32), 1),
+    # the other splines keep their caps; a crossing spline is no hole and no container
+    "BowtieAndSquare": (lambda: [_bowtie(), _box(20, 0, 30, 10)], (16, 20), (898, 1784), 1),
+    "SquareBowtieHole": (lambda: [_box(-20, -20, 20, 20), _bowtie()], (16, 20), (898, 1784), 1),
+    "HoledAndBowtie": (lambda: [_box(-20, -20, 20, 20), _box(-5, -5, 5, 5), _bowtie(40)], (24, 40), (856, 1704), 1),
+    "BowtieAroundSquare": (lambda: [_poly([(0, 0, 0), (40, 40, 0), (40, 0, 0), (0, 40, 0)]), _box(30, 15, 35, 25)],
+                           (16, 20), (898, 1784), 1),
+    # capped: near misses, adjacent edges only, crossings between splines, open splines
+    "NearMiss": (lambda: [_poly([(0, 0, 0), (20, 0, 0), (20, 10, 0), (10, 0.01, 0), (0, 10, 0)])], (10, 16),
+                 (442, 880), 0),
+    "TouchGap1e-6": (lambda: [_poly([(0, 0, 0), (20, 0, 0), (20, 10, 0), (10, 1e-6, 0), (0, 10, 0)])], (10, 16), None,
+                     0),
+    "PinchGap1e-6": (lambda: [_poly([(0, 0, 0), (10, 0, 0), (10, 10, 0), (20, 10, 0), (20, 20, 0), (10, 20, 0),
+                                     (10, 10.000001, 0), (0, 10, 0)])], (16, 28), None, 0),
+    "TouchGapBig": (lambda: [_poly([(0, 0, 0), (20000, 0, 0), (20000, 10000, 0), (10000, 1e-3, 0),
+                                    (0, 10000, 0)])], (10, 16), None, 0),
+    "Collinear": (lambda: [_poly([(0, 0, 0), (10, 0, 0), (20, 0, 0), (20, 10, 0), (0, 10, 0)])], (10, 16), None, 0),
+    "Flat3": (lambda: [_poly([(0, 0, 0), (4, 0, 0), (8, 0, 0)])], (6, 8), None, 0),
+    "TwoCrossing": (lambda: [_box(0, 0, 20, 20), _box(10, 10, 30, 30)], (16, 24), (1780, 3552), 0),
+    "OpenAcross": (lambda: [_box(0, 0, 20, 20), shapes.Spline(_knots([(-5, 10, 0), (25, 10, 0)]), False)], (12, 14),
+                   (894, 1778), 0),
+    "OpenSelfCross": (lambda: [_box(0, 0, 20, 20), shapes.Spline(_knots([(30, 0, 0), (40, 10, 0), (40, 0, 0),
+                                                                          (30, 10, 0)]), False)], (16, 18),
+                      (898, 1782), 0),
+    "BezierBulge": (lambda: [_bezier_spline([((0, 0), (-3, 3), (3, -3)), ((20, 0), (17, -3), (23, 3)),
+                                             ((20, 20), (23, 17), (17, 23)), ((0, 20), (3, 23), (-3, 17))])],
+                    (56, 108), (842, 1680), 0),
+}
+
+
+class _RectParams:
+    """The parameter block of a Rectangle for reader.shapes._rectangle: length, width, corner radius."""
+
+    def __init__(self, *values):
+        self.values = values
+
+    def number(self, i, default=0.0):
+        return self.values[i]
+
+
+def _pill(length, width, radius):
+    return shapes._rectangle(_RectParams(length, width, radius), [])[0]
+
+
+@unittest.skipIf(numpy is None, "numpy missing")
+class SelfCrossing(unittest.TestCase):
+    """A closed spline whose own edges cross, touch or run over each other: no cap, morph or grid, as in 3ds Max
+    2020; no hole or container for the others; its own direction (maxdrop-em3.140)."""
+
+    def make(self, splines, steps=6, optimize=True, **kw):
+        params = extrude.DEFAULT._replace(**dict(dict(amount=2.0), **kw))
+        return extrude.extrude(_shape(splines, steps=steps, optimize=optimize), params)
+
+    def test_counts_equal_3ds_max(self):
+        for name, (splines, morph, grid, crossed) in CROSS_PROBES.items():
+            for cap_type, want in ((extrude.CAP_MORPH, morph), (extrude.CAP_GRID, grid)):
+                if want is None:
+                    continue
+                data, issues = self.make(splines(), cap_type=cap_type)
+                self.assertEqual((len(data.positions), int((data.loop_totals - 2).sum())), want, (name, cap_type))
+                crossing = [i for i in issues if "cross" in i]
+                self.assertEqual(len(crossing), 1 if crossed else 0, (name, issues))
+                if crossed:
+                    self.assertTrue(crossing[0].startswith("%d closed spline" % crossed), crossing)
+
+    def test_the_report_line(self):
+        _data, issues = self.make([_bowtie()])
+        self.assertEqual(issues, ["1 closed spline that crosses or touches itself: no cap, as in 3ds Max"])
+        _data, issues = self.make([_bowtie(), _bowtie(20), _box(40, 0, 50, 10)])
+        self.assertEqual(issues, ["2 closed splines that cross or touch themselves: no cap, as in 3ds Max"])
+        _data, issues = self.make([_bowtie()], cap_start=False, cap_end=False)
+        self.assertEqual(issues, [])
+
+    def test_a_crossing_spline_keeps_its_own_direction(self):
+        """3ds Max's SlitCW (the slit drawn the other way round, clockwise): its sides start at its first knot and
+        run its own way, each looking to the right of it, U from 0 there (14 / 82.868 at the second knot)."""
+        data, _issues = self.make([_poly(_SLIT[::-1])], mapping=True)
+        p = data.positions.astype(numpy.float64)
+        first = data.loop_vertices[:4].tolist()
+        numpy.testing.assert_allclose(p[first], [(0, 10, 0), (14, 10, 0), (14, 10, 2), (0, 10, 2)], atol=1e-6)
+        uv = data.maps[1].uvw[data.maps[1].indices[:4]].astype(numpy.float64)
+        numpy.testing.assert_allclose(uv[:, :2], [(0, 0), (0.168943, 0), (0.168943, 1), (0, 1)], atol=1e-6)
+        for cw, amount in ((False, 2.0), (True, 2.0), (False, -2.0), (True, -2.0)):
+            pts = _SLIT[::-1] if cw else _SLIT
+            data, _issues = self.make([_poly(pts)], amount=amount)
+            q = data.positions.astype(numpy.float64)[data.loop_vertices[:4]]
+            self.assertEqual(tuple(q[0][:2]), pts[0][:2], (cw, amount))  # never turned: its first knot first
+            normal = numpy.cross(q, numpy.roll(q, -1, axis=0)).sum(axis=0)
+            (x0, y0, _z0), (x1, y1, _z1) = pts[0], pts[1]
+            right = numpy.array([y1 - y0, x0 - x1, 0.0])
+            self.assertGreater(numpy.dot(normal, right), 0, (cw, amount))  # out of the side it runs along
+
+    def test_the_cap_mapping_box_leaves_a_crossing_spline_out(self):
+        """BowtieAroundSquare: the square alone is capped, mapped over its own box (3ds Max: every corner)."""
+        data, _issues = self.make([_poly([(0, 0, 0), (40, 40, 0), (40, 0, 0), (0, 40, 0)]), _box(30, 15, 35, 25)],
+                                  mapping=True)
+        caps = [f for f in range(len(data.loop_starts)) if abs(_face_area_z(data, f)) > 1e-6]
+        self.assertEqual(len(caps), 2)
+        ch = data.maps[1]
+        for f in caps:
+            s, t = int(data.loop_starts[f]), int(data.loop_totals[f])
+            xy = data.positions[data.loop_vertices[s:s + t], :2].astype(numpy.float64)
+            uv = ch.uvw[ch.indices[s:s + t], :2].astype(numpy.float64)
+            numpy.testing.assert_allclose(uv, (xy - (30, 15)) / (5, 10), atol=1e-6)
+
+    def test_zero_length_segments_between_straight_edges(self):
+        """Two knots on one spot one after the other between straight edges: no cap in 3ds Max at any coordinates
+        (it keeps both points: 10 vertices where MaxDrop merges them into 8); a rounded Rectangle whose corner
+        radius is half its side, at steps 0, too. Between interpolated curves 3ds Max's rounding decides (the
+        10 x 20 r 5 pill at steps 6 capped): MaxDrop caps it."""
+        cases = {
+            "DupCorner": ([_poly([(0, 0, 0), (20, 0, 0), (20, 0, 0), (20, 10, 0), (0, 10, 0)])], 6, 4),
+            "DupCornerOdd": ([_poly([(0.123, 4.56, 0), (27.523, 4.56, 0), (27.523, 4.56, 0), (27.523, 18.26, 0),
+                                     (0.123, 18.26, 0)])], 6, 4),
+            # 3ds Max's DupFirst and DupSecondLast: the same corner doubled wherever the spline starts
+            "DupFirst": ([_poly([(20, 0, 0), (20, 0, 0), (20, 10, 0), (0, 10, 0), (0, 0, 0)])], 6, 4),
+            "DupSecondLast": ([_poly([(0, 10, 0), (0, 0, 0), (20, 0, 0), (20, 0, 0), (20, 10, 0)])], 6, 4),
+            "TripleFirst": ([_poly([(20, 0, 0), (20, 0, 0), (20, 0, 0), (20, 10, 0), (0, 10, 0), (0, 0, 0)])], 6, 4),
+            "DupMid": ([_poly([(0, 0, 0), (10, 0, 0), (10, 0, 0), (20, 0, 0), (20, 10, 0), (0, 10, 0)])], 6, 5),
+            "CloseDup": ([_poly([(0, 0, 0), (20, 0, 0), (20, 10, 0), (0, 10, 0), (0, 0, 0)])], 6, 4),
+            "DupTriangle": ([_poly([(0, 0, 0), (20, 0, 0), (20, 0, 0), (10, 15, 0)])], 6, 3),
+            "PillSteps0": ([_pill(10, 20, 5)], 0, 6),
+            "FullSteps0": ([_pill(20, 20, 10)], 0, 4),
+        }
+        for name, (splines, steps, points) in cases.items():
+            data, issues = self.make(splines, steps=steps)
+            self.assertEqual(len(data.positions), 2 * points, name)
+            self.assertTrue((data.loop_totals == 4).all(), name)  # the sides alone
+            self.assertEqual(issues, ["1 closed spline that crosses or touches itself: no cap, as in 3ds Max"], name)
+        data, issues = self.make([_pill(10, 20, 5)])
+        self.assertEqual(issues, [])
+        self.assertEqual(len(data.positions), 60)  # 3ds Max: 64, both copies of the two doubled knots
+        self.assertEqual(int((data.loop_totals - 2).sum()), 60 + 2 * 28)
+
+    def test_optimize_gives_a_segment_back_to_its_knot_no_steps(self):
+        """The 10 x 20 r 5 pill: its short sides run from a knot to another on the same spot, curve segments with
+        their vectors off it. 3ds Max: no steps under Optimize (32 points with both copies, 30 merged), its steps
+        without (56 points, the loops crossing the curves: no cap)."""
+        self.assertEqual(_points(_shape([_pill(10, 20, 5)])), 30)
+        data, issues = self.make([_pill(10, 20, 5)], optimize=False)
+        self.assertEqual(len(data.positions), 112)
+        self.assertTrue((data.loop_totals == 4).all())
+        self.assertEqual(len(issues), 1, issues)
+
+    def test_short_sides_whose_vectors_run_far_past_them(self):
+        """Rounded Rectangles in 3ds Max 2020 (em3.140's probe): a short straight side whose corner vectors run far
+        past its ends is curved for Optimize (6 steps folding back over the side: no cap); radius 3, 4, 4.5 keep
+        their straight sides and their caps. 12.5 x 13 radius 6.25: 3ds Max 88 / 88, keeping both points of its two
+        zero-length sides, which MaxDrop merges."""
+        for length, width, radius, want in ((10, 20, 4.8, (88, 88)), (10, 20, 4.9, (88, 88)),
+                                            (10, 20, 4.99, (88, 88)), (12.5, 13, 6, (88, 88)),
+                                            (12.5, 13, 6.25, (84, 84)), (10, 20, 4.5, (64, 124)),
+                                            (10, 20, 4.0, (64, 124)), (10, 20, 3.0, (64, 124))):
+            data, issues = self.make([_pill(length, width, radius)])
+            got = (len(data.positions), int((data.loop_totals - 2).sum()))
+            self.assertEqual(got, want, (length, width, radius, issues))
+
+    def test_the_sweep_finds_crossings_in_any_chunk(self):
+        n = 2000
+        ring = [(100 * math.cos(2 * math.pi * k / n), 100 * math.sin(2 * math.pi * k / n)) for k in range(n)]
+        for chunk in (1, 7, extrude.CROSS_CHUNK):
+            with mock.patch.object(extrude, "CROSS_CHUNK", chunk):
+                self.assertIs(extrude._crosses(numpy, ring, [10 ** 9]), False, chunk)
+                for at in (3, n // 2, n - 2):  # a knot pulled across the far side
+                    bent = list(ring)
+                    bent[at] = (-ring[at][0] * 1.01, -ring[at][1] * 1.01)
+                    self.assertIs(extrude._crosses(numpy, bent, [10 ** 9]), True, (chunk, at))
+        self.assertIs(extrude._crosses(numpy, [(0, 0), (4, 0), (8, 0)], [0]), False)  # every edge adjacent
+
+    def test_past_the_budget_the_cap_is_made_unchecked(self):
+        with mock.patch.object(extrude, "MAX_CROSS_TESTS", 1):
+            data, issues = self.make([_bowtie()])
+        self.assertEqual(issues, ["1 closed spline not checked for crossings (more than 1 tests): capped"])
+        self.assertEqual(len(data.loop_totals), 6)  # four sides, two caps as before
+        tests = [5]
+        self.assertIsNone(extrude._crosses(numpy, [(0, 0), (10, 10), (10, 0), (0, 10)], [0]))
+        self.assertIs(extrude._crosses(numpy, [(0, 0), (10, 10), (10, 0), (0, 10)], tests), True)
+        self.assertLess(tests[0], 5)
 
 
 if __name__ == "__main__":
